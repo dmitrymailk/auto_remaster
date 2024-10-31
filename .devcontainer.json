@@ -1,0 +1,23 @@
+{
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"donjayamanne.python-extension-pack",
+				"ms-python.black-formatter",
+				"ms-vsliveshare.vsliveshare",
+				"christian-kohler.path-intellisense",
+				"ms-toolsai.jupyter",
+				"rioj7.command-variable",
+				"ritwickdey.LiveServer",
+			]
+		}
+	},
+	"forwardPorts": [
+		8080,
+		8000,
+	],
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "server",
+	"workspaceFolder": "/code",
+}
