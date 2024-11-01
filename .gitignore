@@ -201,3 +201,5 @@ diffusers_experiments/nfs2/*.png
 cache
 !.devcontainer.json
 comfyui_sandbox/video_renders/render_*
+!showcases/*/*.mp4
+!showcases/*/*.json

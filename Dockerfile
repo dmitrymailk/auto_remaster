@@ -1,7 +1,7 @@
 # FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update --fix-missing && apt-get upgrade -y && apt-get install ffmpeg libsm6 libxext6  -y
+RUN apt-get update --fix-missing && apt-get upgrade -y && apt-get install ffmpeg libsm6 libxext6 ncdu -y
 RUN apt-get install git curl numactl wget unzip iproute2 -y 
 
 ARG USERNAME=user-name-goes-here

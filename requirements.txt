@@ -2,5 +2,6 @@ opencv-python==4.10.0.82
 protobuf
 decord==0.6.0
 ipywidgets
-moviepy
-pygame
+ipykernel
+torch==2.5.0
+flash_attn==2.6.3
