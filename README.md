@@ -1,10 +1,12 @@
+
+https://github.com/user-attachments/assets/29a8b886-cd62-437f-9cc8-0a85844a61f2
 # AUTO GAME REMASTER
 ## 05.11.24 Venhancer, Mochi
 
 #### Venhancer
 - [workflow.json](showcases/showcase_2/nfs_venhancer.json)
 - [youtube](https://youtu.be/KWcad7MjKQo)
-- <video src="https://github.com/dmitrymailk/auto_remaster/raw/refs/heads/master/showcases/showcase_2/showcase_2_venhancer.mp4" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/66eb4ee4-d3bf-4190-9810-1e697165f8f2" width="80%" controls autoplay loop></video>
 
 
 #### Mochi
