@@ -4,17 +4,17 @@
 #### Venhancer
 - [workflow.json](showcases/showcase_2/nfs_venhancer.json)
 - [youtube](https://youtu.be/KWcad7MjKQo)
-- <video src="showcases/showcase_2/venhance_showcase_1.mp4" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/dmitrymailk/auto_remaster/raw/refs/heads/master/showcases/showcase_2/showcase_2_venhancer.mp4" width="80%" controls autoplay loop></video>
 
 
 #### Mochi
 - [workflow.json](showcases/showcase_2/nfs_mochi_enhancer.json)
 - [youtube](https://youtu.be/h2xGpse_GRQ)
-- <video src="showcases/showcase_2/mochi.mp4" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/dmitrymailk/auto_remaster/raw/refs/heads/master/showcases/showcase_2/showcase_2_mochi.mp4" width="80%" controls autoplay loop></video>
 
 #### Original
 - [youtube](https://youtu.be/UHwW8Y2Vyjs)
-- <video src="showcases/showcase_2/original.mp4" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/dmitrymailk/auto_remaster/raw/refs/heads/master/showcases/showcase_2/showcase_2_original.mp4" width="80%" controls autoplay loop></video>
 
 На мой взгляд [Venhancer](https://github.com/Vchitect/VEnhancer) справляется намного лучше чем mochi, хотя в обеих моделях я недостаточно экспериментировал над промптами и гиперпараметрами.
 
