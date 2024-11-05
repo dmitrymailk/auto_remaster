@@ -1,22 +1,20 @@
-
-https://github.com/user-attachments/assets/29a8b886-cd62-437f-9cc8-0a85844a61f2
 # AUTO GAME REMASTER
 ## 05.11.24 Venhancer, Mochi
 
 #### Venhancer
 - [workflow.json](showcases/showcase_2/nfs_venhancer.json)
 - [youtube](https://youtu.be/KWcad7MjKQo)
-- <video src="https://github.com/user-attachments/assets/66eb4ee4-d3bf-4190-9810-1e697165f8f2" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/66eb4ee4-d3bf-4190-9810-1e697165f8f2" width="50%" controls autoplay loop></video>
 
 
 #### Mochi
 - [workflow.json](showcases/showcase_2/nfs_mochi_enhancer.json)
 - [youtube](https://youtu.be/h2xGpse_GRQ)
-- <video src="https://github.com/dmitrymailk/auto_remaster/raw/refs/heads/master/showcases/showcase_2/showcase_2_mochi.mp4" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/9633fbde-3ee5-4f51-8c66-9b032b33bb1a" width="50%" controls autoplay loop></video>
 
 #### Original
 - [youtube](https://youtu.be/UHwW8Y2Vyjs)
-- <video src="https://github.com/dmitrymailk/auto_remaster/raw/refs/heads/master/showcases/showcase_2/showcase_2_original.mp4" width="80%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/0454d387-4e55-4302-a9f1-4153786d03ab" width="50%" controls autoplay loop></video>
 
 На мой взгляд [Venhancer](https://github.com/Vchitect/VEnhancer) справляется намного лучше чем mochi, хотя в обеих моделях я недостаточно экспериментировал над промптами и гиперпараметрами.
 
