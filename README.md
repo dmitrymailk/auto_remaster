@@ -1,6 +1,26 @@
 # AUTO GAME REMASTER
+## 05.11.24 Venhancer, Mochi
 
-## SDXL+ControlNet+IPadapter+loras stack
+#### Venhancer
+- [workflow.json](showcases/showcase_2/nfs_venhancer.json)
+- [youtube](https://youtu.be/KWcad7MjKQo)
+- <video src="showcases/showcase_2/venhance_showcase_1.mp4" width="80%" controls autoplay loop></video>
+
+
+#### Mochi
+- [workflow.json](showcases/showcase_2/nfs_mochi_enhancer.json)
+- [youtube](https://youtu.be/h2xGpse_GRQ)
+- <video src="showcases/showcase_2/mochi.mp4" width="80%" controls autoplay loop></video>
+
+#### Original
+- [youtube](https://youtu.be/UHwW8Y2Vyjs)
+- <video src="showcases/showcase_2/original.mp4" width="80%" controls autoplay loop></video>
+
+На мой взгляд [Venhancer](https://github.com/Vchitect/VEnhancer) справляется намного лучше чем mochi, хотя в обеих моделях я недостаточно экспериментировал над промптами и гиперпараметрами.
+
+Картинка стала намного стабильнее, больше нет раздражающей ряби, однако потерялся изначальный стиль и вайб картинок. Однако я думаю это можно будет решить обычной лорой.Также мне кажется что на основе Venhancer сделать некий [refiner](https://www.reddit.com/r/StableDiffusion/comments/15ah7uj/can_someone_explain_what_the_sdxl_refiner_does/), чтобы картинка стала более интересной. Нам мой взгляд теперь стоит сосредоточиться на стабилизации картинки для control net.
+
+## 03.11.24 SDXL+ControlNet+IPadapter+loras stack
 - [workflow.json](./showcases/showcase_1/nfs_ip_control_lora_showcase_1.json)
 - ![183](showcases/showcase_1/nfs_00000183.png)
 - ![306](showcases/showcase_1/nfs_00000306.png)
