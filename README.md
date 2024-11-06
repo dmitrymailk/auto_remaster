@@ -3,17 +3,19 @@
 ## 07.11.24 SDXL+ControlNet+Reshade canny shader -> Venhancer
 
 ### SDXL video + Venhancer
+
 #### Venhancer
 - [workflow.json](showcases/showcase_2/nfs_venhancer.json)
 - [youtube](https://youtu.be/7mpGQl7Z91k?si=XTTGQO5ZtLi6yMqI)
+- <video src="https://github.com/user-attachments/assets/d623456a-8a91-4e24-a02b-0069cbb44b76" width="50%" controls autoplay loop></video>
 
 #### SDXL
-
 - [youtube](https://youtu.be/tdmL3rGf3NE)
+- <video src="https://github.com/user-attachments/assets/959ea41b-b7dc-4217-a1d1-5d26841d2e2b" width="50%" controls autoplay loop></video>
 
 #### Original
-
 - [youtube](https://youtu.be/wYxjkZ3cXA8)
+- <video src="https://github.com/user-attachments/assets/325fe3fd-6deb-45a0-abf1-38de7ccdb733" width="50%" controls autoplay loop></video>
 
 ### SDXL+ControlNet+Reshade
 - [workflow.json](showcases/showcase_3/nfs_reshade_ip_lora_control_video_notes.json)
