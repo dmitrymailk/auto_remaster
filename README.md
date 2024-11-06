@@ -1,4 +1,28 @@
 # AUTO GAME REMASTER
+
+## 07.11.24 SDXL+ControlNet+Reshade canny shader -> Venhancer
+
+### SDXL video + Venhancer
+#### Venhancer
+- [workflow.json](showcases/showcase_2/nfs_venhancer.json)
+- [youtube](https://youtu.be/7mpGQl7Z91k?si=XTTGQO5ZtLi6yMqI)
+
+#### SDXL
+
+- [youtube](https://youtu.be/tdmL3rGf3NE)
+
+#### Original
+
+- [youtube](https://youtu.be/wYxjkZ3cXA8)
+
+### SDXL+ControlNet+Reshade
+- [workflow.json](showcases/showcase_3/nfs_reshade_ip_lora_control_video_notes.json)
+- [dataset](https://huggingface.co/dim/auto_remaster/blob/main/reshade_video_4.zip)
+- ![117](showcases/showcase_3/117.png)
+- ![138](showcases/showcase_3/138.png)
+- ![195](showcases/showcase_3/195.png)
+- ![246](showcases/showcase_3/246.png)
+
 ## 05.11.24 Venhancer, Mochi
 
 #### Venhancer
