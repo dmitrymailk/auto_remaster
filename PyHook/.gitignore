@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+PyHook/__pycache__/
+Addon/Debug/
+Addon/Release/
+Addon/x64/
+
+# Boost headers
+Addon/include/boost/
+
+# Distribution / packaging
+build/
+dist/
+
+# PyInstaller
+*.manifest
+
+# VScode
+.vscode/
+
+# VisualStudio
+Addon/.vs/
+Addon/*.filters
+Addon/*.user
+Addon/*.aps
+
+# Pipelines data
+PyHook/pipelines/*/**
+!PyHook/pipelines/*/download.txt
+!PyHook/pipelines/test_static_img/**
+
+# PyHook data
+lib32/
+settings.json
