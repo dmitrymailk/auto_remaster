@@ -1,9 +1,6 @@
 from pipeline_utils import build_variable, read_value, use_local_python
 import numpy as np
 
-# print("NIGGGGGERS")
-# print(sys.modules['numpy.random._generator'])
-# # print(sys.modules.keys())
 with use_local_python():
     import torch
 
