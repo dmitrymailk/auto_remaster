@@ -1,5 +1,28 @@
 # AUTO GAME REMASTER
 
+## 11.11.24 SDXL+ControlNet+Reshade canny shader+FLUX upscaler -> Venhancer
+
+#### Venhancer
+- [workflow.json](showcases/showcase_4/nfs_venhancer_fast.json)
+- <video src="https://github.com/user-attachments/assets/0cf37ab2-e006-452f-a927-e152fef74943" width="50%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/ae86346c-dcee-4a95-a307-e65c5b4392d5" width="50%" controls autoplay loop></video>
+
+#### SDXL+ControlNet+Reshade canny shader+FLUX upscaler
+- [flux upscale workflow](showcases/showcase_4/nfs_flux_upscale_controlnet.json)
+- [sdxl 4 screens workflow](showcases/showcase_4/nfs_4screens_sdxl.json)
+- [dataset original 4 screens](https://huggingface.co/dim/auto_remaster/blob/main/render_nfs_4screens_0.tar.gz)
+- [dataset sdxl](https://huggingface.co/dim/auto_remaster/blob/main/render_nfs_4screens_1_sdxl_1.tar.gz)
+- [dataset sdxl+flux upscale](https://huggingface.co/dim/auto_remaster/blob/main/render_nfs_4screens_1_sdxl_1_flux_upscale_1.tar.gz)
+- ![](showcases/showcase_4/showcase_4_1.png)
+- ![](showcases/showcase_4/showcase_4_2.png)
+- ![](showcases/showcase_4/showcase_4_3.png)
+
+Разделил экран на 4 части при помощи шейдера и применил только для одного из них [canny shader](comfyui_sandbox/4Screens.fx). Конечно от этого немного пострадала точность, но картинка не слишком ухудшилась. Также попробовал применить [flux upscaler](showcases/showcase_4/nfs_flux_upscale_controlnet.json), картинка местами превратилась тупо в кино. Также попробовал поиграть с гиперпараметрами [Venhancer](showcases/showcase_4/nfs_venhancer_fast.json), убрал промпт, понизил количество шагов, по итогу картинка перестала сильно изменяться, а ждать эту обработку не полтора часа как раньше, а всего 2 минуты. Вот с таким пайплайном уже можно говорить об оффлайн рендеринге для дистилляции. Также попробовал заменить SDXL на FLUX, не получается. Картинка все время становится намного хуже, хоть и не разлетается в стороны как с SDXL, наверное отложу это на потом.
+
+Получилось завести [PyHook](https://github.com/dwojtasik/PyHook) для Reshade. Оказывается, какой-то чел дропнул бинарь для внедрения нейронок, да и вообще любого кода в пайплайн любых игр. Увидел 10 фпс в постобработке, расстроился и пропал, я так и не нашел никакой инфы где он. Какое счастье что у меня 4090 и на дворе век победившего torch.compile. Однако пока я пробовал лишь на своей 3050ti, и это расширение дает падение фпс с 44 до 24, при работе простого Sobel фильтра на GPU c pytorch. 
+
+Хотя не думаю что это большая проблема, главное что я теперь могу в реалтайме обрабатывать картинки из игры на pytorch и передавать их дальше. Скорость уже не так важна. Главное теперь воткнуть любую нейронку чтобы она выдавала 30фпс, а потом уже плотно заняться стабилизацией изображения.
+
 ## 07.11.24 SDXL+ControlNet+Reshade canny shader -> Venhancer
 
 ### SDXL video + Venhancer
@@ -87,3 +110,4 @@
 ### Useful Links
 - [Awesome-Video-Diffusion](https://github.com/showlab/Awesome-Video-Diffusion)
 - [ComfyUI nodes for VEnhancer](https://github.com/kijai/ComfyUI-VEnhancer)
+- [reshade PyHook](https://github.com/dwojtasik/PyHook)
