@@ -203,3 +203,4 @@ cache
 comfyui_sandbox/video_renders/render_*
 !showcases/*/*.mp4
 !showcases/*/*.json
+!PyHook-1.3.0-win_amd64/PyHook-1.3.0-win_amd64.exe
