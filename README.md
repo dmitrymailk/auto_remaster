@@ -1,4 +1,6 @@
 # AUTO GAME REMASTER
+- [EN (auto translated)](./README_EN.md)
+- [RU](./README.md)
 
 ## 11.11.24 SDXL+ControlNet+Reshade canny shader+FLUX upscaler -> Venhancer
 
@@ -16,6 +18,7 @@
 - ![](showcases/showcase_4/showcase_4_1.png)
 - ![](showcases/showcase_4/showcase_4_2.png)
 - ![](showcases/showcase_4/showcase_4_3.png)
+- ![](showcases/showcase_4/original_game.jpg)
 
 Разделил экран на 4 части при помощи шейдера и применил только для одного из них [canny shader](comfyui_sandbox/4Screens.fx). Конечно от этого немного пострадала точность, но картинка не слишком ухудшилась. Также попробовал применить [flux upscaler](showcases/showcase_4/nfs_flux_upscale_controlnet.json), картинка местами превратилась тупо в кино. Также попробовал поиграть с гиперпараметрами [Venhancer](showcases/showcase_4/nfs_venhancer_fast.json), убрал промпт, понизил количество шагов, по итогу картинка перестала сильно изменяться, а ждать эту обработку не полтора часа как раньше, а всего 2 минуты. Вот с таким пайплайном уже можно говорить об оффлайн рендеринге для дистилляции. Также попробовал заменить SDXL на FLUX, не получается. Картинка все время становится намного хуже, хоть и не разлетается в стороны как с SDXL, наверное отложу это на потом.
 
