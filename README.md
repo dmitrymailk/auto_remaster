@@ -5,8 +5,8 @@
 
 ## 17.11.24 SDXL+ControlNet+Reshade canny shader -> SAM2+Flux+Controlnet fix cars -> Venhancer -> Upscale By mask
 - [sam2 fix cars workflow.json](showcases/showcase_5/nfs_fix_cars_flux_sam2.json)
-- [simple upscale image by model refocus](showcases/showcase_5/simple_model_upscale.json)
-- [mix images by mask](showcases/showcase_5/nfs_mix_venhancer_refocus.json)
+- [simple upscale image by model refocus workflow.json](showcases/showcase_5/simple_model_upscale.json)
+- [mix images by mask workflow.json](showcases/showcase_5/nfs_mix_venhancer_refocus.json)
 - [youtube video](https://youtu.be/G4UhrLMZNVk)
 - <video src="https://github.com/user-attachments/assets/c26cff8f-8f44-41a4-b47f-910aad055217" width="50%" controls autoplay loop></video>
 
