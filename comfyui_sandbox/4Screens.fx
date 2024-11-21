@@ -93,14 +93,47 @@ float2 SobelSample(float2 texcoord, float2 offset)
     return sobel;
 }
 
+float2 SobelSampleDepth(float2 texcoord, float2 offset)
+{
+    float4 center = tex2D(Screen3_sampler, texcoord);
+    float4 left = tex2D(Screen3_sampler, texcoord - float2(offset.x, 0));
+    float4 right = tex2D(Screen3_sampler, texcoord + float2(offset.x, 0));
+    float4 up = tex2D(Screen3_sampler, texcoord - float2(0, offset.y));
+    float4 down = tex2D(Screen3_sampler, texcoord + float2(0, offset.y));
+
+    float2 sobel;
+    sobel.x = length((right - left).rgb);
+    sobel.y = length((up - down).rgb);
+    return sobel;
+}
+
 float3 MeshEdges_PS(float4 vpos : SV_Position, float2 texcoord : TexCoord) : SV_Target
 {
     float3 original = tex2D(ReShade::BackBuffer, texcoord).rgb;
+    // float3 original = tex2D(Screen3_sampler, texcoord).rgb;
     float edge = 0;
 
     if (bUIUseColorEdges)
     {
         float2 sobelEdge = SobelSample(texcoord, ReShade::PixelSize);
+        edge = length(sobelEdge);
+    }
+
+    edge = edge > fUIThreshold ? edge * fUIStrength : 0;
+    edge = saturate(edge);
+
+    float3 background = iUIBackground == 0 ? original : fUIColorBackground;
+    return lerp(background, fUIColorLines, edge);
+}
+
+float3 MeshEdges_PS_2(float4 vpos : SV_Position, float2 texcoord : TexCoord) : SV_Target
+{
+    float3 original = tex2D(Screen3_sampler, texcoord).rgb;
+    float edge = 0;
+
+    if (bUIUseColorEdges)
+    {
+        float2 sobelEdge = SobelSampleDepth(texcoord, ReShade::PixelSize);
         edge = length(sobelEdge);
     }
 
@@ -563,7 +596,7 @@ technique Screen_1
     {
         VertexShader = PostProcessVS;
         // PixelShader = Pass_Screen;
-        PixelShader = PS_DisplayDepth_2;
+        PixelShader = MeshEdges_PS_2;
         RenderTarget = Screen1;
     }
 }
