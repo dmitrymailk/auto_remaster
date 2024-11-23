@@ -1,0 +1,777 @@
+{
+  "last_node_id": 57,
+  "last_link_id": 110,
+  "nodes": [
+    {
+      "id": 37,
+      "type": "Image Comparer (rgthree)",
+      "pos": [
+        1494,
+        295
+      ],
+      "size": [
+        981.8555297851562,
+        664.8508911132812
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_a",
+          "type": "IMAGE",
+          "link": 79,
+          "dir": 3
+        },
+        {
+          "name": "image_b",
+          "type": "IMAGE",
+          "link": 80,
+          "dir": 3
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "comparer_mode": "Slide"
+      },
+      "widgets_values": [
+        [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_mbfes_00111_.png&type=temp&subfolder=&rand=0.163237911084523"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_mbfes_00112_.png&type=temp&subfolder=&rand=0.31656582311440373"
+          }
+        ]
+      ]
+    },
+    {
+      "id": 4,
+      "type": "PreviewImage",
+      "pos": [
+        1548,
+        -266
+      ],
+      "size": [
+        790.8587646484375,
+        472.0545959472656
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 78
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 47,
+      "type": "Reroute",
+      "pos": [
+        -580,
+        891
+      ],
+      "size": [
+        75,
+        26
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "",
+          "type": "*",
+          "link": 110,
+          "widget": {
+            "name": "value"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "INT",
+          "links": [
+            98,
+            104
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "showOutputText": false,
+        "horizontal": false
+      }
+    },
+    {
+      "id": 46,
+      "type": "ttN int",
+      "pos": [
+        -1167,
+        1033
+      ],
+      "size": [
+        315,
+        98
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "int",
+          "type": "INT",
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "float",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ttN int",
+        "ttNnodeVersion": "1.0.0"
+      },
+      "widgets_values": [
+        1
+      ]
+    },
+    {
+      "id": 36,
+      "type": "MaskToImage",
+      "pos": [
+        992,
+        893
+      ],
+      "size": [
+        264.5999755859375,
+        26
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 107
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            77
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MaskToImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 33,
+      "type": "ImageAndMaskPreview",
+      "pos": [
+        546,
+        1110
+      ],
+      "size": [
+        632.3888549804688,
+        338
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 71,
+          "shape": 7
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 102,
+          "slot_index": 1,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "composite",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0,
+          "shape": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageAndMaskPreview"
+      },
+      "widgets_values": [
+        0.51,
+        "0, 0, 0",
+        false
+      ]
+    },
+    {
+      "id": 56,
+      "type": "ImageAndMaskPreview",
+      "pos": [
+        518,
+        1486
+      ],
+      "size": [
+        828.3807983398438,
+        553.573486328125
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 108,
+          "shape": 7
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 109,
+          "slot_index": 1,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "composite",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0,
+          "shape": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageAndMaskPreview"
+      },
+      "widgets_values": [
+        0.51,
+        "255, 0, 0",
+        false
+      ]
+    },
+    {
+      "id": 30,
+      "type": "Load Image Batch",
+      "pos": [
+        1,
+        513
+      ],
+      "size": [
+        315,
+        270
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "index",
+          "type": "INT",
+          "link": 104,
+          "widget": {
+            "name": "index"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            75
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "filename_text",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Load Image Batch"
+      },
+      "widgets_values": [
+        "single_image",
+        0,
+        "fixed",
+        1,
+        "Batch 001",
+        "/code/comfyui_sandbox/video_renders/render_venhance_1_000104_sdxl_mix_2",
+        "*.png",
+        "false",
+        "true"
+      ]
+    },
+    {
+      "id": 35,
+      "type": "Image Blend by Mask",
+      "pos": [
+        865,
+        427
+      ],
+      "size": [
+        315,
+        98
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_a",
+          "type": "IMAGE",
+          "link": 75
+        },
+        {
+          "name": "image_b",
+          "type": "IMAGE",
+          "link": 74
+        },
+        {
+          "name": "mask",
+          "type": "IMAGE",
+          "link": 77
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            78,
+            79,
+            100
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Image Blend by Mask"
+      },
+      "widgets_values": [
+        0.8
+      ]
+    },
+    {
+      "id": 54,
+      "type": "Mask Gaussian Region",
+      "pos": [
+        646,
+        878
+      ],
+      "size": [
+        315,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "masks",
+          "type": "MASK",
+          "link": 106
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASKS",
+          "type": "MASK",
+          "links": [
+            107,
+            109
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Mask Gaussian Region"
+      },
+      "widgets_values": [
+        16.3
+      ]
+    },
+    {
+      "id": 52,
+      "type": "CreateShapeMask",
+      "pos": [
+        2,
+        1243
+      ],
+      "size": [
+        315,
+        270
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": [
+            102,
+            106
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "mask_inverted",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateShapeMask"
+      },
+      "widgets_values": [
+        "square",
+        1,
+        784,
+        970,
+        0,
+        1568,
+        880,
+        1568,
+        933
+      ]
+    },
+    {
+      "id": 31,
+      "type": "Load Image Batch",
+      "pos": [
+        4,
+        865
+      ],
+      "size": [
+        315,
+        270
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "index",
+          "type": "INT",
+          "link": 98,
+          "widget": {
+            "name": "index"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            71,
+            74,
+            80,
+            108
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "filename_text",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Load Image Batch"
+      },
+      "widgets_values": [
+        "single_image",
+        0,
+        "fixed",
+        1,
+        "Batch 001",
+        "/code/comfyui_sandbox/video_renders/render_venhance_1_000104_sdxl_mix_2_upscale",
+        "*.png",
+        "false",
+        "true"
+      ]
+    },
+    {
+      "id": 50,
+      "type": "ttN imageOutput",
+      "pos": [
+        1581,
+        1231
+      ],
+      "size": [
+        360.37249755859375,
+        417.9696044921875
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 100
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ttN imageOutput",
+        "ttNnodeVersion": "1.2.0"
+      },
+      "widgets_values": [
+        "Save",
+        "/code/comfyui_sandbox/video_renders/render_venhance_1_000104_sdxl_mix_2_upscale_mix",
+        "nfs",
+        8,
+        "png",
+        true,
+        true
+      ]
+    },
+    {
+      "id": 51,
+      "type": "Number Counter",
+      "pos": [
+        -1176,
+        738
+      ],
+      "size": [
+        315,
+        194
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "reset_bool",
+          "type": "NUMBER",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "number",
+          "type": "NUMBER",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "float",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "int",
+          "type": "INT",
+          "links": [
+            110
+          ],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Number Counter"
+      },
+      "widgets_values": [
+        "integer",
+        "increment",
+        0,
+        250,
+        1
+      ]
+    }
+  ],
+  "links": [
+    [
+      71,
+      31,
+      0,
+      33,
+      0,
+      "IMAGE"
+    ],
+    [
+      74,
+      31,
+      0,
+      35,
+      1,
+      "IMAGE"
+    ],
+    [
+      75,
+      30,
+      0,
+      35,
+      0,
+      "IMAGE"
+    ],
+    [
+      77,
+      36,
+      0,
+      35,
+      2,
+      "IMAGE"
+    ],
+    [
+      78,
+      35,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      79,
+      35,
+      0,
+      37,
+      0,
+      "IMAGE"
+    ],
+    [
+      80,
+      31,
+      0,
+      37,
+      1,
+      "IMAGE"
+    ],
+    [
+      98,
+      47,
+      0,
+      31,
+      0,
+      "INT"
+    ],
+    [
+      100,
+      35,
+      0,
+      50,
+      0,
+      "IMAGE"
+    ],
+    [
+      102,
+      52,
+      0,
+      33,
+      1,
+      "MASK"
+    ],
+    [
+      104,
+      47,
+      0,
+      30,
+      0,
+      "INT"
+    ],
+    [
+      106,
+      52,
+      0,
+      54,
+      0,
+      "MASK"
+    ],
+    [
+      107,
+      54,
+      0,
+      36,
+      0,
+      "MASK"
+    ],
+    [
+      108,
+      31,
+      0,
+      56,
+      0,
+      "IMAGE"
+    ],
+    [
+      109,
+      54,
+      0,
+      56,
+      1,
+      "MASK"
+    ],
+    [
+      110,
+      51,
+      2,
+      47,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1.283902517749506,
+      "offset": [
+        -907.09901619076,
+        -192.41733012870563
+      ]
+    }
+  },
+  "version": 0.4
+}

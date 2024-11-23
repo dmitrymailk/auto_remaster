@@ -2,7 +2,7 @@ from safetensors.torch import load_file, save_file
 import torch
 import json
 
-path = "/code/ComfyUI/models/controlnet/Shakker-Labs_FLUX.1-dev-ControlNet-Union-Pro.safetensors"  # input file
+path = "/code/ComfyUI/models/diffusion_models/flux1-fill-dev.safetensors"  # input file
 
 
 # read safetensors metadata
@@ -27,6 +27,6 @@ for key in state_dict:  # for each key in the safetensors file
 # save the pruned safetensors file
 save_file(
     sd_pruned,
-    "/code/ComfyUI/models/controlnet/Shakker-Labs_FLUX.1-dev-ControlNet-Union-Pro-fp8.safetensors",
+    "/code/ComfyUI/models/diffusion_models/black-forest-labs_FLUX.1-Fill-dev_flux1-fill-dev_fp8.safetensors",
     metadata={"format": "pt", **metadata},
 )
