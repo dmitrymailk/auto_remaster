@@ -2,7 +2,13 @@
 - [EN (auto translated)](./README_EN.md)
 - [RU](./README.md)
 
-## 22.11.24
+## 25.11.24 (showcase 7)
+- <video src="https://github.com/user-attachments/assets/73b8633b-f8aa-4277-959f-56ed93f43ca5" width="50%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/4f063590-dedf-42fe-a1bc-8af3dc3005a1" width="50%" controls autoplay loop></video>
+
+Понизил уровень шума в VEnhancer до 5 и увеличил параметр s_cond до 2. Сделал fps на выходе и входе равными, это дало мне возможность сохранить пареллельные SDXL изображения. Затем попробовал смешать асфальт из выхода SDXL с VEnhancer, с этим очень сильно помог компонент "Mask Gaussian Region", он сделал смешение картинок очень плавным(понятия не имею откуда он, считаю что мне просто повезло). Еще попробовал применить фильтр смешения через цвет для растительности, на отдельных кадрах удалось вернуть цвет из SDXL, но на видео как по мне это добавило больше ряби, но зато убрало желтизну.
+
+## 22.11.24 (showcase 7)
 - <video src="https://github.com/user-attachments/assets/b23d3a1a-7df9-44e7-9859-3b7947465115" width="50%" controls autoplay loop></video>
 - <video src="https://github.com/user-attachments/assets/860c9be3-bb3a-4d3f-8ef3-219b75d64885" width="50%" controls autoplay loop></video>
 - <video src="https://github.com/user-attachments/assets/5bf734cd-b84e-4463-a4cd-2d9728534686" width="50%" controls autoplay loop></video>
