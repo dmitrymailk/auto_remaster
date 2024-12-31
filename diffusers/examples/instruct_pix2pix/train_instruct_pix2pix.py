@@ -63,7 +63,7 @@ if is_wandb_available():
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.33.0.dev0")
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision("high")
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -572,19 +572,25 @@ def main():
         revision=args.revision,
         variant=args.variant,
     )
+    # text_encoder = torch.compile(text_encoder)
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
         revision=args.revision,
         variant=args.variant,
     )
+    # vae.decode = torch.compile(
+    #     vae.decode, mode="reduce-overhead", dynamic=False, fullgraph=True
+    # )
+    vae.decode = torch.compile(vae.decode, mode="max-autotune", fullgraph=True)
+
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="unet",
         revision=args.non_ema_revision,
     )
     # unet(AttnProcessor2_0())
-    unet = torch.compile(unet, mode="reduce-overhead", fullgraph=True)
+    unet = torch.compile(unet, mode="max-autotune", fullgraph=True)
 
     # InstructPix2Pix uses an additional image for conditioning. To accommodate that,
     # it uses 8 channels (instead of 4) in the first (conv) layer of the UNet. This UNet is
