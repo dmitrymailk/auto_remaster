@@ -582,7 +582,8 @@ def main():
     # vae.decode = torch.compile(
     #     vae.decode, mode="reduce-overhead", dynamic=False, fullgraph=True
     # )
-    vae.decode = torch.compile(vae.decode, mode="max-autotune", fullgraph=True)
+    # vae.decode = torch.compile(vae.decode, mode="max-autotune", fullgraph=True)
+    vae.decode = torch.compile(vae.decode, mode="reduce-overhead", fullgraph=True)
 
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -590,7 +591,8 @@ def main():
         revision=args.non_ema_revision,
     )
     # unet(AttnProcessor2_0())
-    unet = torch.compile(unet, mode="max-autotune", fullgraph=True)
+    # unet = torch.compile(unet, mode="max-autotune", fullgraph=True)
+    unet = torch.compile(unet, mode="reduce-overhead", fullgraph=True)
 
     # InstructPix2Pix uses an additional image for conditioning. To accommodate that,
     # it uses 8 channels (instead of 4) in the first (conv) layer of the UNet. This UNet is
