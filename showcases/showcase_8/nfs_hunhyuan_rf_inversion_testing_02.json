@@ -1,91 +1,7 @@
 {
   "last_node_id": 88,
-  "last_link_id": 169,
+  "last_link_id": 170,
   "nodes": [
-    {
-      "id": 70,
-      "type": "HyVideoEmptyTextEmbeds",
-      "pos": [
-        772.8973388671875,
-        -39.858333587646484
-      ],
-      "size": [
-        302.1732177734375,
-        26
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "hyvid_embeds",
-          "type": "HYVIDEMBEDS",
-          "links": [
-            156
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "HyVideoEmptyTextEmbeds"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 71,
-      "type": "GetImageSizeAndCount",
-      "pos": [
-        -66.3104019165039,
-        135.95004272460938
-      ],
-      "size": [
-        277.20001220703125,
-        86
-      ],
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 120
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            117
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "width",
-          "type": "INT",
-          "links": [],
-          "slot_index": 1
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "links": [],
-          "slot_index": 2
-        },
-        {
-          "name": "count",
-          "type": "INT",
-          "links": [],
-          "slot_index": 3
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "GetImageSizeAndCount"
-      },
-      "widgets_values": []
-    },
     {
       "id": 72,
       "type": "SetNode",
@@ -130,6 +46,139 @@
       "bgcolor": "#3f5159"
     },
     {
+      "id": 73,
+      "type": "GetNode",
+      "pos": [
+        1796.09228515625,
+        -242.5251007080078
+      ],
+      "size": [
+        210,
+        58
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            121
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Get_InputVideo",
+      "properties": {},
+      "widgets_values": [
+        "InputVideo"
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 70,
+      "type": "HyVideoEmptyTextEmbeds",
+      "pos": [
+        772.8973388671875,
+        -39.858333587646484
+      ],
+      "size": [
+        302.1732177734375,
+        26
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "hyvid_embeds",
+          "type": "HYVIDEMBEDS",
+          "links": [
+            156
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "HyVideoEmptyTextEmbeds",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 71,
+      "type": "GetImageSizeAndCount",
+      "pos": [
+        -66.3104019165039,
+        135.95004272460938
+      ],
+      "size": [
+        277.20001220703125,
+        86
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 120
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            117
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "1280 width",
+          "type": "INT",
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "720 height",
+          "type": "INT",
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "46 count",
+          "type": "INT",
+          "links": [],
+          "slot_index": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "GetImageSizeAndCount",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": []
+    },
+    {
       "id": 81,
       "type": "Reroute",
       "pos": [
@@ -141,7 +190,7 @@
         26
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -165,85 +214,6 @@
         "showOutputText": false,
         "horizontal": false
       }
-    },
-    {
-      "id": 68,
-      "type": "ImageConcatMulti",
-      "pos": [
-        1794.0260009765625,
-        -444.05877685546875
-      ],
-      "size": [
-        210,
-        150
-      ],
-      "flags": {},
-      "order": 18,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image_1",
-          "type": "IMAGE",
-          "link": 121
-        },
-        {
-          "name": "image_2",
-          "type": "IMAGE",
-          "link": 113
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            114
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {},
-      "widgets_values": [
-        2,
-        "right",
-        false,
-        null
-      ]
-    },
-    {
-      "id": 73,
-      "type": "GetNode",
-      "pos": [
-        1796.09228515625,
-        -242.5251007080078
-      ],
-      "size": [
-        210,
-        58
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            121
-          ],
-          "slot_index": 0
-        }
-      ],
-      "title": "Get_InputVideo",
-      "properties": {},
-      "widgets_values": [
-        "InputVideo"
-      ],
-      "color": "#2a363b",
-      "bgcolor": "#3f5159"
     },
     {
       "id": 7,
@@ -279,7 +249,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "HyVideoVAELoader"
+        "Node name for S&R": "HyVideoVAELoader",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         "hunyuan_video_vae_bf16.safetensors",
@@ -339,7 +316,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "VHS_LoadVideo"
+        "Node name for S&R": "VHS_LoadVideo",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": {
         "video": "wolf_interpolated.mp4",
@@ -366,99 +350,6 @@
           "muted": false
         }
       }
-    },
-    {
-      "id": 66,
-      "type": "HyVideoDecode",
-      "pos": [
-        1331.179931640625,
-        -387.58612060546875
-      ],
-      "size": [
-        292.81866455078125,
-        150
-      ],
-      "flags": {},
-      "order": 17,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 105
-        },
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 163
-        }
-      ],
-      "outputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": [
-            113
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "HyVideoDecode"
-      },
-      "widgets_values": [
-        false,
-        64,
-        128,
-        true
-      ]
-    },
-    {
-      "id": 61,
-      "type": "HyVideoEncode",
-      "pos": [
-        269.31317138671875,
-        -177.6795196533203
-      ],
-      "size": [
-        315,
-        150
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 73
-        },
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 117
-        }
-      ],
-      "outputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "links": [
-            157,
-            161
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "HyVideoEncode"
-      },
-      "widgets_values": [
-        false,
-        64,
-        256,
-        true
-      ]
     },
     {
       "id": 62,
@@ -528,7 +419,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "ImageResizeKJ"
+        "Node name for S&R": "ImageResizeKJ",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         1280,
@@ -539,62 +437,6 @@
         0,
         0,
         "disabled"
-      ]
-    },
-    {
-      "id": 1,
-      "type": "HyVideoModelLoader",
-      "pos": [
-        -473.4425964355469,
-        -289.11212158203125
-      ],
-      "size": [
-        509.7506103515625,
-        218
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "compile_args",
-          "type": "COMPILEARGS",
-          "link": null,
-          "shape": 7
-        },
-        {
-          "name": "block_swap_args",
-          "type": "BLOCKSWAPARGS",
-          "link": null,
-          "shape": 7
-        },
-        {
-          "name": "lora",
-          "type": "HYVIDLORA",
-          "link": null,
-          "shape": 7
-        }
-      ],
-      "outputs": [
-        {
-          "name": "model",
-          "type": "HYVIDEOMODEL",
-          "links": [
-            151
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "HyVideoModelLoader"
-      },
-      "widgets_values": [
-        "hunyuan_video_FastVideo_720_fp8_e4m3fn.safetensors",
-        "bf16",
-        "fp8_e4m3fn",
-        "offload_device",
-        "sdpa",
-        false
       ]
     },
     {
@@ -609,7 +451,7 @@
         86.28006744384766
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -623,7 +465,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "CLIPLoader"
+        "Node name for S&R": "CLIPLoader",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         "clip_l.safetensors",
@@ -642,7 +491,7 @@
         178
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -655,7 +504,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "DownloadAndLoadHyVideoTextEncoder"
+        "Node name for S&R": "DownloadAndLoadHyVideoTextEncoder",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         "Kijai/llava-llama-3-8b-text-encoder-tokenizer",
@@ -665,163 +521,6 @@
         2,
         "disabled"
       ]
-    },
-    {
-      "id": 87,
-      "type": "VHS_LoadVideoPath",
-      "pos": [
-        -680.3246459960938,
-        430.25531005859375
-      ],
-      "size": [
-        231.8896484375,
-        238
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "meta_batch",
-          "type": "VHS_BatchManager",
-          "link": null,
-          "shape": 7
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": null,
-          "shape": 7
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            164
-          ],
-          "slot_index": 0
-        },
-        {
-          "name": "frame_count",
-          "type": "INT",
-          "links": null
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "links": null
-        },
-        {
-          "name": "video_info",
-          "type": "VHS_VIDEOINFO",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VHS_LoadVideoPath"
-      },
-      "widgets_values": {
-        "video": "/code/comfyui_sandbox/video_renders/mp4/render_nfs_4screens_5_sdxl_1.mp4",
-        "force_rate": 20,
-        "force_size": "Disabled",
-        "custom_width": 512,
-        "custom_height": 512,
-        "frame_load_cap": 33,
-        "skip_first_frames": 400,
-        "select_every_nth": 1,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "force_rate": 20,
-            "frame_load_cap": 33,
-            "skip_first_frames": 400,
-            "select_every_nth": 1,
-            "filename": "/code/comfyui_sandbox/video_renders/mp4/render_nfs_4screens_5_sdxl_1.mp4",
-            "type": "path",
-            "format": "video/mp4"
-          },
-          "muted": false
-        }
-      }
-    },
-    {
-      "id": 69,
-      "type": "VHS_VideoCombine",
-      "pos": [
-        2192,
-        -208
-      ],
-      "size": [
-        1098.79248046875,
-        651.410400390625
-      ],
-      "flags": {},
-      "order": 19,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 114
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "link": null,
-          "shape": 7
-        },
-        {
-          "name": "meta_batch",
-          "type": "VHS_BatchManager",
-          "link": null,
-          "shape": 7
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": null,
-          "shape": 7
-        }
-      ],
-      "outputs": [
-        {
-          "name": "Filenames",
-          "type": "VHS_FILENAMES",
-          "links": null
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VHS_VideoCombine"
-      },
-      "widgets_values": {
-        "frame_rate": 20,
-        "loop_count": 0,
-        "filename_prefix": "HunyuanVideo",
-        "format": "video/h264-mp4",
-        "pix_fmt": "yuv420p",
-        "crf": 2,
-        "save_metadata": true,
-        "trim_to_audio": false,
-        "pingpong": false,
-        "save_output": false,
-        "videopreview": {
-          "hidden": false,
-          "paused": false,
-          "params": {
-            "filename": "HunyuanVideo_00056.mp4",
-            "subfolder": "",
-            "type": "temp",
-            "format": "video/h264-mp4",
-            "frame_rate": 20,
-            "workflow": "HunyuanVideo_00056.png",
-            "fullpath": "/code/ComfyUI/temp/HunyuanVideo_00056.mp4"
-          },
-          "muted": false
-        }
-      }
     },
     {
       "id": 65,
@@ -835,7 +534,7 @@
         345.2080383300781
       ],
       "flags": {},
-      "order": 10,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -873,7 +572,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "HyVideoTextEncode"
+        "Node name for S&R": "HyVideoTextEncode",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         "colorful, a car driving on a road, rain, natural trees, realistic trees",
@@ -931,7 +637,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "HyVideoInverseSampler"
+        "Node name for S&R": "HyVideoInverseSampler",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         6,
@@ -959,7 +672,7 @@
         154
       ],
       "flags": {},
-      "order": 8,
+      "order": 6,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -971,7 +684,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "HyVideoEnhanceAVideo"
+        "Node name for S&R": "HyVideoEnhanceAVideo",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         0.5,
@@ -1042,7 +762,14 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "HyVideoReSampler"
+        "Node name for S&R": "HyVideoReSampler",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
       },
       "widgets_values": [
         5,
@@ -1054,6 +781,390 @@
         1,
         "constant",
         0
+      ]
+    },
+    {
+      "id": 61,
+      "type": "HyVideoEncode",
+      "pos": [
+        269.31317138671875,
+        -177.6795196533203
+      ],
+      "size": [
+        315,
+        150
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 73
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 117
+        }
+      ],
+      "outputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "links": [
+            157,
+            161
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "HyVideoEncode",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        true,
+        64,
+        256,
+        true
+      ]
+    },
+    {
+      "id": 1,
+      "type": "HyVideoModelLoader",
+      "pos": [
+        -473.4425964355469,
+        -289.11212158203125
+      ],
+      "size": [
+        509.7506103515625,
+        218
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "compile_args",
+          "type": "COMPILEARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "block_swap_args",
+          "type": "BLOCKSWAPARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "lora",
+          "type": "HYVIDLORA",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "HYVIDEOMODEL",
+          "links": [
+            151
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "HyVideoModelLoader",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "hunyuan_video_FastVideo_720_fp8_e4m3fn.safetensors",
+        "bf16",
+        "fp8_e4m3fn",
+        "offload_device",
+        "sdpa",
+        true
+      ]
+    },
+    {
+      "id": 69,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        2192,
+        -208
+      ],
+      "size": [
+        1468.2286376953125,
+        1162.628662109375
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 170
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "meta_batch",
+          "type": "VHS_BatchManager",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": {
+        "frame_rate": 20,
+        "loop_count": 0,
+        "filename_prefix": "HunyuanVideo",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 0,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "HunyuanVideo_00003.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 20,
+            "workflow": "HunyuanVideo_00003.png",
+            "fullpath": "/code/ComfyUI/output/HunyuanVideo_00003.mp4"
+          },
+          "muted": false
+        }
+      }
+    },
+    {
+      "id": 87,
+      "type": "VHS_LoadVideoPath",
+      "pos": [
+        -680.3246459960938,
+        430.25531005859375
+      ],
+      "size": [
+        311.68701171875,
+        238
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "type": "VHS_BatchManager",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            164
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_LoadVideoPath",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": {
+        "video": "/code/comfyui_sandbox/video_renders/mp4/render_nfs_4screens_5_sdxl_1.mp4",
+        "force_rate": 20,
+        "force_size": "Disabled",
+        "custom_width": 512,
+        "custom_height": 512,
+        "frame_load_cap": 46,
+        "skip_first_frames": 400,
+        "select_every_nth": 1,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "force_rate": 20,
+            "frame_load_cap": 46,
+            "skip_first_frames": 400,
+            "select_every_nth": 1,
+            "filename": "/code/comfyui_sandbox/video_renders/mp4/render_nfs_4screens_5_sdxl_1.mp4",
+            "type": "path",
+            "format": "video/mp4"
+          },
+          "muted": false
+        }
+      }
+    },
+    {
+      "id": 68,
+      "type": "ImageConcatMulti",
+      "pos": [
+        1830.309814453125,
+        -111.28374481201172
+      ],
+      "size": [
+        210,
+        150
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_1",
+          "type": "IMAGE",
+          "link": 121
+        },
+        {
+          "name": "image_2",
+          "type": "IMAGE",
+          "link": 113
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [],
+          "slot_index": 0
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        2,
+        "right",
+        false,
+        null
+      ]
+    },
+    {
+      "id": 66,
+      "type": "HyVideoDecode",
+      "pos": [
+        1331.179931640625,
+        -387.58612060546875
+      ],
+      "size": [
+        292.81866455078125,
+        150
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 105
+        },
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 163
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            113,
+            170
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "HyVideoDecode",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        true,
+        64,
+        128,
+        true
       ]
     }
   ],
@@ -1096,14 +1207,6 @@
       0,
       68,
       1,
-      "IMAGE"
-    ],
-    [
-      114,
-      68,
-      0,
-      69,
-      0,
       "IMAGE"
     ],
     [
@@ -1217,20 +1320,29 @@
       86,
       1,
       "HYVIDEMBEDS"
+    ],
+    [
+      170,
+      66,
+      0,
+      69,
+      0,
+      "IMAGE"
     ]
   ],
   "groups": [],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 2.0677378438608898,
+      "scale": 1.061076460950002,
       "offset": [
-        -2077.461017176829,
-        -8.345570079341314
+        -1778.125033510407,
+        87.50048189970892
       ]
     },
     "VHS_latentpreview": false,
-    "VHS_latentpreviewrate": 0
+    "VHS_latentpreviewrate": 0,
+    "ue_links": []
   },
   "version": 0.4
 }

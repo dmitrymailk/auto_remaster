@@ -2,6 +2,36 @@
 - [EN (auto translated)](./README_EN.md)
 - [RU](./README.md)
 
+## 02.01.25 (showcase 8)
+- [Воркфлоу для HunyuanVideo](showcases/showcase_8/nfs_hunhyuan_rf_inversion_testing_02.json)
+- [Воркфлоу для LTXV](showcases/showcase_8/nfs_ltx_flow_edit_1.json)
+- [Воркфлоу для извлечения только игровой картинки](showcases/showcase_8/nfs_extract_game_render.json)
+
+- <video src="https://github.com/user-attachments/assets/0723e029-918d-46fe-a07e-9e5900316693" width="50%" controls autoplay loop></video>
+- <video src="https://github.com/user-attachments/assets/e0887e97-1249-4a0e-a0a1-cfa9415c9aba" width="50%" controls autoplay loop></video>
+
+С момента последней публикации успели выйти новые видеомодели [HunyuanVideo](https://github.com/Tencent/HunyuanVideo) и [LTX-Video](https://github.com/Lightricks/LTX-Video). Я дал им время настояться и обзавестить врапперами([HunyuanVideoWrapper](https://github.com/kijai/ComfyUI-HunyuanVideoWrapper), [LTXTricks](https://github.com/logtd/ComfyUI-LTXTricks)) и разрешить первые баги. Вроде как на реддите появлялось много примеров о возможности редактирования видео, но у меня адекватно не получилось это завести да и контроллируется плохо. 
+
+Однако видеомодели довольно неплохо справляются с задачей сглаживания видео которое выходит из под SDXL, такая альтернатива Venhancer. Но как по мне лучше всего справляется на данный момент Hunyuan, но он работает очень долго даже на 4090, а LTXV быстро, но мыльно, хотя там столько гиперпараметров что может я чего не докрутил еще. [Воркфлоу для HunyuanVideo](showcases/showcase_8/nfs_hunhyuan_rf_inversion_testing_02.json). [Воркфлоу для LTXV](showcases/showcase_8/nfs_ltx_flow_edit_1.json).
+
+Главной моей задачей остается реалтаймовый нейрорендер. Одним из примеров реалтайма(на 4090) является SD1.5, как удачно что я нашел необходимую мне медодику для этой модели - [InstructPix2Pix](https://github.com/timothybrooks/instruct-pix2pix). Это максимально простой и прямолинейный подход. На вход нейронке подается исходное изображение и текст с указанием что мы хотим сделать, а в качестве таргета для оптимизации идет конечное изображение. И как удачно что мой прошлый пайплайн производит неограниченное количество параллельных кадров игры и их стилизованную версию.
+
+Я попробовал взять исходный скрипт из diffusers и потренить на этих данных, выставив количество шагов примерно в 10 раз меньше, чем предлагают авторы и получил хорошие proof-of-concept результаты. Я считаю когда тренировочных примеров будет не 852, а скажем в 100 раз больше, что вполне реализуемо, то результаты будут идентичны оригинальному пайплайну. [Модель тут](https://huggingface.co/dim/nfs_pix2pix_1735772517). [Датасет тут](https://huggingface.co/datasets/dim/nfs_pix2pix_1920_1080_v5). [Как это инферить можно найти тут](showcases/showcase_8/inference_pix2pix.ipynb).
+
+После того как получится сгенерить большее количество данных думаю посмотреть в сторону [LCM](https://github.com/quickjkee/instruct-pix2pix-distill) который позволяет значительно сократить количество шагов инференсе без потерь. А еще взять в качестве базовой модели [tiny stable diffusion](https://huggingface.co/blog/sd_distillation).
+
+- **Результат стилизации на тренировочных данных**
+- ![](showcases/showcase_8/nfs_train_1.png)
+- ![](showcases/showcase_8/nfs_train_2.png)
+- ![](showcases/showcase_8/nfs_train_3.png)
+
+- **Результат стилизации на тестовых данных**
+
+Результат как видно не сильно отличается от трейна, несмотря на такой малый датасет.
+
+- ![](showcases/showcase_8/nfs_test_1.png)
+- ![](showcases/showcase_8/nfs_test_2.png)
+
 ## 25.11.24 (showcase 7)
 - <video src="https://github.com/user-attachments/assets/73b8633b-f8aa-4277-959f-56ed93f43ca5" width="50%" controls autoplay loop></video>
 - <video src="https://github.com/user-attachments/assets/4f063590-dedf-42fe-a1bc-8af3dc3005a1" width="50%" controls autoplay loop></video>
