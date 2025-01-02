@@ -205,3 +205,4 @@ comfyui_sandbox/video_renders/render_*
 !showcases/*/*.json
 !PyHook-1.3.0-win_amd64/PyHook-1.3.0-win_amd64.exe
 !comfyui_sandbox/comfyui_configs/*/*.json
+wireguard_docker
