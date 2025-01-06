@@ -53,7 +53,7 @@
   "141": {
     "inputs": {
       "switch_1": "On",
-      "controlnet_1": "xinsir_controlnet-canny-sdxl-1.0.safetensors",
+      "controlnet_1": "None",
       "controlnet_strength_1": 0.4,
       "start_percent_1": 0,
       "end_percent_1": 1,
@@ -263,7 +263,7 @@
   "201": {
     "inputs": {
       "index": "",
-      "batch": false,
+      "batch": true,
       "data": [
         "198",
         3
@@ -378,66 +378,6 @@
     "class_type": "ImageCrop+",
     "_meta": {
       "title": "🔧 Image Crop"
-    }
-  },
-  "239": {
-    "inputs": {
-      "rgthree_comparer": {
-        "images": [
-          {
-            "name": "A1",
-            "selected": false,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00001_.png&type=temp&subfolder=&rand=0.30428246518819435"
-          },
-          {
-            "name": "A2",
-            "selected": false,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00002_.png&type=temp&subfolder=&rand=0.01330983122535967"
-          },
-          {
-            "name": "A3",
-            "selected": false,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00003_.png&type=temp&subfolder=&rand=0.2944753197655956"
-          },
-          {
-            "name": "A4",
-            "selected": true,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00004_.png&type=temp&subfolder=&rand=0.9996738097984419"
-          },
-          {
-            "name": "B1",
-            "selected": false,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00005_.png&type=temp&subfolder=&rand=0.48402438283935467"
-          },
-          {
-            "name": "B2",
-            "selected": false,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00006_.png&type=temp&subfolder=&rand=0.3979490855056522"
-          },
-          {
-            "name": "B3",
-            "selected": false,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00007_.png&type=temp&subfolder=&rand=0.3327907673214112"
-          },
-          {
-            "name": "B4",
-            "selected": true,
-            "url": "/api/view?filename=rgthree.compare._temp_bgfaj_00008_.png&type=temp&subfolder=&rand=0.30238360051431656"
-          }
-        ]
-      },
-      "image_a": [
-        "244",
-        0
-      ],
-      "image_b": [
-        "235",
-        0
-      ]
-    },
-    "class_type": "Image Comparer (rgthree)",
-    "_meta": {
-      "title": "Image Comparer (rgthree)"
     }
   },
   "240": {
@@ -604,7 +544,7 @@
   },
   "257": {
     "inputs": {
-      "paths": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6/000024406.png\n/code/comfyui_sandbox/video_renders/render_nfs_4screens_6/000024407.png\n/code/comfyui_sandbox/video_renders/render_nfs_4screens_6/000024408.png\n/code/comfyui_sandbox/video_renders/render_nfs_4screens_6/000024409.png\n",
+      "paths": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6/000000001.png\n/code/comfyui_sandbox/video_renders/render_nfs_4screens_6/000000006.png",
       "ignore_missing_images": "false"
     },
     "class_type": "JWLoadImagesFromString",
