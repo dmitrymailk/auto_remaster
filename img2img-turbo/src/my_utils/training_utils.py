@@ -522,7 +522,7 @@ class NFSPairedDataset(torch.utils.data.Dataset):
         super().__init__()
         dataset = load_dataset(dataset_folder, num_proc=4)
         dataset = dataset["train"]
-        dataset = dataset.train_test_split(test_size=10, shuffle=True, seed=42)
+        dataset = dataset.train_test_split(test_size=40, shuffle=True, seed=42)
         self.dataset = dataset
         # if split == "train":
         #     self.input_folder = os.path.join(dataset_folder, "train_A")
