@@ -4,8 +4,8 @@ MODEL_NAME="stablediffusionapi/juggernaut-reborn"
 DATASET_ID="dim/nfs_pix2pix_1920_1080_v6"
 mkdir -p models
 timestamp=$(date +%s)
-folder_name="nfs_pix2pix_$timestamp"
 WANDB_NAME=$folder_name
+folder_name="nfs_pix2pix_$timestamp"
 output_dir="models/$folder_name"
 
 accelerate launch --mixed_precision="bf16" train_instruct_pix2pix.py \
