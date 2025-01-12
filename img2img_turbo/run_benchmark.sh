@@ -1,0 +1,1 @@
+cd .. && python -m img2img_turbo.src.benchmark

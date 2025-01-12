@@ -9,9 +9,16 @@ from diffusers import AutoencoderKL, UNet2DConditionModel
 from diffusers.utils.peft_utils import set_weights_and_activate_adapters
 from peft import LoraConfig
 
-p = "src/"
-sys.path.append(p)
-from model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
+
+from .model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+
+import math
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Union
+
+import numpy as np
+import torch
 
 
 class TwinConv(torch.nn.Module):
@@ -41,11 +48,20 @@ class Pix2Pix_Turbo(torch.nn.Module):
             "stabilityai/sd-turbo", subfolder="tokenizer"
         )
         self.text_encoder = CLIPTextModel.from_pretrained(
-            "stabilityai/sd-turbo", subfolder="text_encoder"
+            "stabilityai/sd-turbo",
+            subfolder="text_encoder",
+            torch_dtype=torch.bfloat16,
         ).cuda()
         self.sched = make_1step_sched()
+        self.sched.betas.to(torch.bfloat16)
+        self.sched.one.to(torch.bfloat16)
 
-        vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
+        vae = AutoencoderKL.from_pretrained(
+            "stabilityai/sd-turbo",
+            subfolder="vae",
+            variant="fp16",
+            torch_dtype=torch.bfloat16,
+        )
         vae.encoder.forward = my_vae_encoder_fwd.__get__(
             vae.encoder, vae.encoder.__class__
         )
@@ -67,7 +83,10 @@ class Pix2Pix_Turbo(torch.nn.Module):
         ).cuda()
         vae.decoder.ignore_skip = False
         unet = UNet2DConditionModel.from_pretrained(
-            "stabilityai/sd-turbo", subfolder="unet"
+            "stabilityai/sd-turbo",
+            subfolder="unet",
+            variant="fp16",
+            torch_dtype=torch.bfloat16,
         )
 
         if pretrained_name == "edge_to_image":
@@ -236,13 +255,15 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.target_modules_vae = target_modules_vae
             self.target_modules_unet = target_modules_unet
 
-        # unet.enable_xformers_memory_efficient_attention()
+        unet.enable_xformers_memory_efficient_attention()
         unet.to("cuda")
         vae.to("cuda")
         self.unet, self.vae = unet, vae
         self.vae.decoder.gamma = 1
         self.timesteps = torch.tensor([999], device="cuda").long()
         self.text_encoder.requires_grad_(False)
+
+        self.cache_prompts = {}
 
     def set_eval(self):
         self.unet.eval()
@@ -335,6 +356,55 @@ class Pix2Pix_Turbo(torch.nn.Module):
             output_image = (
                 self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample
             ).clamp(-1, 1)
+        return output_image
+
+    def custom_forward(
+        self,
+        c_t,
+        prompt=None,
+        prompt_tokens=None,
+        deterministic=True,
+        r=1.0,
+        noise_map=None,
+    ):
+
+        if prompt in self.cache_prompts:
+            caption_enc = self.cache_prompts[prompt]
+        else:
+            caption_tokens = self.tokenizer(
+                prompt,
+                max_length=self.tokenizer.model_max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            ).input_ids.cuda()
+            caption_enc = self.text_encoder(caption_tokens)[0]
+            self.cache_prompts[prompt] = caption_enc
+
+        encoded_control = (
+            self.vae.encode(c_t).latent_dist.sample() * self.vae.config.scaling_factor
+        )
+        model_pred = self.unet(
+            encoded_control,
+            self.timesteps,
+            encoder_hidden_states=caption_enc,
+            return_dict=False,
+        )[0]
+        x_denoised = self.sched.step(
+            model_pred,
+            self.timesteps,
+            encoded_control,
+            return_dict=False,
+        )[0]
+        # x_denoised = x_denoised.to(model_pred.dtype)
+        self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
+        output_image = (
+            self.vae.decode(
+                x_denoised / self.vae.config.scaling_factor,
+                return_dict=False,
+            )[0]
+        ).clamp(-1, 1)
+
         return output_image
 
     def save_model(self, outf):
