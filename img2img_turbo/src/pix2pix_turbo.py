@@ -19,6 +19,7 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from diffusers import AutoencoderTiny, StableDiffusionPipeline
 
 
 class TwinConv(torch.nn.Module):
@@ -53,8 +54,10 @@ class Pix2Pix_Turbo(torch.nn.Module):
             torch_dtype=torch.bfloat16,
         ).cuda()
         self.sched = make_1step_sched()
-        self.sched.betas.to(torch.bfloat16)
-        self.sched.one.to(torch.bfloat16)
+        self.sched.betas = self.sched.betas.to(torch.bfloat16).cuda()
+        self.sched.alphas = self.sched.alphas.to(torch.bfloat16).cuda()
+        self.sched.one = self.sched.one.to(torch.bfloat16).cuda()
+        self.sched.alphas_cumprod = self.sched.alphas_cumprod.to(torch.bfloat16).cuda()
 
         vae = AutoencoderKL.from_pretrained(
             "stabilityai/sd-turbo",
@@ -62,6 +65,12 @@ class Pix2Pix_Turbo(torch.nn.Module):
             variant="fp16",
             torch_dtype=torch.bfloat16,
         )
+        # это можно пофиксить если задать другие ключи для Sequential, тогда он будет правильно выбирать адаптеры
+        # https://github.com/huggingface/peft/blob/b345a6e41521b977793cbdcaf932280081b18141/docs/source/developer_guides/custom_models.md?plain=1#L69
+        # vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(
+        #     device="cuda",
+        #     dtype=torch.bfloat16,
+        # )
         vae.encoder.forward = my_vae_encoder_fwd.__get__(
             vae.encoder, vae.encoder.__class__
         )
@@ -382,7 +391,10 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.cache_prompts[prompt] = caption_enc
 
         encoded_control = (
-            self.vae.encode(c_t).latent_dist.sample() * self.vae.config.scaling_factor
+            # torch.Size([1, 4, 64, 64])
+            self.vae.encode(c_t, return_dict=False)[0].sample()
+            # self.vae.encode(c_t, return_dict=False)[0]
+            * self.vae.config.scaling_factor
         )
         model_pred = self.unet(
             encoded_control,

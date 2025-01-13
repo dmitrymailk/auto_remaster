@@ -102,6 +102,7 @@ if __name__ == "__main__":
     model.unet.to(torch.bfloat16)
     model.vae.to(torch.bfloat16)
     model.unet.fuse_qkv_projections()
+    # model.timesteps = 1
     # model.unet.to(memory_format=torch.channels_last)
     # model.vae.to(memory_format=torch.channels_last)
     # model.unet = torch.compile(model.unet, mode="reduce-overhead", fullgraph=not True)
