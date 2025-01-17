@@ -20,6 +20,7 @@ torch._inductor.config.conv_1x1_as_mm = True
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.epilogue_fusion = False
 torch._inductor.config.coordinate_descent_check_all_directions = True
+# import torch_tensorrt
 
 
 def merge_loras(model):
@@ -46,12 +47,29 @@ def single_image(model, dataset, T, prompt):
     c_t = c_t.to(torch.bfloat16)
 
     start = time.time()
-    with torch.no_grad():
-        # output_image = model(c_t, prompt)
-        output_image = model.custom_forward(c_t, prompt)
+    # with torch.no_grad():
+    # output_image = model(c_t, prompt)
+    output_image = model.custom_forward(c_t, prompt)
 
-        # output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
+    # output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
     print("single image", time.time() - start)
+    c_t = F.to_tensor(i_t).unsqueeze(0).cuda()
+    start = time.time()
+    # with torch.no_grad():
+    # output_image = model(c_t, prompt)
+    output_image = model.custom_forward(c_t, prompt)
+
+    # output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
+    print("single image", time.time() - start)
+    start = time.time()
+    # with torch.no_grad():
+    # output_image = model(c_t, prompt)
+    output_image = model.custom_forward(c_t, prompt)
+
+    # output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
+    print("single image", time.time() - start)
+    print("===")
+    print("===")
 
 
 def multiple_images(model, dataset, T, prompt):
@@ -64,18 +82,20 @@ def multiple_images(model, dataset, T, prompt):
     images = [
         F.to_tensor(T(item)).unsqueeze(0).cuda().to(torch.bfloat16) for item in images
     ]
+    for i in range(len(images)):
+        images[i] = images[i].to(torch.bfloat16)
 
     start = time.time()
+    # with torch.no_grad():
     for input_image in images:
-        with torch.no_grad():
-            # i_t = T(input_image)
-            # c_t = F.to_tensor(i_t).unsqueeze(0).cuda()
-            # c_t = c_t.half()
-            # output_image = model(c_t, prompt)
-            # output_image = model.custom_forward(c_t, prompt)
-            output_image = model.custom_forward(input_image, prompt)
+        # i_t = T(input_image)
+        # c_t = F.to_tensor(i_t).unsqueeze(0).cuda()
+        # c_t = c_t.half()
+        # output_image = model(c_t, prompt)
+        # output_image = model.custom_forward(c_t, prompt)
+        output_image = model.custom_forward(input_image, prompt)
 
-            # output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
+        # output_pil = transforms.ToPILImage()(output_image[0].cpu() * 0.5 + 0.5)
     full_time = time.time() - start
     print("multiple_images", full_time)
     print("multiple_images fps", 1 / (full_time / 140))
@@ -102,6 +122,15 @@ if __name__ == "__main__":
     model.unet.to(torch.bfloat16)
     model.vae.to(torch.bfloat16)
     model.unet.fuse_qkv_projections()
+    # model.unet = torch.compile(
+    #     model.unet,
+    #     backend="tensorrt",
+    #     options={
+    #         "truncate_long_and_double": True,
+    #         "enabled_precisions": {torch.bfloat16},
+    #     },
+    #     dynamic=False,
+    # )
     # model.timesteps = 1
     # model.unet.to(memory_format=torch.channels_last)
     # model.vae.to(memory_format=torch.channels_last)

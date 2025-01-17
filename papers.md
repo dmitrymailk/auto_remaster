@@ -3,3 +3,4 @@
 - [Live2Diff: Live Stream Translation via Uni-directional Attention in Video Diffusion Models](https://live2diff.github.io/)
 
 - [создание кастомной LCM](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
+- [создание диффузии без использования текстового энкодера](https://huggingface.co/docs/diffusers/en/training/unconditional_training)
