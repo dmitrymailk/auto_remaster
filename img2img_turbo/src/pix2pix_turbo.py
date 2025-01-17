@@ -51,19 +51,19 @@ class Pix2Pix_Turbo(torch.nn.Module):
         self.text_encoder = CLIPTextModel.from_pretrained(
             "stabilityai/sd-turbo",
             subfolder="text_encoder",
-            torch_dtype=torch.bfloat16,
+            # torch_dtype=torch.bfloat16,
         ).cuda()
         self.sched = make_1step_sched()
-        self.sched.betas = self.sched.betas.to(torch.bfloat16).cuda()
-        self.sched.alphas = self.sched.alphas.to(torch.bfloat16).cuda()
-        self.sched.one = self.sched.one.to(torch.bfloat16).cuda()
-        self.sched.alphas_cumprod = self.sched.alphas_cumprod.to(torch.bfloat16).cuda()
+        # self.sched.betas = self.sched.betas.to(torch.bfloat16).cuda()
+        # self.sched.alphas = self.sched.alphas.to(torch.bfloat16).cuda()
+        # self.sched.one = self.sched.one.to(torch.bfloat16).cuda()
+        # self.sched.alphas_cumprod = self.sched.alphas_cumprod.to(torch.bfloat16).cuda()
 
         vae = AutoencoderKL.from_pretrained(
             "stabilityai/sd-turbo",
             subfolder="vae",
-            variant="fp16",
-            torch_dtype=torch.bfloat16,
+            # variant="fp16",
+            # torch_dtype=torch.bfloat16,
         )
         # это можно пофиксить если задать другие ключи для Sequential, тогда он будет правильно выбирать адаптеры
         # https://github.com/huggingface/peft/blob/b345a6e41521b977793cbdcaf932280081b18141/docs/source/developer_guides/custom_models.md?plain=1#L69
@@ -94,8 +94,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
         unet = UNet2DConditionModel.from_pretrained(
             "stabilityai/sd-turbo",
             subfolder="unet",
-            variant="fp16",
-            torch_dtype=torch.bfloat16,
+            # variant="fp16",
+            # torch_dtype=torch.bfloat16,
         )
 
         if pretrained_name == "edge_to_image":
@@ -408,7 +408,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
             encoded_control,
             return_dict=False,
         )[0]
-        # x_denoised = x_denoised.to(model_pred.dtype)
+        x_denoised = x_denoised.to(model_pred.dtype)
         self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
         output_image = (
             self.vae.decode(
