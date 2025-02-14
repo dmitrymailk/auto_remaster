@@ -37,6 +37,12 @@ Try the following for a first run:
 ```
 python3 artspew.py --xl -p "Space cat cowboy" -c 10 -n 11
 ```
+```
+!pip install numpy==1.26.4
+```
+```
+python3 artspew.py -p "Space cat cowboy" -c 100 -n 11 --no-lcm -s 1
+```
 This will generate 10 images.  Your theme is "Space cat cowboy".  The "-n 11" tells app to add 11 totally random tokens to your prompt to add variety and make the images more interesting.  By using LCM even 1024x1024 generations are much quicker than is typical for SDXL.  Look at the images in your **spew/** directory.  If you have a 4090 just do 100 the first time.
 
 Your next experiment is to get rid of the "-p" prompt and just generate totally random images.  Have patience and do 100.  You should get many interesting images.
