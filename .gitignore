@@ -208,3 +208,4 @@ comfyui_sandbox/video_renders/render_*
 wireguard_docker
 img2img-turbo/data
 img2img-turbo/output
+mnist
