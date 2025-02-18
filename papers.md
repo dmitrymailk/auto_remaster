@@ -4,3 +4,5 @@
 
 - [создание кастомной LCM](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
 - [создание диффузии без использования текстового энкодера](https://huggingface.co/docs/diffusers/en/training/unconditional_training)
+
+- [MobileDiffusion: Instant Text-to-Image Generation on Mobile Devices](https://arxiv.org/pdf/2311.16567)

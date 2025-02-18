@@ -1,6 +1,6 @@
 # MODEL = "runwayml/stable-diffusion-v1-5"
-MODEL = "stabilityai/sd-turbo"
-# MODEL = "segmind/tiny-sd"
+# MODEL = "stabilityai/sd-turbo"
+MODEL = "segmind/tiny-sd"
 VARIANT = None
 CUSTOM_PIPELINE = None
 SCHEDULER = "EulerAncestralDiscreteScheduler"
