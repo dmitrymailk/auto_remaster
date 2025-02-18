@@ -10,7 +10,7 @@ from diffusers.utils.peft_utils import set_weights_and_activate_adapters
 from peft import LoraConfig
 
 
-from .model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
+# from .model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 import math
@@ -434,3 +434,96 @@ class Pix2Pix_Turbo(torch.nn.Module):
             k: v for k, v in self.vae.state_dict().items() if "lora" in k or "skip" in k
         }
         torch.save(sd, outf)
+
+
+unet2d_config = {
+    "sample_size": 64,
+    "in_channels": 4,
+    "out_channels": 4,
+    "center_input_sample": False,
+    "time_embedding_type": "positional",
+    "freq_shift": 0,
+    "flip_sin_to_cos": True,
+    "down_block_types": ("DownBlock2D", "DownBlock2D", "DownBlock2D"),
+    "up_block_types": ("UpBlock2D", "UpBlock2D", "UpBlock2D"),
+    "block_out_channels": [320, 640, 1280],
+    "layers_per_block": 1,
+    "mid_block_scale_factor": 1,
+    "downsample_padding": 1,
+    "downsample_type": "conv",
+    "upsample_type": "conv",
+    "dropout": 0.0,
+    "act_fn": "silu",
+    "norm_num_groups": 32,
+    "norm_eps": 1e-05,
+    "resnet_time_scale_shift": "default",
+    "add_attention": False,
+}
+
+from diffusers import UNet2DModel
+from diffusers import AutoencoderTiny
+from diffusers import DDPMScheduler
+
+
+class Pix2PixLight(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        sched = DDPMScheduler.from_pretrained(
+            "stabilityai/sd-turbo",
+            subfolder="scheduler",
+        )
+        sched.set_timesteps(1, device="cuda")
+        sched.alphas_cumprod = sched.alphas_cumprod.cuda()
+        sched.betas = sched.betas.to(torch.float16).cuda()
+        sched.alphas = sched.alphas.to(torch.float16).cuda()
+        sched.one = sched.one.to(torch.float16).cuda()
+        sched.alphas_cumprod = sched.alphas_cumprod.to(torch.float16).cuda()
+        self.sched = sched
+
+        vae = AutoencoderTiny.from_pretrained(
+            "madebyollin/taesd",
+            torch_device="cuda",
+            torch_dtype=torch.float16,
+        ).cuda()
+
+        vae.decoder.ignore_skip = False
+        unet = UNet2DModel(**unet2d_config).to("cuda").to(torch.float16)
+
+        # vae.decoder.gamma = 1
+        self.timesteps = torch.tensor([999], device="cuda").long()
+        self.unet = unet
+        self.vae = vae
+
+    def set_eval(self):
+        self.unet.eval()
+        self.vae.eval()
+        self.unet.requires_grad_(False)
+        self.vae.requires_grad_(False)
+
+    def set_train(self):
+        self.unet.train()
+        self.vae.train()
+
+    def forward(self, c_t):
+        encoded_control = (
+            self.vae.encode(c_t, False)[0] * self.vae.config.scaling_factor
+        )
+        model_pred = self.unet(
+            encoded_control,
+            self.timesteps,
+            return_dict=False,
+        )[0]
+        x_denoised = self.sched.step(
+            model_pred,
+            self.timesteps,
+            encoded_control,
+            return_dict=False,
+        )[0]
+        output_image = (
+            self.vae.decode(
+                x_denoised / self.vae.config.scaling_factor,
+                return_dict=False,
+            )[0]
+        ).clamp(-1, 1)
+
+        return output_image
