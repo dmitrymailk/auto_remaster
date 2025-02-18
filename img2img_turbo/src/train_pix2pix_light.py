@@ -97,30 +97,11 @@ def main(args):
 
     # make the optimizer
     layers_to_opt = []
-    # for n, _p in net_pix2pix.unet.named_parameters():
-    #     if "lora" in n:
-    #         assert _p.requires_grad
-    #         layers_to_opt.append(_p)
-    # layers_to_opt += list(net_pix2pix.unet.conv_in.parameters())
-    # for n, _p in net_pix2pix.vae.named_parameters():
-    #     if "lora" in n and "vae_skip" in n:
-    #         assert _p.requires_grad
-    #         layers_to_opt.append(_p)
-    # layers_to_opt = (
-    #     layers_to_opt
-    #     + list(net_pix2pix.vae.decoder.skip_conv_1.parameters())
-    #     + list(net_pix2pix.vae.decoder.skip_conv_2.parameters())
-    #     + list(net_pix2pix.vae.decoder.skip_conv_3.parameters())
-    #     + list(net_pix2pix.vae.decoder.skip_conv_4.parameters())
-    # )
     for n, _p in net_pix2pix.unet.named_parameters():
-        # if "lora" in n:
-        #     assert _p.requires_grad
         layers_to_opt.append(_p)
     layers_to_opt += list(net_pix2pix.unet.conv_in.parameters())
     for n, _p in net_pix2pix.vae.named_parameters():
-        # if "lora" in n and "vae_skip" in n:
-        #     assert _p.requires_grad
+
         layers_to_opt.append(_p)
 
     optimizer = torch.optim.AdamW(
@@ -162,7 +143,6 @@ def main(args):
         dataset_folder=args.dataset_folder,
         image_prep=args.train_image_prep,
         split="train",
-        # tokenizer=net_pix2pix.tokenizer,
     )
     dl_train = torch.utils.data.DataLoader(
         dataset_train,
@@ -214,6 +194,8 @@ def main(args):
 
     # Move al networksr to device and cast to weight_dtype
     net_pix2pix.to(accelerator.device, dtype=weight_dtype)
+    net_pix2pix.unet.to(accelerator.device, dtype=weight_dtype)
+    net_pix2pix.vae.to(accelerator.device, dtype=weight_dtype)
     net_disc.to(accelerator.device, dtype=weight_dtype)
     net_lpips.to(accelerator.device, dtype=weight_dtype)
     net_clip.to(accelerator.device, dtype=weight_dtype)
@@ -242,26 +224,7 @@ def main(args):
 
         def fn_transform(x):
             x_pil = Image.fromarray(x)
-            # out_pil = transforms.Resize(
-            #     args.resolution, interpolation=transforms.InterpolationMode.LANCZOS
-            # )(x_pil)
-            # out_pil =
             return np.array(x_pil)
-
-        # ref_stats = get_folder_features(
-        #     os.path.join(args.dataset_folder, "test_B"),
-        #     model=feat_model,
-        #     num_workers=0,
-        #     num=None,
-        #     shuffle=False,
-        #     seed=0,
-        #     batch_size=8,
-        #     device=torch.device("cuda"),
-        #     mode="clean",
-        #     custom_image_tranform=fn_transform,
-        #     description="",
-        #     verbose=True,
-        # )
 
     # start the training loop
     global_step = 0
@@ -378,7 +341,7 @@ def main(args):
                     # checkpoint the model
                     if global_step % args.checkpointing_steps == 1:
                         outf = os.path.join(
-                            args.output_dir, "checkpoints", f"model_{global_step}.pkl"
+                            args.output_dir, "checkpoints", f"model_{global_step}/"
                         )
                         accelerator.unwrap_model(net_pix2pix).save_model(outf)
 

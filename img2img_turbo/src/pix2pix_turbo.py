@@ -466,7 +466,7 @@ from diffusers import DDPMScheduler
 
 
 class Pix2PixLight(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, dtype=torch.bfloat16):
         super().__init__()
         sched = DDPMScheduler.from_pretrained(
             "stabilityai/sd-turbo",
@@ -474,20 +474,20 @@ class Pix2PixLight(torch.nn.Module):
         )
         sched.set_timesteps(1, device="cuda")
         sched.alphas_cumprod = sched.alphas_cumprod.cuda()
-        sched.betas = sched.betas.to(torch.float16).cuda()
-        sched.alphas = sched.alphas.to(torch.float16).cuda()
-        sched.one = sched.one.to(torch.float16).cuda()
-        sched.alphas_cumprod = sched.alphas_cumprod.to(torch.float16).cuda()
+        sched.betas = sched.betas.to(dtype).cuda()
+        sched.alphas = sched.alphas.to(dtype).cuda()
+        sched.one = sched.one.to(dtype).cuda()
+        sched.alphas_cumprod = sched.alphas_cumprod.to(dtype).cuda()
         self.sched = sched
 
         vae = AutoencoderTiny.from_pretrained(
             "madebyollin/taesd",
             torch_device="cuda",
-            torch_dtype=torch.float16,
+            torch_dtype=dtype,
         ).cuda()
 
         vae.decoder.ignore_skip = False
-        unet = UNet2DModel(**unet2d_config).to("cuda").to(torch.float16)
+        unet = UNet2DModel(**unet2d_config).to("cuda").to(dtype)
 
         # vae.decoder.gamma = 1
         self.timesteps = torch.tensor([999], device="cuda").long()
@@ -527,3 +527,7 @@ class Pix2PixLight(torch.nn.Module):
         ).clamp(-1, 1)
 
         return output_image
+
+    def save_model(self, outf):
+        self.unet.save_pretrained(outf + "unet")
+        self.vae.save_pretrained(outf + "vae")
