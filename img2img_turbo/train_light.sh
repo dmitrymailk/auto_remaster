@@ -3,7 +3,7 @@ timestamp=$(date +%s)
 folder_name="nfs_pix2pix_$timestamp"
 output_dir="output/pix2pix_light/$folder_name"
 # accelerate launch --mixed_precision 'bf16' src/train_pix2pix_turbo.py \
-accelerate launch --mixed_precision="bf16" src/train_pix2pix_light.py \
+accelerate launch src/train_pix2pix_light.py \
     --pretrained_model_name_or_path="stabilityai/sd-turbo" \
     --output_dir=$output_dir \
     --dataset_folder="dim/nfs_pix2pix_1920_1080_v5" \
@@ -14,11 +14,11 @@ accelerate launch --mixed_precision="bf16" src/train_pix2pix_light.py \
     --test_image_prep="resized_crop_512" \
     --lora_rank_unet=128 \
     --lora_rank_vae=64 \
-    --gradient_accumulation_steps=16 \
-    --checkpointing_steps=100 \
+    --gradient_accumulation_steps=8 \
+    --checkpointing_steps=500 \
     --eval_freq=50 \
     --max_train_steps=100000 \
-    --mixed_precision="bf16" \
     --report_to "wandb" \
     # --report_to "" 
+    # --mixed_precision="bf16" \
     # --resolution=512 

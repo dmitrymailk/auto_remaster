@@ -41,6 +41,12 @@ def main(args):
         log_with=report_to,
     )
 
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
     if accelerator.is_local_main_process:
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
@@ -55,7 +61,8 @@ def main(args):
         os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
 
-    net_pix2pix = Pix2PixLight()
+    net_pix2pix = Pix2PixLight(dtype=weight_dtype)
+    print("Train Weight dtype", weight_dtype)
     net_pix2pix.set_train()
 
     if args.enable_xformers_memory_efficient_attention:
@@ -186,11 +193,6 @@ def main(args):
         mean=(0.48145466, 0.4578275, 0.40821073),
         std=(0.26862954, 0.26130258, 0.27577711),
     )
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
 
     # Move al networksr to device and cast to weight_dtype
     net_pix2pix.to(accelerator.device, dtype=weight_dtype)
