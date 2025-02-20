@@ -6,7 +6,7 @@ output_dir="output/pix2pix_light/$folder_name"
 accelerate launch src/train_pix2pix_light.py \
     --pretrained_model_name_or_path="stabilityai/sd-turbo" \
     --output_dir=$output_dir \
-    --dataset_folder="dim/nfs_pix2pix_1920_1080_v5" \
+    --dataset_folder="dim/nfs_pix2pix_1920_1080_v6" \
     --train_batch_size=4 \
     --enable_xformers_memory_efficient_attention --viz_freq 15 \
     --track_val_fid \
