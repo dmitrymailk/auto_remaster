@@ -192,7 +192,7 @@ target_save_path_2 = (
 if __name__ == "__main__":
     result = ""
     while result != "END":
-        comfy_images_process.process_image_folder(
+        result = comfy_images_process.process_image_folder(
             original_images_path=original_images_path,
             batch_size=1,
             target_save_path_1=target_save_path_1,
