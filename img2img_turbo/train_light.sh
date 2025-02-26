@@ -19,6 +19,7 @@ accelerate launch src/train_pix2pix_light.py \
     --eval_freq=50 \
     --max_train_steps=100000 \
     --report_to "wandb" \
+    --diff_ver "v2"
     # --report_to "" 
     # --mixed_precision="bf16" \
     # --resolution=512 

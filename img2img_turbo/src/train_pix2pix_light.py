@@ -20,7 +20,7 @@ from diffusers.optimization import get_scheduler
 import wandb
 from cleanfid.fid import get_folder_features, build_feature_extractor, fid_from_feats
 
-from pix2pix_turbo import Pix2PixLight
+from pix2pix_turbo import Pix2PixLight, Pix2PixLightV2
 from my_utils.training_utils import (
     parse_args_paired_training,
     PairedDataset,
@@ -61,7 +61,15 @@ def main(args):
         os.makedirs(os.path.join(args.output_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
 
-    net_pix2pix = Pix2PixLight(dtype=weight_dtype)
+    version = args.diff_ver
+    diffusion_classes = {
+        "v1": Pix2PixLight,
+        "v2": Pix2PixLightV2,
+    }
+    diffusion_class = diffusion_classes[version]
+    print("Diffusion version=", version, diffusion_class)
+
+    net_pix2pix = diffusion_class(dtype=weight_dtype)
     print("Train Weight dtype", weight_dtype)
     net_pix2pix.set_train()
 
@@ -108,7 +116,6 @@ def main(args):
         layers_to_opt.append(_p)
     layers_to_opt += list(net_pix2pix.unet.conv_in.parameters())
     for n, _p in net_pix2pix.vae.named_parameters():
-
         layers_to_opt.append(_p)
 
     optimizer = torch.optim.AdamW(

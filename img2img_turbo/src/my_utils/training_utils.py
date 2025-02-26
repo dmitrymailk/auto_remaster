@@ -26,6 +26,7 @@ def parse_args_paired_training(input_args=None):
     parser.add_argument("--lambda_lpips", default=5, type=float)
     parser.add_argument("--lambda_l2", default=1.0, type=float)
     parser.add_argument("--lambda_clipsim", default=5.0, type=float)
+    parser.add_argument("--diff_ver", default="v1", type=str)
 
     # dataset options
     parser.add_argument("--dataset_folder", required=True, type=str)
