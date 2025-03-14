@@ -10,7 +10,7 @@ from diffusers.utils.peft_utils import set_weights_and_activate_adapters
 from peft import LoraConfig
 
 
-# from .model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
+from model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 import math
@@ -557,63 +557,63 @@ unet2d_config_v2 = {
     "add_attention": False,
 }
 
-from diffusers import AutoencoderDC
+# from diffusers import AutoencoderDC
 
 
-class Pix2PixLightV2(Pix2PixLight):
-    def __init__(self, dtype=torch.bfloat16):
-        super().__init__()
-        sched = DDPMScheduler.from_pretrained(
-            "stabilityai/sd-turbo",
-            subfolder="scheduler",
-        )
-        sched.set_timesteps(1, device="cuda")
-        sched.alphas_cumprod = sched.alphas_cumprod.cuda()
-        sched.betas = sched.betas.to(dtype).cuda()
-        sched.alphas = sched.alphas.to(dtype).cuda()
-        sched.one = sched.one.to(dtype).cuda()
-        sched.alphas_cumprod = sched.alphas_cumprod.to(dtype).cuda()
-        self.sched = sched
+# class Pix2PixLightV2(Pix2PixLight):
+#     def __init__(self, dtype=torch.bfloat16):
+#         super().__init__()
+#         sched = DDPMScheduler.from_pretrained(
+#             "stabilityai/sd-turbo",
+#             subfolder="scheduler",
+#         )
+#         sched.set_timesteps(1, device="cuda")
+#         sched.alphas_cumprod = sched.alphas_cumprod.cuda()
+#         sched.betas = sched.betas.to(dtype).cuda()
+#         sched.alphas = sched.alphas.to(dtype).cuda()
+#         sched.one = sched.one.to(dtype).cuda()
+#         sched.alphas_cumprod = sched.alphas_cumprod.to(dtype).cuda()
+#         self.sched = sched
 
-        vae = (
-            AutoencoderDC(
-                in_channels=3,
-                latent_channels=16,
-                attention_head_dim=32,
-                encoder_block_types=[
-                    "ResBlock",
-                    "ResBlock",
-                    "ResBlock",
-                    "EfficientViTBlock",
-                    "EfficientViTBlock",
-                    "EfficientViTBlock",
-                ],
-                decoder_block_types=[
-                    "ResBlock",
-                    "ResBlock",
-                    "ResBlock",
-                    "EfficientViTBlock",
-                    "EfficientViTBlock",
-                    "EfficientViTBlock",
-                ],
-                encoder_block_out_channels=[32, 32, 32, 32, 32, 32],
-                decoder_block_out_channels=(32, 32, 32, 32, 32, 32),
-                encoder_layers_per_block=(1, 2, 2, 3, 3, 3),
-                decoder_layers_per_block=(3, 3, 3, 3, 3, 1),
-                encoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
-                decoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
-                upsample_block_type="interpolate",
-                downsample_block_type="Conv",
-                decoder_norm_types="rms_norm",
-                decoder_act_fns="silu",
-                scaling_factor=0.41407,
-            )
-            .to(dtype)
-            .cuda()
-        )
+#         vae = (
+#             AutoencoderDC(
+#                 in_channels=3,
+#                 latent_channels=16,
+#                 attention_head_dim=32,
+#                 encoder_block_types=[
+#                     "ResBlock",
+#                     "ResBlock",
+#                     "ResBlock",
+#                     "EfficientViTBlock",
+#                     "EfficientViTBlock",
+#                     "EfficientViTBlock",
+#                 ],
+#                 decoder_block_types=[
+#                     "ResBlock",
+#                     "ResBlock",
+#                     "ResBlock",
+#                     "EfficientViTBlock",
+#                     "EfficientViTBlock",
+#                     "EfficientViTBlock",
+#                 ],
+#                 encoder_block_out_channels=[32, 32, 32, 32, 32, 32],
+#                 decoder_block_out_channels=(32, 32, 32, 32, 32, 32),
+#                 encoder_layers_per_block=(1, 2, 2, 3, 3, 3),
+#                 decoder_layers_per_block=(3, 3, 3, 3, 3, 1),
+#                 encoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
+#                 decoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
+#                 upsample_block_type="interpolate",
+#                 downsample_block_type="Conv",
+#                 decoder_norm_types="rms_norm",
+#                 decoder_act_fns="silu",
+#                 scaling_factor=0.41407,
+#             )
+#             .to(dtype)
+#             .cuda()
+#         )
 
-        unet = UNet2DModel(**unet2d_config_v2).to("cuda").to(dtype)
+#         unet = UNet2DModel(**unet2d_config_v2).to("cuda").to(dtype)
 
-        self.timesteps = torch.tensor([999], device="cuda").long()
-        self.unet = unet
-        self.vae = vae
+#         self.timesteps = torch.tensor([999], device="cuda").long()
+#         self.unet = unet
+#         self.vae = vae
