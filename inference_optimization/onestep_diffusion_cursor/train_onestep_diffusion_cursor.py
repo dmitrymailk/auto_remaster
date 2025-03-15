@@ -1,7 +1,8 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from onestep_diffusion_cursor import LBM, UNet2DModel, AutoencoderKL, DDPMScheduler
+from onestep_diffusion_cursor import LBM, UNet2DModel, DDPMScheduler
+from diffusers import AutoencoderTiny
 import torch.optim as optim
 from tqdm import tqdm
 import os
@@ -11,6 +12,7 @@ from PIL import Image
 import torchvision.transforms.functional as F
 from datasets import load_dataset
 import multiprocessing as mp
+import torchvision.utils as vutils
 
 
 def build_transform():
@@ -55,18 +57,70 @@ class NFSPairedDatasetPureImages(torch.utils.data.Dataset):
         }
 
 
+def log_images_to_wandb(
+    source_images, target_images, generated_images, step, return_images=False
+):
+    """Log images to wandb for visualization"""
+
+    # Denormalize images from [-1, 1] to [0, 1]
+    def denorm(x):
+        return (x + 1) / 2
+
+    B = source_images.shape[0]
+    images_dict = {
+        "source_images": [
+            wandb.Image(
+                denorm(source_images[idx]).float().detach().cpu(),
+                caption=f"Source {idx}",
+            )
+            for idx in range(min(B, 3))
+        ],
+        "target_images": [
+            wandb.Image(
+                denorm(target_images[idx]).float().detach().cpu(),
+                caption=f"Target {idx}",
+            )
+            for idx in range(min(B, 3))
+        ],
+        "generated_images": [
+            wandb.Image(
+                denorm(generated_images[idx]).float().detach().cpu(),
+                caption=f"Generated {idx}",
+            )
+            for idx in range(min(B, 3))
+        ],
+    }
+
+    if return_images:
+        return images_dict
+    else:
+        wandb.log(images_dict, step=step)
+        return None
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", type=int, default=2)  # Reduced for Docker
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=8)  # Reduced for Docker
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--save_dir", type=str, default="checkpoints")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--log_wandb", action="store_true")
+    # Wandb logging options
+    parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--wandb_project", type=str, default="onestep-diffusion-cursor")
+    parser.add_argument("--wandb_entity", type=str, default=None)
+    parser.add_argument("--wandb_run_name", type=str, default=None)
     # Default to 0 workers in Docker to avoid memory issues
     parser.add_argument("--num_workers", type=int, default=0)
     # Add gradient accumulation for smaller batch sizes
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    # Add image logging frequency
+    parser.add_argument(
+        "--log_images_every",
+        type=int,
+        default=100,
+        help="Log images to wandb every N steps",
+    )
     return parser.parse_args()
 
 
@@ -94,14 +148,16 @@ def get_dataloader(batch_size, split="train", num_workers=0):
 
 
 def train_one_epoch(
-    model, dataloader, optimizer, device, epoch, gradient_accumulation_steps
+    model, dataloader, optimizer, device, epoch, gradient_accumulation_steps, args
 ):
     model.train()
     total_loss = 0
     optimizer.zero_grad()  # Zero gradients at start of epoch
+    global_step = epoch * len(dataloader)
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch_idx, batch in enumerate(pbar):
+        current_step = global_step + batch_idx
         # Get source and target images
         source_images = batch["conditioning_pixel_values"].to(device)
         target_images = batch["output_pixel_values"].to(device)
@@ -145,18 +201,40 @@ def train_one_epoch(
             optimizer.step()
             optimizer.zero_grad()
 
-        total_loss += (
-            loss.item() * gradient_accumulation_steps
-        )  # Scale back for logging
-        pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps})
+        current_loss = loss.item() * gradient_accumulation_steps
+        total_loss += current_loss
+        pbar.set_postfix({"loss": current_loss})
 
-        if wandb.run is not None:
-            wandb.log(
-                {
-                    "batch_loss": loss.item() * gradient_accumulation_steps,
-                    "epoch": epoch,
-                }
-            )
+        # Log metrics
+        if not args.no_wandb:
+            metrics = {
+                "batch_loss": current_loss,
+                "epoch": epoch,
+                "learning_rate": optimizer.param_groups[0]["lr"],
+            }
+
+            # Periodically generate and log images
+            if current_step % args.log_images_every == 0:
+                model.eval()
+                with torch.no_grad():
+                    generated_images = model.generate(
+                        batch_size=source_images.shape[0],
+                        source_image=source_images,
+                        noise_level=999,
+                    )
+                    # Add images to metrics dictionary
+                    vis_images = log_images_to_wandb(
+                        source_images,
+                        target_images,
+                        generated_images,
+                        current_step,
+                        return_images=True,
+                    )
+                    metrics.update(vis_images)
+                model.train()
+
+            # Log all metrics together
+            wandb.log(metrics, step=current_step)
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
@@ -165,8 +243,35 @@ def train_one_epoch(
 def main():
     args = parse_args()
 
-    if args.log_wandb:
-        wandb.init(project="onestep-diffusion-cursor")
+    # Initialize wandb by default unless --no_wandb is specified
+    if not args.no_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_run_name,
+            config={
+                "batch_size": args.batch_size,
+                "epochs": args.epochs,
+                "lr": args.lr,
+                "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                "log_images_every": args.log_images_every,
+                "effective_batch_size": args.batch_size
+                * args.gradient_accumulation_steps,
+                "model_config": {
+                    "unet_sample_size": 64,
+                    "unet_in_channels": 4,
+                    "unet_out_channels": 4,
+                    "unet_layers_per_block": 2,
+                    "scheduler_timesteps": 1000,
+                    "vae": "madebyollin/taesdxl",  # Log VAE model being used
+                },
+            },
+        )
+        print(
+            f"Wandb logging enabled. Project: {args.wandb_project}, Run: {wandb.run.name}"
+        )
+    else:
+        print("Wandb logging disabled")
 
     # Initialize models
     unet = UNet2DModel(
@@ -179,9 +284,12 @@ def main():
         up_block_types=("UpBlock2D",) * 4,
     )
 
-    vae = AutoencoderKL.from_pretrained(
-        "stabilityai/sd-vae-ft-mse", torch_dtype=torch.float32
+    # Use TAESDXL instead of standard VAE
+    vae = AutoencoderTiny.from_pretrained(
+        "madebyollin/taesdxl", torch_dtype=torch.float32
     )
+    print("Using TAESDXL for faster and more memory-efficient training")
+
     # Freeze VAE parameters
     for param in vae.parameters():
         param.requires_grad = False
@@ -233,6 +341,7 @@ def main():
                     args.device,
                     epoch,
                     args.gradient_accumulation_steps,
+                    args,
                 )
 
                 # Validation
@@ -261,7 +370,7 @@ def main():
                     f"Epoch {epoch} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}"
                 )
 
-                if wandb.run is not None:
+                if not args.no_wandb:
                     wandb.log(
                         {
                             "train_loss": train_loss,
@@ -302,11 +411,11 @@ def main():
 
     except Exception as e:
         print(f"Training failed: {str(e)}")
-        if wandb.run is not None:
+        if not args.no_wandb:
             wandb.finish(exit_code=1)
         raise e
 
-    if wandb.run is not None:
+    if not args.no_wandb:
         wandb.finish()
 
 

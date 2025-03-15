@@ -126,16 +126,38 @@ class LBM(BaseModel):
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
         """Encode image to latent space"""
         with torch.no_grad():
-            latents = self.vae.encode(image).latent_dist.sample()
-            latents = latents * self.vae.config.scaling_factor
+            # Get latent distribution
+            encoder_output = self.vae.encode(image)
+            if hasattr(encoder_output, "latent_dist"):
+                # Sample from the distribution
+                latents = encoder_output.latent_dist.sample()
+                # Scale by VAE's scaling factor
+                latents = latents * self.vae.config.scaling_factor
+            else:
+                # Handle TAESDXL case
+                latents = encoder_output.latents
+                # Use standard SD scaling
+                latents = latents * 0.18215
         return latents
 
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         """Decode latents to image space"""
         with torch.no_grad():
-            latents = 1 / self.vae.config.scaling_factor * latents
-            image = self.vae.decode(latents).sample
-        return image
+            # Scale latents back
+            if hasattr(self.vae, "config") and hasattr(
+                self.vae.config, "scaling_factor"
+            ):
+                latents = 1 / self.vae.config.scaling_factor * latents
+            else:
+                latents = latents / 0.18215
+
+            # Decode and ensure output is in [-1, 1]
+            decoder_output = self.vae.decode(latents)
+            if hasattr(decoder_output, "sample"):
+                images = decoder_output.sample
+            else:
+                images = decoder_output.images
+            return images.clamp(-1, 1)
 
     @torch.no_grad()
     def bridge_latents(
@@ -158,17 +180,24 @@ class LBM(BaseModel):
         noise_level: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """One-step denoising with bridge matching"""
+        # Use high noise level as in LBM paper
         timestep = torch.tensor([noise_level], device=self.device)
 
         if source_latents is not None:
-            # Apply bridge matching
-            bridge_latents = self.bridge_latents(source_latents, noisy_latents)
+            # Get embeddings for bridge matching
+            source_emb = self.embedder(source_latents)
+            target_emb = self.embedder(noisy_latents)
+
+            # Apply bridge attention
+            bridge_latents = self.bridge(source_emb, target_emb)
+            # Add bridge latents to noisy latents
             noisy_latents = noisy_latents + bridge_latents
 
-        # Predict noise and denoise
+        # Predict noise
         noise_pred = self.unet(noisy_latents, timestep, return_dict=False)[0]
+        # Denoise using scheduler
         denoised = self.scheduler.step(
-            noise_pred, noise_level, noisy_latents, return_dict=False
+            noise_pred, timestep[0], noisy_latents, return_dict=False
         )[0]
 
         return denoised, noise_pred
@@ -186,9 +215,10 @@ class LBM(BaseModel):
         if seed is not None:
             torch.manual_seed(seed)
 
-        # Initial noise
+        # Generate initial noise
         shape = (batch_size,) + latent_shape
         noisy_latents = torch.randn(shape, device=self.device)
+        # Scale noise according to scheduler
         noisy_latents = noisy_latents * self.scheduler.init_noise_sigma
 
         # Get source latents if provided
@@ -196,7 +226,7 @@ class LBM(BaseModel):
         if source_image is not None:
             source_latents = self.encode_image(source_image)
 
-        # One-step denoising with bridge matching
+        # Apply one-step denoising with bridge matching
         denoised_latents, _ = self.denoise_one_step(
             noisy_latents, source_latents, noise_level
         )
