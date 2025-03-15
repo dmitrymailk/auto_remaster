@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from onestep_diffusion_cursor import LBM, UNet2DModel, DDPMScheduler
+from onestep_diffusion_cursor import LBM, UNet2DModel, FlowMatchEulerDiscreteScheduler
 from diffusers import AutoencoderTiny
 import torch.optim as optim
 from tqdm import tqdm
@@ -148,7 +148,14 @@ def get_dataloader(batch_size, split="train", num_workers=0):
 
 
 def train_one_epoch(
-    model, dataloader, optimizer, device, epoch, gradient_accumulation_steps, args
+    model,
+    dataloader,
+    optimizer,
+    scheduler,
+    device,
+    epoch,
+    gradient_accumulation_steps,
+    args,
 ):
     model.train()
     total_loss = 0
@@ -171,24 +178,32 @@ def train_one_epoch(
         # Add noise to target latents
         noise = torch.randn_like(target_latents, device=device)
         timesteps = torch.randint(0, 1000, (batch_size,), device=device)
-        noisy_latents = model.scheduler.add_noise(target_latents, noise, timesteps)
+
+        # For FlowMatch, we scale noise directly using sigmas
+        sigma = scheduler.sigmas[timesteps]
+        sigma = sigma.reshape(-1, 1, 1, 1)
+        noisy_latents = target_latents + sigma * noise
 
         # Predict noise
         noise_pred = model.unet(noisy_latents, timesteps, return_dict=False)[0]
 
         # Apply bridge matching
         bridge_latents = model.bridge_latents(source_latents, noisy_latents)
-        noisy_latents_bridged = noisy_latents + bridge_latents
+        noisy_latents_bridged = (
+            noisy_latents + 0.1 * bridge_latents
+        )  # Scale bridge influence
 
         # Predict noise again with bridged latents
         noise_pred_bridged = model.unet(
             noisy_latents_bridged, timesteps, return_dict=False
         )[0]
 
-        # Calculate combined loss
+        # Calculate combined loss using FlowMatch loss
+        # For FlowMatch, we predict the velocity field (negative score)
+        target_velocity = -noise / sigma
         loss = torch.nn.functional.mse_loss(
-            noise_pred, noise
-        ) + torch.nn.functional.mse_loss(noise_pred_bridged, noise)
+            noise_pred, target_velocity
+        ) + torch.nn.functional.mse_loss(noise_pred_bridged, target_velocity)
 
         # Scale loss for gradient accumulation
         loss = loss / gradient_accumulation_steps
@@ -217,19 +232,55 @@ def train_one_epoch(
             if current_step % args.log_images_every == 0:
                 model.eval()
                 with torch.no_grad():
+                    # Generate images
                     generated_images = model.generate(
                         batch_size=source_images.shape[0],
                         source_image=source_images,
                         noise_level=999,
                     )
+
+                    # Get VAE reconstructions for debugging
+                    source_recon = model.debug_vae(source_images)
+                    target_recon = model.debug_vae(target_images)
+
                     # Add images to metrics dictionary
-                    vis_images = log_images_to_wandb(
-                        source_images,
-                        target_images,
-                        generated_images,
-                        current_step,
-                        return_images=True,
-                    )
+                    vis_images = {
+                        "source_images": [
+                            wandb.Image(
+                                ((source_images[idx] + 1) / 2).float().cpu(),
+                                caption=f"Source {idx}",
+                            )
+                            for idx in range(min(batch_size, 3))
+                        ],
+                        "source_reconstructions": [
+                            wandb.Image(
+                                ((source_recon[idx] + 1) / 2).float().cpu(),
+                                caption=f"Source Recon {idx}",
+                            )
+                            for idx in range(min(batch_size, 3))
+                        ],
+                        "target_images": [
+                            wandb.Image(
+                                ((target_images[idx] + 1) / 2).float().cpu(),
+                                caption=f"Target {idx}",
+                            )
+                            for idx in range(min(batch_size, 3))
+                        ],
+                        "target_reconstructions": [
+                            wandb.Image(
+                                ((target_recon[idx] + 1) / 2).float().cpu(),
+                                caption=f"Target Recon {idx}",
+                            )
+                            for idx in range(min(batch_size, 3))
+                        ],
+                        "generated_images": [
+                            wandb.Image(
+                                ((generated_images[idx] + 1) / 2).float().cpu(),
+                                caption=f"Generated {idx}",
+                            )
+                            for idx in range(min(batch_size, 3))
+                        ],
+                    }
                     metrics.update(vis_images)
                 model.train()
 
@@ -275,8 +326,8 @@ def main():
 
     # Initialize models
     unet = UNet2DModel(
-        sample_size=64,  # This is for latent space size
-        in_channels=4,
+        sample_size=64,  # 64x64 latent space
+        in_channels=4,  # TAESDXL uses 4 channels
         out_channels=4,
         layers_per_block=2,
         block_out_channels=(128, 256, 512, 512),
@@ -284,22 +335,22 @@ def main():
         up_block_types=("UpBlock2D",) * 4,
     )
 
-    # Use TAESDXL instead of standard VAE
+    # Initialize TAESDXL with proper configuration
     vae = AutoencoderTiny.from_pretrained(
-        "madebyollin/taesdxl", torch_dtype=torch.float32
+        "madebyollin/taesdxl",
+        torch_dtype=torch.float32,
+        use_safetensors=True,
     )
-    print("Using TAESDXL for faster and more memory-efficient training")
+    print("Using TAESDXL for VAE")
 
     # Freeze VAE parameters
     for param in vae.parameters():
         param.requires_grad = False
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-    )
+    # Initialize scheduler with fixed timesteps
+    scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000)
+    # Set timesteps to 1000 and move tensors to device
+    scheduler.set_timesteps(1000, device="cuda")
 
     # Create LBM model
     model = LBM(unet, vae, scheduler, device=args.device)
@@ -338,6 +389,7 @@ def main():
                     model,
                     train_dataloader,
                     optimizer,
+                    scheduler,
                     args.device,
                     epoch,
                     args.gradient_accumulation_steps,
@@ -358,7 +410,7 @@ def main():
                         generated_images = model.generate(
                             batch_size=source_images.shape[0],
                             source_image=source_images,
-                            noise_level=999,
+                            noise_level=0,  # Use first timestep for FlowMatch
                         )
                         val_loss += torch.nn.functional.mse_loss(
                             generated_images, target_images

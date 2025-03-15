@@ -1,5 +1,10 @@
 import torch
-from diffusers import UNet2DModel, DDPMScheduler, AutoencoderKL
+from diffusers import (
+    UNet2DModel,
+    FlowMatchEulerDiscreteScheduler,
+    AutoencoderKL,
+    AutoencoderTiny,
+)
 from typing import Tuple, Optional, Dict, Any
 from torch import nn
 import torch.nn.functional as F
@@ -101,8 +106,11 @@ class LBM(BaseModel):
         self,
         unet: UNet2DModel,
         vae: AutoencoderKL,
-        scheduler: DDPMScheduler,
+        scheduler: FlowMatchEulerDiscreteScheduler,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        bridge_scale: float = 0.1,
+        min_bridge_scale: float = 0.05,
+        warmup_steps: int = 1000,
     ):
         super().__init__()
         self.device = device
@@ -110,8 +118,19 @@ class LBM(BaseModel):
         self.vae = vae.to(device)
         self.scheduler = scheduler
 
+        # Bridge scaling parameters
+        self.max_bridge_scale = bridge_scale
+        self.min_bridge_scale = min_bridge_scale
+        self.warmup_steps = warmup_steps
+        self.current_step = 0
+
         # Initialize embedder and bridge
-        latent_channels = self.vae.config.latent_channels
+        # For TAESDXL, latent channels is 4
+        latent_channels = (
+            4
+            if isinstance(self.vae, AutoencoderTiny)
+            else self.vae.config.latent_channels
+        )
         self.embedder = LBMEmbedder(latent_channels, latent_channels).to(device)
 
         # Ensure number of heads is appropriate for latent channels
@@ -120,43 +139,49 @@ class LBM(BaseModel):
         )  # Use at most 4 heads, and ensure head_dim >= 4
         self.bridge = LBMBridge(latent_channels, num_heads=num_heads).to(device)
 
+        # Initialize scheduler with proper settings
+        self.scheduler.set_timesteps(1000, device=device)
+
         # Set evaluation mode
         self.eval()
+
+    def get_bridge_scale(self) -> float:
+        """Get current bridge scale factor with warmup"""
+        if self.warmup_steps > 0:
+            scale = self.min_bridge_scale + (
+                self.max_bridge_scale - self.min_bridge_scale
+            ) * (min(self.current_step, self.warmup_steps) / self.warmup_steps)
+            self.current_step += 1
+            return scale
+        return self.max_bridge_scale
 
     def encode_image(self, image: torch.Tensor) -> torch.Tensor:
         """Encode image to latent space"""
         with torch.no_grad():
-            # Get latent distribution
-            encoder_output = self.vae.encode(image)
-            if hasattr(encoder_output, "latent_dist"):
-                # Sample from the distribution
-                latents = encoder_output.latent_dist.sample()
-                # Scale by VAE's scaling factor
-                latents = latents * self.vae.config.scaling_factor
+            # For TAESDXL, we don't need distribution sampling or scaling
+            if isinstance(self.vae, AutoencoderTiny):
+                latents = self.vae.encode(image, return_dict=False)[0]
+                # TAESDXL doesn't need additional scaling
+                return latents
             else:
-                # Handle TAESDXL case
-                latents = encoder_output.latents
-                # Use standard SD scaling
-                latents = latents * 0.18215
-        return latents
+                # Standard VAE path with distribution sampling
+                encoder_output = self.vae.encode(image)
+                latents = encoder_output.latent_dist.sample()
+                latents = latents * self.vae.config.scaling_factor
+                return latents
 
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
         """Decode latents to image space"""
         with torch.no_grad():
-            # Scale latents back
-            if hasattr(self.vae, "config") and hasattr(
-                self.vae.config, "scaling_factor"
-            ):
+            # For TAESDXL, we don't need scaling
+            if isinstance(self.vae, AutoencoderTiny):
+                images = self.vae.decode(latents, return_dict=False)[0]
+            else:
+                # Standard VAE path
                 latents = 1 / self.vae.config.scaling_factor * latents
-            else:
-                latents = latents / 0.18215
+                images = self.vae.decode(latents).sample
 
-            # Decode and ensure output is in [-1, 1]
-            decoder_output = self.vae.decode(latents)
-            if hasattr(decoder_output, "sample"):
-                images = decoder_output.sample
-            else:
-                images = decoder_output.images
+            # Ensure output is in [-1, 1] range
             return images.clamp(-1, 1)
 
     @torch.no_grad()
@@ -168,9 +193,48 @@ class LBM(BaseModel):
         source_emb = self.embedder(source_latents)
         target_emb = self.embedder(target_latents)
 
-        # Apply bridge attention
+        # Apply bridge attention with dynamic scaling
         bridged = self.bridge(source_emb, target_emb)
         return bridged
+
+    def get_flow_weights(
+        self, sigma: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get flow weights for velocity prediction with improved scaling"""
+        # Reshape sigma for broadcasting
+        sigma = sigma.view(-1, 1, 1, 1)
+
+        # Use log-space for better numerical stability
+        log_sigma = torch.log(sigma)
+
+        # Modified weight schedule for better flow matching
+        w = torch.exp(-0.5 * log_sigma)  # Reduced weight decay
+        v = 1.0 / (1.0 + sigma)  # Smoother velocity scaling
+
+        return w, v
+
+    @torch.no_grad()
+    def predict_velocity(
+        self, x: torch.Tensor, t: torch.Tensor, sigma: torch.Tensor
+    ) -> torch.Tensor:
+        """Predict velocity field with improved stability"""
+        # Get flow weights
+        w, v = self.get_flow_weights(sigma)
+
+        # Scale input with improved numerical stability
+        x_in = w * x
+
+        # Get UNet prediction
+        eps = self.unet(x_in, t, return_dict=False)[0]
+
+        # Scale velocity prediction
+        velocity = v * eps
+
+        # Add small noise for stability
+        noise_scale = 0.01 * sigma.view(-1, 1, 1, 1)
+        velocity = velocity + noise_scale * torch.randn_like(velocity)
+
+        return velocity
 
     @torch.no_grad()
     def denoise_one_step(
@@ -179,54 +243,79 @@ class LBM(BaseModel):
         source_latents: Optional[torch.Tensor],
         noise_level: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """One-step denoising with bridge matching"""
-        # Use high noise level as in LBM paper
-        timestep = torch.tensor([noise_level], device=self.device)
+        """One-step denoising with improved flow matching"""
+        # Ensure noise_level is valid and not at the boundary
+        noise_level = min(max(noise_level, 0), len(self.scheduler.timesteps) - 3)
+        timestep = torch.tensor(
+            [self.scheduler.timesteps[noise_level]], device=self.device
+        )
+        sigma = self.scheduler.sigmas[noise_level].to(self.device)
 
         if source_latents is not None:
-            # Get embeddings for bridge matching
-            source_emb = self.embedder(source_latents)
-            target_emb = self.embedder(noisy_latents)
+            # Apply bridge matching with dynamic scale
+            bridge_latents = self.bridge_latents(source_latents, noisy_latents)
+            bridge_scale = self.get_bridge_scale()
+            noisy_latents = noisy_latents + bridge_scale * bridge_latents
 
-            # Apply bridge attention
-            bridge_latents = self.bridge(source_emb, target_emb)
-            # Add bridge latents to noisy latents
-            noisy_latents = noisy_latents + bridge_latents
+        # Predict velocity field
+        velocity_pred = self.predict_velocity(noisy_latents, timestep, sigma)
 
-        # Predict noise
-        noise_pred = self.unet(noisy_latents, timestep, return_dict=False)[0]
-        # Denoise using scheduler
+        # Use scheduler step with improved stability
         denoised = self.scheduler.step(
-            noise_pred, timestep[0], noisy_latents, return_dict=False
+            velocity_pred, timestep[0], noisy_latents, return_dict=False
         )[0]
 
-        return denoised, noise_pred
+        # Only apply refinement if we're not at the end of the schedule
+        if noise_level < len(self.scheduler.timesteps) - 2:
+            next_timestep = torch.tensor(
+                [self.scheduler.timesteps[noise_level + 1]], device=self.device
+            )
+            next_sigma = self.scheduler.sigmas[noise_level + 1].to(self.device)
+
+            # Get refined velocity prediction
+            refined_velocity = self.predict_velocity(
+                denoised, next_timestep, next_sigma
+            )
+
+            # Apply refinement step
+            denoised = self.scheduler.step(
+                refined_velocity, next_timestep[0], denoised, return_dict=False
+            )[0]
+
+        return denoised, velocity_pred
 
     @torch.no_grad()
     def generate(
         self,
         batch_size: int = 1,
         latent_shape: Tuple[int, ...] = (4, 64, 64),
-        noise_level: int = 999,
+        noise_level: int = None,
         source_image: Optional[torch.Tensor] = None,
         seed: Optional[int] = None,
     ) -> torch.Tensor:
-        """Generate samples with one-step diffusion and LBM"""
+        """Generate samples with improved flow matching"""
         if seed is not None:
             torch.manual_seed(seed)
+
+        # Use higher noise level for better quality, but avoid boundary
+        if noise_level is None:
+            noise_level = len(self.scheduler.timesteps) // 2
+        else:
+            noise_level = min(noise_level, len(self.scheduler.timesteps) - 3)
 
         # Generate initial noise
         shape = (batch_size,) + latent_shape
         noisy_latents = torch.randn(shape, device=self.device)
-        # Scale noise according to scheduler
-        noisy_latents = noisy_latents * self.scheduler.init_noise_sigma
+        # Scale noise with improved initialization
+        sigma = self.scheduler.sigmas[noise_level]
+        noisy_latents = noisy_latents * sigma * 0.8  # Reduced initial noise
 
         # Get source latents if provided
         source_latents = None
         if source_image is not None:
             source_latents = self.encode_image(source_image)
 
-        # Apply one-step denoising with bridge matching
+        # Apply denoising with improved flow matching
         denoised_latents, _ = self.denoise_one_step(
             noisy_latents, source_latents, noise_level
         )
@@ -234,6 +323,24 @@ class LBM(BaseModel):
         # Decode to image space
         images = self.decode_latents(denoised_latents)
         return images
+
+    @torch.no_grad()
+    def debug_vae(self, image: torch.Tensor) -> torch.Tensor:
+        """Debug VAE by directly encoding and decoding an image without any diffusion process.
+
+        Args:
+            image: Input image tensor in [-1, 1] range with shape [B, C, H, W]
+
+        Returns:
+            Reconstructed image tensor in [-1, 1] range
+        """
+        # Encode
+        latents = self.encode_image(image)
+
+        # Decode
+        reconstructed = self.decode_latents(latents)
+
+        return reconstructed
 
 
 # Example usage:
@@ -253,12 +360,7 @@ if __name__ == "__main__":
         "stabilityai/sd-vae-ft-mse", torch_dtype=torch.float32
     )
 
-    scheduler = DDPMScheduler(
-        num_train_timesteps=1000,
-        beta_start=0.0001,
-        beta_end=0.02,
-        beta_schedule="linear",
-    )
+    scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000)
 
     # Create LBM model
     lbm = LBM(unet, vae, scheduler)
