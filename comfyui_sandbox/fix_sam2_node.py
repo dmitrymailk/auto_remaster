@@ -168,9 +168,11 @@ class Florence2toCoordinates:
                         center_points.append({"x": center_x, "y": center_y})
                         bboxes.append(bbox)
         else:
+            print("data[0]", data[0])
             for idx in indexes:
-                if 0 <= idx < len(data[0]):
-                    bbox = data[0][idx]
+                if 0 <= idx < len(data[0]["bboxes"]):
+                    # bbox = data['bboxes'][0][idx]
+                    bbox = data[0]["bboxes"][idx]
                     min_x, min_y, max_x, max_y = bbox
                     center_x = int((min_x + max_x) / 2)
                     center_y = int((min_y + max_y) / 2)
@@ -374,7 +376,7 @@ class Sam2Segmentation:
                     if bboxes is None:
                         input_box = None
                     else:
-                        if len(image_np) > 1 and i < len(final_box):
+                        if len(image_np) > 1:
                             input_box = final_box[i]
                         input_box = final_box
 
