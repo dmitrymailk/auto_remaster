@@ -3,7 +3,10 @@ version: '3.3'
 services:
   server:
     build:
+      # default pytorch
       dockerfile: ./Dockerfile
+      # transformer engine 
+      # dockerfile: ./Dockerfile_te
       context: . 
     command: /bin/sh -c "while sleep 1000; do :; done"
     volumes:
@@ -11,3 +14,4 @@ services:
     cap_add:
       - ALL
     # network_mode: "host"
+    shm_size: '64gb'
