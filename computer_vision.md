@@ -98,5 +98,5 @@
 - [How to make 3D/2.5D images look more realistic?](https://www.reddit.com/r/comfyui/comments/1oi1yu2/how_to_make_3d25d_images_look_more_realistic/)
 
 
-### UI-Automation
-- https://github.com/bytedance/UI-TARS
+### Wan model
+- [Wan Video Ditto in ComfyUI - Transform ANY Video with Just a Text Prompt!](https://youtu.be/yvIubLbSJ-g?si=r410CAHe4KjcrOBK)
