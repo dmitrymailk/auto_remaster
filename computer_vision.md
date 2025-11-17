@@ -100,3 +100,10 @@
 
 ### Wan model
 - [Wan Video Ditto in ComfyUI - Transform ANY Video with Just a Text Prompt!](https://youtu.be/yvIubLbSJ-g?si=r410CAHe4KjcrOBK)
+
+
+### Ditto pipeline video edit
+- https://arxiv.org/pdf/2510.15742
+- https://github.com/EzioBy/Ditto
+
+главный подход в создании датасета wan vace+карта глубины+начальный и конечный кадр. таким образом получилось достичь датасеты высокого качества. для получения начальных и конечных отредактированных кадров использовали сильные image2image модели
