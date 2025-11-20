@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,9 +30,16 @@ from diffusers.pipelines.controlnet.multicontrolnet import MultiControlNetModel
 from diffusers.pipelines.controlnet.pipeline_controlnet_img2img import StableDiffusionControlNetImg2ImgPipeline
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from diffusers.schedulers import KarrasDiffusionSchedulers
-from diffusers.utils import BaseOutput, deprecate, logging
+from diffusers.utils import BaseOutput, deprecate, is_torch_xla_available, logging
 from diffusers.utils.torch_utils import is_compiled_module, randn_tensor
 
+
+if is_torch_xla_available():
+    import torch_xla.core.xla_model as xm
+
+    XLA_AVAILABLE = True
+else:
+    XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -92,7 +99,7 @@ def flow_warp(feature, flow, mask=False, mode="bilinear", padding_mode="zeros"):
 def forward_backward_consistency_check(fwd_flow, bwd_flow, alpha=0.01, beta=0.5):
     # fwd_flow, bwd_flow: [B, 2, H, W]
     # alpha and beta values are following UnFlow
-    # (https://arxiv.org/abs/1711.07837)
+    # (https://huggingface.co/papers/1711.07837)
     assert fwd_flow.dim() == 4 and bwd_flow.dim() == 4
     assert fwd_flow.size(1) == 2 and bwd_flow.size(1) == 2
     flow_mag = torch.norm(fwd_flow, dim=1) + torch.norm(bwd_flow, dim=1)  # [B, H, W]
@@ -281,7 +288,7 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
             [`DDIMScheduler`], [`LMSDiscreteScheduler`], or [`PNDMScheduler`].
         safety_checker ([`StableDiffusionSafetyChecker`]):
             Classification module that estimates whether generated images could be considered offensive or harmful.
-            Please, refer to the [model card](https://huggingface.co/runwayml/stable-diffusion-v1-5) for details.
+            Please, refer to the [model card](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) for details.
         feature_extractor ([`CLIPImageProcessor`]):
             Model that extracts features from generated images to be used as inputs for the `safety_checker`.
     """
@@ -345,7 +352,7 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
             safety_checker=safety_checker,
             feature_extractor=feature_extractor,
         )
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True)
         self.control_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=False
@@ -625,15 +632,15 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
                 The prompt or prompts to guide the image generation. If not defined, one has to pass `prompt_embeds`.
                 instead.
             frames (`List[np.ndarray]` or `torch.Tensor`): The input images to be used as the starting point for the image generation process.
-            control_frames (`List[np.ndarray]` or `torch.Tensor`): The ControlNet input images condition to provide guidance to the `unet` for generation.
+            control_frames (`List[np.ndarray]` or `torch.Tensor` or `Callable`): The ControlNet input images condition to provide guidance to the `unet` for generation or any callable object to convert frame to control_frame.
             strength ('float'): SDEdit strength.
             num_inference_steps (`int`, *optional*, defaults to 50):
                 The number of denoising steps. More denoising steps usually lead to a higher quality image at the
                 expense of slower inference.
             guidance_scale (`float`, *optional*, defaults to 7.5):
-                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
+                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://huggingface.co/papers/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
-                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
+                Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by setting `guidance_scale >
                 1`. Higher guidance scale encourages to generate images that are closely linked to the text `prompt`,
                 usually at the expense of lower image quality.
             negative_prompt (`str` or `List[str]`, *optional*):
@@ -641,7 +648,7 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
                 `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
                 less than `1`).
             eta (`float`, *optional*, defaults to 0.0):
-                Corresponds to parameter eta (η) in the DDIM paper: https://arxiv.org/abs/2010.02502. Only applies to
+                Corresponds to parameter eta (η) in the DDIM paper: https://huggingface.co/papers/2010.02502. Only applies to
                 [`schedulers.DDIMScheduler`], will be ignored for others.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
@@ -649,7 +656,7 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
             latents (`torch.Tensor`, *optional*):
                 Pre-generated noisy latents, sampled from a Gaussian distribution, to be used as inputs for image
                 generation. Can be used to tweak the same generation with different prompts. If not provided, a latents
-                tensor will ge generated by sampling using the supplied random `generator`.
+                tensor will be generated by sampling using the supplied random `generator`.
             prompt_embeds (`torch.Tensor`, *optional*):
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
                 provided, text embeddings will be generated from `prompt` input argument.
@@ -740,7 +747,7 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
 
         device = self._execution_device
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+        # of the Imagen paper: https://huggingface.co/papers/2205.11487 . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
@@ -775,14 +782,14 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
         self.attn_state.reset()
 
         # 4.1 prepare frames
-        image = self.image_processor.preprocess(frames[0]).to(dtype=torch.float32)
+        image = self.image_processor.preprocess(frames[0]).to(dtype=self.dtype)
         first_image = image[0]  # C, H, W
 
         # 4.2 Prepare controlnet_conditioning_image
         # Currently we only support single control
         if isinstance(controlnet, ControlNetModel):
             control_image = self.prepare_control_image(
-                image=control_frames[0],
+                image=control_frames(frames[0]) if callable(control_frames) else control_frames[0],
                 width=width,
                 height=height,
                 batch_size=batch_size,
@@ -901,6 +908,9 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
+                if XLA_AVAILABLE:
+                    xm.mark_step()
+
         if not output_type == "latent":
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
         else:
@@ -917,10 +927,10 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
         for idx in range(1, len(frames)):
             image = frames[idx]
             prev_image = frames[idx - 1]
-            control_image = control_frames[idx]
+            control_image = control_frames(image) if callable(control_frames) else control_frames[idx]
             # 5.1 prepare frames
-            image = self.image_processor.preprocess(image).to(dtype=torch.float32)
-            prev_image = self.image_processor.preprocess(prev_image).to(dtype=torch.float32)
+            image = self.image_processor.preprocess(image).to(dtype=self.dtype)
+            prev_image = self.image_processor.preprocess(prev_image).to(dtype=self.dtype)
 
             warped_0, bwd_occ_0, bwd_flow_0 = get_warped_and_mask(
                 self.flow_model, first_image, image[0], first_result, False, self.device
@@ -1099,6 +1109,9 @@ class RerenderAVideoPipeline(StableDiffusionControlNetImg2ImgPipeline):
                             progress_bar.update()
                             if callback is not None and i % callback_steps == 0:
                                 callback(i, t, latents)
+
+                        if XLA_AVAILABLE:
+                            xm.mark_step()
 
                     return latents
 

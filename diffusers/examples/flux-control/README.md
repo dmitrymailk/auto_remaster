@@ -13,7 +13,7 @@ To incorporate additional condition latents, we expand the input features of Flu
 > As the model is gated, before using it with diffusers you first need to go to the [FLUX.1 [dev] Hugging Face page](https://huggingface.co/black-forest-labs/FLUX.1-dev), fill in the form and accept the gate. Once you are in, you need to log in so that your system knows you’ve accepted the gate. Use the command below to log in:
 
 ```bash
-huggingface-cli login
+hf auth login
 ```
 
 The example command below shows how to launch fine-tuning for pose conditions. The dataset ([`raulc0399/open_pose_controlnet`](https://huggingface.co/datasets/raulc0399/open_pose_controlnet)) being used here already has the pose conditions of the original images, so we don't have to compute them.
@@ -121,7 +121,7 @@ prompt = "A couple, 4k photo, highly detailed"
 
 gen_images = pipe(
   prompt=prompt,
-  condition_image=image,
+  control_image=image,
   num_inference_steps=50,
   joint_attention_kwargs={"scale": 0.9},
   guidance_scale=25., 
@@ -190,7 +190,7 @@ prompt = "A couple, 4k photo, highly detailed"
 
 gen_images = pipe(
   prompt=prompt,
-  condition_image=image,
+  control_image=image,
   num_inference_steps=50,
   guidance_scale=25., 
 ).images[0]
@@ -200,5 +200,5 @@ gen_images.save("output.png")
 ## Things to note
 
 * The scripts provided in this directory are experimental and educational. This means we may have to tweak things around to get good results on a given condition. We believe this is best done with the community 🤗
-* The scripts are not memory-optimized but we offload the VAE and the text encoders to CPU when they are not used. 
+* The scripts are not memory-optimized but we offload the VAE and the text encoders to CPU when they are not used if `--offload` is specified. 
 * We can extract LoRAs from the fully fine-tuned model. While we currently don't provide any utilities for that, users are welcome to refer to [this script](https://github.com/Stability-AI/stability-ComfyUI-nodes/blob/master/control_lora_create.py) that provides a similar functionality. 

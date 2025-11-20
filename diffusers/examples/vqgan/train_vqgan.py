@@ -50,7 +50,7 @@ if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-# check_min_version("0.33.0.dev0")
+check_min_version("0.36.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -97,15 +97,9 @@ def _map_layer_to_idx(backbone, layers, offset=0):
     return idx
 
 
-def get_perceptual_loss(
-    pixel_values, fmap, timm_model, timm_model_resolution, timm_model_normalization
-):
-    img_timm_model_input = timm_model_normalization(
-        F.interpolate(pixel_values, timm_model_resolution)
-    )
-    fmap_timm_model_input = timm_model_normalization(
-        F.interpolate(fmap, timm_model_resolution)
-    )
+def get_perceptual_loss(pixel_values, fmap, timm_model, timm_model_resolution, timm_model_normalization):
+    img_timm_model_input = timm_model_normalization(F.interpolate(pixel_values, timm_model_resolution))
+    fmap_timm_model_input = timm_model_normalization(F.interpolate(fmap, timm_model_resolution))
 
     if pixel_values.shape[1] == 1:
         # handle grayscale for timm_model
@@ -117,9 +111,7 @@ def get_perceptual_loss(
     recon_timm_model_feats = timm_model(fmap_timm_model_input)
     perceptual_loss = F.mse_loss(img_timm_model_feats[0], recon_timm_model_feats[0])
     for i in range(1, len(img_timm_model_feats)):
-        perceptual_loss += F.mse_loss(
-            img_timm_model_feats[i], recon_timm_model_feats[i]
-        )
+        perceptual_loss += F.mse_loss(img_timm_model_feats[i], recon_timm_model_feats[i])
     perceptual_loss /= len(img_timm_model_feats)
     return perceptual_loss
 
@@ -186,15 +178,12 @@ def log_validation(model, args, validation_transform, accelerator, global_step):
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images(
-                "validation", np_images, global_step, dataformats="NHWC"
-            )
+            tracker.writer.add_images("validation", np_images, global_step, dataformats="NHWC")
         if tracker.name == "wandb":
             tracker.log(
                 {
                     "validation": [
-                        wandb.Image(image, caption=f"{i}: Original, Generated")
-                        for i, image in enumerate(images)
+                        wandb.Image(image, caption=f"{i}: Original, Generated") for i, image in enumerate(images)
                     ]
                 },
                 step=global_step,
@@ -310,10 +299,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--image_column",
-        type=str,
-        default="image",
-        help="The column of the dataset containing an image.",
+        "--image_column", type=str, default="image", help="The column of the dataset containing an image."
     )
     parser.add_argument(
         "--max_train_samples",
@@ -329,9 +315,7 @@ def parse_args():
         type=str,
         default=None,
         nargs="+",
-        help=(
-            "A set of validation images evaluated every `--validation_steps` and logged to `--report_to`."
-        ),
+        help=("A set of validation images evaluated every `--validation_steps` and logged to `--report_to`."),
     )
     parser.add_argument(
         "--output_dir",
@@ -345,9 +329,7 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
-    )
+    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
     parser.add_argument(
         "--resolution",
         type=int,
@@ -372,10 +354,7 @@ def parse_args():
         help="whether to randomly flip images horizontally",
     )
     parser.add_argument(
-        "--train_batch_size",
-        type=int,
-        default=16,
-        help="Batch size (per device) for the training dataloader.",
+        "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
@@ -432,15 +411,10 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--lr_warmup_steps",
-        type=int,
-        default=500,
-        help="Number of steps for the warmup in the lr scheduler.",
+        "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
-        "--use_8bit_adam",
-        action="store_true",
-        help="Whether or not to use 8-bit Adam from bitsandbytes.",
+        "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes."
     )
     parser.add_argument(
         "--allow_tf32",
@@ -450,9 +424,7 @@ def parse_args():
             " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
         ),
     )
-    parser.add_argument(
-        "--use_ema", action="store_true", help="Whether to use EMA model."
-    )
+    parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA model.")
     parser.add_argument(
         "--non_ema_revision",
         type=str,
@@ -471,41 +443,13 @@ def parse_args():
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
     )
-    parser.add_argument(
-        "--adam_beta1",
-        type=float,
-        default=0.9,
-        help="The beta1 parameter for the Adam optimizer.",
-    )
-    parser.add_argument(
-        "--adam_beta2",
-        type=float,
-        default=0.999,
-        help="The beta2 parameter for the Adam optimizer.",
-    )
-    parser.add_argument(
-        "--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use."
-    )
-    parser.add_argument(
-        "--adam_epsilon",
-        type=float,
-        default=1e-08,
-        help="Epsilon value for the Adam optimizer",
-    )
-    parser.add_argument(
-        "--max_grad_norm", default=1.0, type=float, help="Max gradient norm."
-    )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_token",
-        type=str,
-        default=None,
-        help="The token to use to push to the Model Hub.",
-    )
+    parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
+    parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
+    parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
+    parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
+    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
+    parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--prediction_type",
         type=str,
@@ -547,12 +491,7 @@ def parse_args():
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
         ),
     )
-    parser.add_argument(
-        "--local_rank",
-        type=int,
-        default=-1,
-        help="For distributed training: local_rank",
-    )
+    parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
@@ -578,9 +517,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--enable_xformers_memory_efficient_attention",
-        action="store_true",
-        help="Whether or not to use xformers.",
+        "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
     parser.add_argument(
         "--tracker_project_name",
@@ -621,9 +558,7 @@ def main():
         torch.backends.cudnn.deterministic = False
 
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
-    accelerator_project_config = ProjectConfiguration(
-        project_dir=args.output_dir, logging_dir=logging_dir
-    )
+    accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -633,9 +568,7 @@ def main():
     )
 
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
-        accelerator.state.deepspeed_plugin.deepspeed_config[
-            "train_micro_batch_size_per_gpu"
-        ] = args.train_batch_size
+        accelerator.state.deepspeed_plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = args.train_batch_size
 
     #####################################
     # SETUP LOGGING, SEED and CONFIG    #
@@ -657,9 +590,7 @@ def main():
 
         if args.push_to_hub:
             create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name,
-                exist_ok=True,
-                token=args.hub_token,
+                repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
             ).repo_id
 
     #########################
@@ -667,10 +598,7 @@ def main():
     #########################
     logger.info("Loading models and optimizer")
 
-    if (
-        args.model_config_name_or_path is None
-        and args.pretrained_model_name_or_path is None
-    ):
+    if args.model_config_name_or_path is None and args.pretrained_model_name_or_path is None:
         # Taken from config of movq at kandinsky-community/kandinsky-2-2-decoder but without the attention layers
         model = VQModel(
             act_fn="silu",
@@ -702,20 +630,14 @@ def main():
         config = VQModel.load_config(args.model_config_name_or_path)
         model = VQModel.from_config(config)
     if args.use_ema:
-        ema_model = EMAModel(
-            model.parameters(), model_cls=VQModel, model_config=model.config
-        )
+        ema_model = EMAModel(model.parameters(), model_cls=VQModel, model_config=model.config)
     if args.discriminator_config_name_or_path is None:
         discriminator = Discriminator()
     else:
         config = Discriminator.load_config(args.discriminator_config_name_or_path)
         discriminator = Discriminator.from_config(config)
 
-    idx = _map_layer_to_idx(
-        args.timm_model_backend,
-        args.timm_model_layers.split("|"),
-        args.timm_model_offset,
-    )
+    idx = _map_layer_to_idx(args.timm_model_backend, args.timm_model_layers.split("|"), args.timm_model_offset)
 
     timm_model = timm.create_model(
         args.timm_model_backend,
@@ -727,21 +649,19 @@ def main():
     timm_model = timm_model.to(accelerator.device)
     timm_model.requires_grad = False
     timm_model.eval()
-    timm_transform = create_transform(
-        **resolve_data_config(timm_model.pretrained_cfg, model=timm_model)
-    )
+    timm_transform = create_transform(**resolve_data_config(timm_model.pretrained_cfg, model=timm_model))
     try:
         # Gets the resolution of the timm transformation after centercrop
         timm_centercrop_transform = timm_transform.transforms[1]
-        assert isinstance(
-            timm_centercrop_transform, transforms.CenterCrop
-        ), f"Timm model {timm_model} is currently incompatible with this script. Try vgg19."
+        assert isinstance(timm_centercrop_transform, transforms.CenterCrop), (
+            f"Timm model {timm_model} is currently incompatible with this script. Try vgg19."
+        )
         timm_model_resolution = timm_centercrop_transform.size[0]
         # Gets final normalization
         timm_model_normalization = timm_transform.transforms[-1]
-        assert isinstance(
-            timm_model_normalization, transforms.Normalize
-        ), f"Timm model {timm_model} is currently incompatible with this script. Try vgg19."
+        assert isinstance(timm_model_normalization, transforms.Normalize), (
+            f"Timm model {timm_model} is currently incompatible with this script. Try vgg19."
+        )
     except AssertionError as e:
         raise NotImplementedError(e)
     # Enable flash attention if asked
@@ -764,16 +684,12 @@ def main():
 
         def load_model_hook(models, input_dir):
             if args.use_ema:
-                load_model = EMAModel.from_pretrained(
-                    os.path.join(input_dir, "vqmodel_ema"), VQModel
-                )
+                load_model = EMAModel.from_pretrained(os.path.join(input_dir, "vqmodel_ema"), VQModel)
                 ema_model.load_state_dict(load_model.state_dict())
                 ema_model.to(accelerator.device)
                 del load_model
             discriminator = models.pop()
-            load_model = Discriminator.from_pretrained(
-                input_dir, subfolder="discriminator"
-            )
+            load_model = Discriminator.from_pretrained(input_dir, subfolder="discriminator")
             discriminator.register_to_config(**load_model.config)
             discriminator.load_state_dict(load_model.state_dict())
             del load_model
@@ -789,10 +705,7 @@ def main():
     learning_rate = args.learning_rate
     if args.scale_lr:
         learning_rate = (
-            learning_rate
-            * args.train_batch_size
-            * accelerator.num_processes
-            * args.gradient_accumulation_steps
+            learning_rate * args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
         )
 
     # Initialize the optimizer
@@ -829,11 +742,7 @@ def main():
     logger.info("Creating dataloaders and lr_scheduler")
 
     args.train_batch_size * accelerator.num_processes
-    total_batch_size = (
-        args.train_batch_size
-        * accelerator.num_processes
-        * args.gradient_accumulation_steps
-    )
+    total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     # DataLoaders creation:
     if args.dataset_name is not None:
@@ -864,33 +773,19 @@ def main():
     assert args.image_column is not None
     image_column = args.image_column
     if image_column not in column_names:
-        raise ValueError(
-            f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-        )
+        raise ValueError(f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}")
     # Preprocessing the datasets.
     train_transforms = transforms.Compose(
         [
-            transforms.Resize(
-                args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
-            ),
-            (
-                transforms.CenterCrop(args.resolution)
-                if args.center_crop
-                else transforms.RandomCrop(args.resolution)
-            ),
-            (
-                transforms.RandomHorizontalFlip()
-                if args.random_flip
-                else transforms.Lambda(lambda x: x)
-            ),
+            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
+            transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
         ]
     )
     validation_transform = transforms.Compose(
         [
-            transforms.Resize(
-                args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
-            ),
+            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.ToTensor(),
         ]
     )
@@ -902,11 +797,7 @@ def main():
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            dataset["train"] = (
-                dataset["train"]
-                .shuffle(seed=args.seed)
-                .select(range(args.max_train_samples))
-            )
+            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
         train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
@@ -939,20 +830,8 @@ def main():
     # Prepare everything with accelerator
     logger.info("Preparing model, optimizer and dataloaders")
     # The dataloader are already aware of distributed training, so we don't need to prepare them.
-    (
-        model,
-        discriminator,
-        optimizer,
-        discr_optimizer,
-        lr_scheduler,
-        discr_lr_scheduler,
-    ) = accelerator.prepare(
-        model,
-        discriminator,
-        optimizer,
-        discr_optimizer,
-        lr_scheduler,
-        discr_lr_scheduler,
+    model, discriminator, optimizer, discr_optimizer, lr_scheduler, discr_lr_scheduler = accelerator.prepare(
+        model, discriminator, optimizer, discr_optimizer, lr_scheduler, discr_lr_scheduler
     )
     if args.use_ema:
         ema_model.to(accelerator.device)
@@ -961,18 +840,14 @@ def main():
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
-    logger.info(
-        f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
-    )
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     global_step = 0
     first_epoch = 0
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(
-        len(train_dataloader) / args.gradient_accumulation_steps
-    )
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -995,9 +870,7 @@ def main():
             path = os.path.join(args.output_dir, path)
 
         if path is None:
-            accelerator.print(
-                f"Checkpoint '{resume_from_checkpoint}' does not exist. Starting a new training run."
-            )
+            accelerator.print(f"Checkpoint '{resume_from_checkpoint}' does not exist. Starting a new training run.")
             resume_from_checkpoint = None
         else:
             accelerator.print(f"Resuming from checkpoint {path}")
@@ -1056,36 +929,21 @@ def main():
                     )
                     # generator loss
                     gen_loss = -discriminator(fmap).mean()
-                    last_dec_layer = accelerator.unwrap_model(
-                        model
-                    ).decoder.conv_out.weight
-                    norm_grad_wrt_perceptual_loss = grad_layer_wrt_loss(
-                        perceptual_loss, last_dec_layer
-                    ).norm(p=2)
-                    norm_grad_wrt_gen_loss = grad_layer_wrt_loss(
-                        gen_loss, last_dec_layer
-                    ).norm(p=2)
+                    last_dec_layer = accelerator.unwrap_model(model).decoder.conv_out.weight
+                    norm_grad_wrt_perceptual_loss = grad_layer_wrt_loss(perceptual_loss, last_dec_layer).norm(p=2)
+                    norm_grad_wrt_gen_loss = grad_layer_wrt_loss(gen_loss, last_dec_layer).norm(p=2)
 
-                    adaptive_weight = (
-                        norm_grad_wrt_perceptual_loss
-                        / norm_grad_wrt_gen_loss.clamp(min=1e-8)
-                    )
+                    adaptive_weight = norm_grad_wrt_perceptual_loss / norm_grad_wrt_gen_loss.clamp(min=1e-8)
                     adaptive_weight = adaptive_weight.clamp(max=1e4)
                     loss += commit_loss
                     loss += perceptual_loss
                     loss += adaptive_weight * gen_loss
                     # Gather the losses across all processes for logging (if we use distributed training).
-                    avg_gen_loss = (
-                        accelerator.gather(loss.repeat(args.train_batch_size))
-                        .float()
-                        .mean()
-                    )
+                    avg_gen_loss = accelerator.gather(loss.repeat(args.train_batch_size)).float().mean()
                     accelerator.backward(loss)
 
                     if args.max_grad_norm is not None and accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(
-                            model.parameters(), args.max_grad_norm
-                        )
+                        accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
                     optimizer.step()
                     lr_scheduler.step()
@@ -1106,15 +964,11 @@ def main():
                     loss = (F.relu(1 + fake) + F.relu(1 - real)).mean()
                     gp = gradient_penalty(pixel_values, real)
                     loss += gp
-                    avg_discr_loss = accelerator.gather(
-                        loss.repeat(args.train_batch_size)
-                    ).mean()
+                    avg_discr_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                     accelerator.backward(loss)
 
                     if args.max_grad_norm is not None and accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(
-                            discriminator.parameters(), args.max_grad_norm
-                        )
+                        accelerator.clip_grad_norm_(discriminator.parameters(), args.max_grad_norm)
 
                     discr_optimizer.step()
                     discr_lr_scheduler.step()
@@ -1131,18 +985,12 @@ def main():
                 progress_bar.update(1)
                 if args.use_ema:
                     ema_model.step(model.parameters())
-            if (
-                accelerator.sync_gradients
-                and not generator_step
-                and accelerator.is_main_process
-            ):
+            if accelerator.sync_gradients and not generator_step and accelerator.is_main_process:
                 # wait for both generator and discriminator to settle
                 # Log metrics
                 if global_step % args.log_steps == 0:
                     samples_per_second_per_gpu = (
-                        args.gradient_accumulation_steps
-                        * args.train_batch_size
-                        / batch_time_m.val
+                        args.gradient_accumulation_steps * args.train_batch_size / batch_time_m.val
                     )
                     logs = {
                         "step_discr_loss": avg_discr_loss.item(),
@@ -1164,36 +1012,24 @@ def main():
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [
-                                d for d in checkpoints if d.startswith("checkpoint")
-                            ]
-                            checkpoints = sorted(
-                                checkpoints, key=lambda x: int(x.split("-")[1])
-                            )
+                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
                             # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
                             if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = (
-                                    len(checkpoints) - args.checkpoints_total_limit + 1
-                                )
+                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
                                 removing_checkpoints = checkpoints[0:num_to_remove]
 
                                 logger.info(
                                     f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
                                 )
-                                logger.info(
-                                    f"removing checkpoints: {', '.join(removing_checkpoints)}"
-                                )
+                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
                                 for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(
-                                        args.output_dir, removing_checkpoint
-                                    )
+                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
-                        save_path = os.path.join(
-                            args.output_dir, f"checkpoint-{global_step}"
-                        )
+                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
@@ -1203,9 +1039,7 @@ def main():
                         # Store the VQGAN parameters temporarily and load the EMA parameters to perform inference.
                         ema_model.store(model.parameters())
                         ema_model.copy_to(model.parameters())
-                    log_validation(
-                        model, args, validation_transform, accelerator, global_step
-                    )
+                    log_validation(model, args, validation_transform, accelerator, global_step)
                     if args.use_ema:
                         # Switch back to the original VQGAN parameters.
                         ema_model.restore(model.parameters())

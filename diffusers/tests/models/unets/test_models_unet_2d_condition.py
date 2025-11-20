@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc.
+# Copyright 2025 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,8 +34,12 @@ from diffusers.models.attention_processor import (
 from diffusers.models.embeddings import ImageProjection, IPAdapterFaceIDImageProjection, IPAdapterPlusImageProjection
 from diffusers.utils import logging
 from diffusers.utils.import_utils import is_xformers_available
-from diffusers.utils.testing_utils import (
+
+from ...testing_utils import (
     backend_empty_cache,
+    backend_max_memory_allocated,
+    backend_reset_max_memory_allocated,
+    backend_reset_peak_memory_stats,
     enable_full_determinism,
     floats_tensor,
     is_peft_available,
@@ -43,14 +47,17 @@ from diffusers.utils.testing_utils import (
     require_peft_backend,
     require_torch_accelerator,
     require_torch_accelerator_with_fp16,
-    require_torch_gpu,
     skip_mps,
     slow,
     torch_all_close,
     torch_device,
 )
-
-from ..test_modeling_common import ModelTesterMixin, UNetTesterMixin
+from ..test_modeling_common import (
+    LoraHotSwappingForModelTesterMixin,
+    ModelTesterMixin,
+    TorchCompileTesterMixin,
+    UNetTesterMixin,
+)
 
 
 if is_peft_available():
@@ -175,8 +182,7 @@ def create_ip_adapter_plus_state_dict(model):
     )
 
     ip_image_projection_state_dict = OrderedDict()
-    keys = [k for k in image_projection.state_dict() if "layers." in k]
-    print(keys)
+
     for k, v in image_projection.state_dict().items():
         if "2.to" in k:
             k = k.replace("2.to", "0.to")
@@ -352,7 +358,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
     model_class = UNet2DConditionModel
     main_input_name = "sample"
     # We override the items here because the unet under consideration is small.
-    model_split_percents = [0.5, 0.3, 0.4]
+    model_split_percents = [0.5, 0.34, 0.4]
 
     @property
     def dummy_input(self):
@@ -652,22 +658,22 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
 
             keepall_mask = torch.ones(*cond.shape[:-1], device=cond.device, dtype=mask_dtype)
             full_cond_keepallmask_out = model(**{**inputs_dict, "encoder_attention_mask": keepall_mask}).sample
-            assert full_cond_keepallmask_out.allclose(
-                full_cond_out, rtol=1e-05, atol=1e-05
-            ), "a 'keep all' mask should give the same result as no mask"
+            assert full_cond_keepallmask_out.allclose(full_cond_out, rtol=1e-05, atol=1e-05), (
+                "a 'keep all' mask should give the same result as no mask"
+            )
 
             trunc_cond = cond[:, :-1, :]
             trunc_cond_out = model(**{**inputs_dict, "encoder_hidden_states": trunc_cond}).sample
-            assert not trunc_cond_out.allclose(
-                full_cond_out, rtol=1e-05, atol=1e-05
-            ), "discarding the last token from our cond should change the result"
+            assert not trunc_cond_out.allclose(full_cond_out, rtol=1e-05, atol=1e-05), (
+                "discarding the last token from our cond should change the result"
+            )
 
             batch, tokens, _ = cond.shape
             mask_last = (torch.arange(tokens) < tokens - 1).expand(batch, -1).to(cond.device, mask_dtype)
             masked_cond_out = model(**{**inputs_dict, "encoder_attention_mask": mask_last}).sample
-            assert masked_cond_out.allclose(
-                trunc_cond_out, rtol=1e-05, atol=1e-05
-            ), "masking the last token from our cond should be equivalent to truncating that token out of the condition"
+            assert masked_cond_out.allclose(trunc_cond_out, rtol=1e-05, atol=1e-05), (
+                "masking the last token from our cond should be equivalent to truncating that token out of the condition"
+            )
 
     # see diffusers.models.attention_processor::Attention#prepare_attention_mask
     # note: we may not need to fix mask padding to work for stable-diffusion cross-attn masks.
@@ -695,9 +701,9 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
 
             trunc_mask = torch.zeros(batch, tokens - 1, device=cond.device, dtype=torch.bool)
             trunc_mask_out = model(**{**inputs_dict, "encoder_attention_mask": trunc_mask}).sample
-            assert trunc_mask_out.allclose(
-                keeplast_out
-            ), "a mask with fewer tokens than condition, will be padded with 'keep' tokens. a 'discard-all' mask missing the final token is thus equivalent to a 'keep last' mask."
+            assert trunc_mask_out.allclose(keeplast_out), (
+                "a mask with fewer tokens than condition, will be padded with 'keep' tokens. a 'discard-all' mask missing the final token is thus equivalent to a 'keep last' mask."
+            )
 
     def test_custom_diffusion_processors(self):
         # enable deterministic behavior for gradient checkpointing
@@ -971,13 +977,13 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert sample2.allclose(sample5, atol=1e-4, rtol=1e-4)
         assert sample2.allclose(sample6, atol=1e-4, rtol=1e-4)
 
-    @require_torch_gpu
     @parameterized.expand(
         [
             ("hf-internal-testing/unet2d-sharded-dummy", None),
             ("hf-internal-testing/tiny-sd-unet-sharded-latest-format", "fp16"),
         ]
     )
+    @require_torch_accelerator
     def test_load_sharded_checkpoint_from_hub(self, repo_id, variant):
         _, inputs_dict = self.prepare_init_args_and_inputs_for_common()
         loaded_model = self.model_class.from_pretrained(repo_id, variant=variant)
@@ -987,13 +993,13 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
     @parameterized.expand(
         [
             ("hf-internal-testing/unet2d-sharded-dummy-subfolder", None),
             ("hf-internal-testing/tiny-sd-unet-sharded-latest-format-subfolder", "fp16"),
         ]
     )
+    @require_torch_accelerator
     def test_load_sharded_checkpoint_from_hub_subfolder(self, repo_id, variant):
         _, inputs_dict = self.prepare_init_args_and_inputs_for_common()
         loaded_model = self.model_class.from_pretrained(repo_id, subfolder="unet", variant=variant)
@@ -1003,7 +1009,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_load_sharded_checkpoint_from_hub_local(self):
         _, inputs_dict = self.prepare_init_args_and_inputs_for_common()
         ckpt_path = snapshot_download("hf-internal-testing/unet2d-sharded-dummy")
@@ -1014,7 +1020,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_load_sharded_checkpoint_from_hub_local_subfolder(self):
         _, inputs_dict = self.prepare_init_args_and_inputs_for_common()
         ckpt_path = snapshot_download("hf-internal-testing/unet2d-sharded-dummy-subfolder")
@@ -1025,7 +1031,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
+    @require_torch_accelerator
     @parameterized.expand(
         [
             ("hf-internal-testing/unet2d-sharded-dummy", None),
@@ -1040,7 +1046,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
+    @require_torch_accelerator
     @parameterized.expand(
         [
             ("hf-internal-testing/unet2d-sharded-dummy-subfolder", None),
@@ -1055,7 +1061,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_load_sharded_checkpoint_device_map_from_hub_local(self):
         _, inputs_dict = self.prepare_init_args_and_inputs_for_common()
         ckpt_path = snapshot_download("hf-internal-testing/unet2d-sharded-dummy")
@@ -1065,7 +1071,7 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
         assert loaded_model
         assert new_output.sample.shape == (4, 4, 16, 16)
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_load_sharded_checkpoint_device_map_from_hub_local_subfolder(self):
         _, inputs_dict = self.prepare_init_args_and_inputs_for_common()
         ckpt_path = snapshot_download("hf-internal-testing/unet2d-sharded-dummy-subfolder")
@@ -1112,12 +1118,12 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
             with torch.no_grad():
                 lora_sample_2 = model(**inputs_dict).sample
 
-        assert not torch.allclose(
-            non_lora_sample, lora_sample_1, atol=1e-4, rtol=1e-4
-        ), "LoRA injected UNet should produce different results."
-        assert torch.allclose(
-            lora_sample_1, lora_sample_2, atol=1e-4, rtol=1e-4
-        ), "Loading from a saved checkpoint should produce identical results."
+        assert not torch.allclose(non_lora_sample, lora_sample_1, atol=1e-4, rtol=1e-4), (
+            "LoRA injected UNet should produce different results."
+        )
+        assert torch.allclose(lora_sample_1, lora_sample_2, atol=1e-4, rtol=1e-4), (
+            "Loading from a saved checkpoint should produce identical results."
+        )
 
     @require_peft_backend
     def test_save_attn_procs_raise_warning(self):
@@ -1136,6 +1142,20 @@ class UNet2DConditionModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Test
 
         warning_message = str(warning.warnings[0].message)
         assert "Using the `save_attn_procs()` method has been deprecated" in warning_message
+
+
+class UNet2DConditionModelCompileTests(TorchCompileTesterMixin, unittest.TestCase):
+    model_class = UNet2DConditionModel
+
+    def prepare_init_args_and_inputs_for_common(self):
+        return UNet2DConditionModelTests().prepare_init_args_and_inputs_for_common()
+
+
+class UNet2DConditionModelLoRAHotSwapTests(LoraHotSwappingForModelTesterMixin, unittest.TestCase):
+    model_class = UNet2DConditionModel
+
+    def prepare_init_args_and_inputs_for_common(self):
+        return UNet2DConditionModelTests().prepare_init_args_and_inputs_for_common()
 
 
 @slow
@@ -1165,11 +1185,11 @@ class UNet2DConditionModelIntegrationTests(unittest.TestCase):
 
         return model
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_set_attention_slice_auto(self):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_max_memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+        backend_empty_cache(torch_device)
+        backend_reset_max_memory_allocated(torch_device)
+        backend_reset_peak_memory_stats(torch_device)
 
         unet = self.get_unet_model()
         unet.set_attention_slice("auto")
@@ -1181,15 +1201,15 @@ class UNet2DConditionModelIntegrationTests(unittest.TestCase):
         with torch.no_grad():
             _ = unet(latents, timestep=timestep, encoder_hidden_states=encoder_hidden_states).sample
 
-        mem_bytes = torch.cuda.max_memory_allocated()
+        mem_bytes = backend_max_memory_allocated(torch_device)
 
         assert mem_bytes < 5 * 10**9
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_set_attention_slice_max(self):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_max_memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+        backend_empty_cache(torch_device)
+        backend_reset_max_memory_allocated(torch_device)
+        backend_reset_peak_memory_stats(torch_device)
 
         unet = self.get_unet_model()
         unet.set_attention_slice("max")
@@ -1201,15 +1221,15 @@ class UNet2DConditionModelIntegrationTests(unittest.TestCase):
         with torch.no_grad():
             _ = unet(latents, timestep=timestep, encoder_hidden_states=encoder_hidden_states).sample
 
-        mem_bytes = torch.cuda.max_memory_allocated()
+        mem_bytes = backend_max_memory_allocated(torch_device)
 
         assert mem_bytes < 5 * 10**9
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_set_attention_slice_int(self):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_max_memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+        backend_empty_cache(torch_device)
+        backend_reset_max_memory_allocated(torch_device)
+        backend_reset_peak_memory_stats(torch_device)
 
         unet = self.get_unet_model()
         unet.set_attention_slice(2)
@@ -1221,15 +1241,15 @@ class UNet2DConditionModelIntegrationTests(unittest.TestCase):
         with torch.no_grad():
             _ = unet(latents, timestep=timestep, encoder_hidden_states=encoder_hidden_states).sample
 
-        mem_bytes = torch.cuda.max_memory_allocated()
+        mem_bytes = backend_max_memory_allocated(torch_device)
 
         assert mem_bytes < 5 * 10**9
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_set_attention_slice_list(self):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_max_memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+        backend_empty_cache(torch_device)
+        backend_reset_max_memory_allocated(torch_device)
+        backend_reset_peak_memory_stats(torch_device)
 
         # there are 32 sliceable layers
         slice_list = 16 * [2, 3]
@@ -1243,7 +1263,7 @@ class UNet2DConditionModelIntegrationTests(unittest.TestCase):
         with torch.no_grad():
             _ = unet(latents, timestep=timestep, encoder_hidden_states=encoder_hidden_states).sample
 
-        mem_bytes = torch.cuda.max_memory_allocated()
+        mem_bytes = backend_max_memory_allocated(torch_device)
 
         assert mem_bytes < 5 * 10**9
 

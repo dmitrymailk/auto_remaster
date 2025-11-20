@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, Union
 
 import torch
-import torch.utils.checkpoint
 from torch import nn
 
 from ...configuration_utils import ConfigMixin, register_to_config
@@ -55,7 +54,7 @@ class Kandinsky3UNet(ModelMixin, ConfigMixin):
         groups: int = 32,
         attention_head_dim: int = 64,
         layers_per_block: Union[int, Tuple[int]] = 3,
-        block_out_channels: Tuple[int] = (384, 768, 1536, 3072),
+        block_out_channels: Tuple[int, ...] = (384, 768, 1536, 3072),
         cross_attention_dim: Union[int, Tuple[int]] = 4096,
         encoder_hid_dim: int = 4096,
     ):
@@ -204,10 +203,6 @@ class Kandinsky3UNet(ModelMixin, ConfigMixin):
         Disables custom attention processors and sets the default attention implementation.
         """
         self.set_attn_processor(AttnProcessor())
-
-    def _set_gradient_checkpointing(self, module, value=False):
-        if hasattr(module, "gradient_checkpointing"):
-            module.gradient_checkpointing = value
 
     def forward(self, sample, timestep, encoder_hidden_states=None, encoder_attention_mask=None, return_dict=True):
         if encoder_attention_mask is not None:

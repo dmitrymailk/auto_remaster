@@ -1,4 +1,4 @@
-<!--Copyright 2024 The HuggingFace Team. All rights reserved.
+<!--Copyright 2025 The HuggingFace Team. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
 the License. You may obtain a copy of the License at
@@ -12,15 +12,19 @@ specific language governing permissions and limitations under the License.
 
 # Flux
 
+<div class="flex flex-wrap space-x-1">
+  <img alt="LoRA" src="https://img.shields.io/badge/LoRA-d8b4fe?style=flat"/>
+  <img alt="MPS" src="https://img.shields.io/badge/MPS-000000?style=flat&logo=apple&logoColor=white%22">
+</div>
+
 Flux is a series of text-to-image generation models based on diffusion transformers. To know more about Flux, check out the original [blog post](https://blackforestlabs.ai/announcing-black-forest-labs/) by the creators of Flux, Black Forest Labs.
 
 Original model checkpoints for Flux can be found [here](https://huggingface.co/black-forest-labs). Original inference code can be found [here](https://github.com/black-forest-labs/flux).
 
-<Tip>
-
-Flux can be quite expensive to run on consumer hardware devices. However, you can perform a suite of optimizations to run it faster and in a more memory-friendly manner. Check out [this section](https://huggingface.co/blog/sd3#memory-optimizations-for-sd3) for more details. Additionally, Flux can benefit from quantization for memory efficiency with a trade-off in inference latency. Refer to [this blog post](https://huggingface.co/blog/quanto-diffusers) to learn more.  For an exhaustive list of resources, check out [this gist](https://gist.github.com/sayakpaul/b664605caf0aa3bf8585ab109dd5ac9c).
-
-</Tip>
+> [!TIP]
+> Flux can be quite expensive to run on consumer hardware devices. However, you can perform a suite of optimizations to run it faster and in a more memory-friendly manner. Check out [this section](https://huggingface.co/blog/sd3#memory-optimizations-for-sd3) for more details. Additionally, Flux can benefit from quantization for memory efficiency with a trade-off in inference latency. Refer to [this blog post](https://huggingface.co/blog/quanto-diffusers) to learn more.  For an exhaustive list of resources, check out [this gist](https://gist.github.com/sayakpaul/b664605caf0aa3bf8585ab109dd5ac9c).
+>
+> [Caching](../../optimization/cache) may also speed up inference by storing and reusing intermediate outputs.
 
 Flux comes in the following variants:
 
@@ -34,6 +38,7 @@ Flux comes in the following variants:
 | Canny Control (LoRA) | [`black-forest-labs/FLUX.1-Canny-dev-lora`](https://huggingface.co/black-forest-labs/FLUX.1-Canny-dev-lora) |
 | Depth Control (LoRA) | [`black-forest-labs/FLUX.1-Depth-dev-lora`](https://huggingface.co/black-forest-labs/FLUX.1-Depth-dev-lora) |
 | Redux (Adapter) | [`black-forest-labs/FLUX.1-Redux-dev`](https://huggingface.co/black-forest-labs/FLUX.1-Redux-dev) |
+| Kontext | [`black-forest-labs/FLUX.1-kontext`](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev) |
 
 All checkpoints have different usage which we detail below.
 
@@ -268,6 +273,107 @@ images = pipe(
 images[0].save("flux-redux.png")
 ```
 
+### Kontext
+
+Flux Kontext is a model that allows in-context control of the image generation process, allowing for editing, refinement, relighting, style transfer, character customization, and more.
+
+```python
+import torch
+from diffusers import FluxKontextPipeline
+from diffusers.utils import load_image
+
+pipe = FluxKontextPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-Kontext-dev", torch_dtype=torch.bfloat16
+)
+pipe.to("cuda")
+
+image = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/yarn-art-pikachu.png").convert("RGB")
+prompt = "Make Pikachu hold a sign that says 'Black Forest Labs is awesome', yarn art style, detailed, vibrant colors"
+image = pipe(
+    image=image,
+    prompt=prompt,
+    guidance_scale=2.5,
+    generator=torch.Generator().manual_seed(42),
+).images[0]
+image.save("flux-kontext.png")
+```
+
+Flux Kontext comes with an integrity safety checker, which should be run after the image generation step. To run the safety checker, install the official repository from [black-forest-labs/flux](https://github.com/black-forest-labs/flux) and add the following code:
+
+```python
+from flux.content_filters import PixtralContentFilter
+
+# ... pipeline invocation to generate images
+
+integrity_checker = PixtralContentFilter(torch.device("cuda"))
+image_ = np.array(image) / 255.0
+image_ = 2 * image_ - 1
+image_ = torch.from_numpy(image_).to("cuda", dtype=torch.float32).unsqueeze(0).permute(0, 3, 1, 2)
+if integrity_checker.test_image(image_):
+    raise ValueError("Your image has been flagged. Choose another prompt/image or try again.")
+```
+
+### Kontext Inpainting
+`FluxKontextInpaintPipeline` enables image modification within a fixed mask region. It currently supports both text-based conditioning and image-reference conditioning.
+<hfoptions id="kontext-inpaint">
+<hfoption id="text-only">
+
+
+```python
+import torch
+from diffusers import FluxKontextInpaintPipeline
+from diffusers.utils import load_image
+
+prompt = "Change the yellow dinosaur to green one"
+img_url = (
+    "https://github.com/ZenAI-Vietnam/Flux-Kontext-pipelines/blob/main/assets/dinosaur_input.jpeg?raw=true"
+)
+mask_url = (
+    "https://github.com/ZenAI-Vietnam/Flux-Kontext-pipelines/blob/main/assets/dinosaur_mask.png?raw=true"
+)
+
+source = load_image(img_url)
+mask = load_image(mask_url)
+
+pipe = FluxKontextInpaintPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-Kontext-dev", torch_dtype=torch.bfloat16
+)
+pipe.to("cuda")
+
+image = pipe(prompt=prompt, image=source, mask_image=mask, strength=1.0).images[0]
+image.save("kontext_inpainting_normal.png")
+```
+</hfoption>
+<hfoption id="image conditioning">
+
+```python
+import torch
+from diffusers import FluxKontextInpaintPipeline
+from diffusers.utils import load_image
+
+pipe = FluxKontextInpaintPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-Kontext-dev", torch_dtype=torch.bfloat16
+)
+pipe.to("cuda")
+
+prompt = "Replace this ball"
+img_url = "https://images.pexels.com/photos/39362/the-ball-stadion-football-the-pitch-39362.jpeg?auto=compress&cs=tinysrgb&dpr=1&w=500"
+mask_url = "https://github.com/ZenAI-Vietnam/Flux-Kontext-pipelines/blob/main/assets/ball_mask.png?raw=true"
+image_reference_url = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTah3x6OL_ECMBaZ5ZlJJhNsyC-OSMLWAI-xw&s"
+
+source = load_image(img_url)
+mask = load_image(mask_url)
+image_reference = load_image(image_reference_url)
+
+mask = pipe.mask_processor.blur(mask, blur_factor=12)
+image = pipe(
+    prompt=prompt, image=source, mask_image=mask, image_reference=image_reference, strength=1.0
+).images[0]
+image.save("kontext_inpainting_ref.png")
+```
+</hfoption>
+</hfoptions>
+
 ## Combining Flux Turbo LoRAs with Flux Control, Fill, and Redux
 
 We can combine Flux Turbo LoRAs with Flux Control and other pipelines like Fill and Redux to enable few-steps' inference. The example below shows how to do that for Flux Control LoRA for depth and turbo LoRA from [`ByteDance/Hyper-SD`](https://hf.co/ByteDance/Hyper-SD).
@@ -305,7 +411,121 @@ image = control_pipe(
 image.save("output.png")
 ```
 
-## Running FP16 inference
+## Note about `unload_lora_weights()` when using Flux LoRAs
+
+When unloading the Control LoRA weights, call `pipe.unload_lora_weights(reset_to_overwritten_params=True)` to reset the `pipe.transformer` completely back to its original form. The resultant pipeline can then be used with methods like [`DiffusionPipeline.from_pipe`]. More details about this argument are available in [this PR](https://github.com/huggingface/diffusers/pull/10397).
+
+## IP-Adapter
+
+> [!TIP]
+> Check out [IP-Adapter](../../using-diffusers/ip_adapter) to learn more about how IP-Adapters work.
+
+An IP-Adapter lets you prompt Flux with images, in addition to the text prompt. This is especially useful when describing complex concepts that are difficult to articulate through text alone and you have reference images.
+
+```python
+import torch
+from diffusers import FluxPipeline
+from diffusers.utils import load_image
+
+pipe = FluxPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-dev", torch_dtype=torch.bfloat16
+).to("cuda")
+
+image = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/flux_ip_adapter_input.jpg").resize((1024, 1024))
+
+pipe.load_ip_adapter(
+    "XLabs-AI/flux-ip-adapter",
+    weight_name="ip_adapter.safetensors",
+    image_encoder_pretrained_model_name_or_path="openai/clip-vit-large-patch14"
+)
+pipe.set_ip_adapter_scale(1.0)
+
+image = pipe(
+    width=1024,
+    height=1024,
+    prompt="wearing sunglasses",
+    negative_prompt="",
+    true_cfg_scale=4.0,
+    generator=torch.Generator().manual_seed(4444),
+    ip_adapter_image=image,
+).images[0]
+
+image.save('flux_ip_adapter_output.jpg')
+```
+
+<div class="justify-center">
+    <img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/flux_ip_adapter_output.jpg"/>
+    <figcaption class="mt-2 text-sm text-center text-gray-500">IP-Adapter examples with prompt "wearing sunglasses"</figcaption>
+</div>
+
+## Optimize
+
+Flux is a very large model and requires ~50GB of RAM/VRAM to load all the modeling components. Enable some of the optimizations below to lower the memory requirements.
+
+### Group offloading
+
+[Group offloading](../../optimization/memory#group-offloading) lowers VRAM usage by offloading groups of internal layers rather than the whole model or weights. You need to use [`~hooks.apply_group_offloading`] on all the model components of a pipeline. The `offload_type` parameter allows you to toggle between block and leaf-level offloading. Setting it to `leaf_level` offloads the lowest leaf-level parameters to the CPU instead of offloading at the module-level.
+
+On CUDA devices that support asynchronous data streaming, set `use_stream=True` to overlap data transfer and computation to accelerate inference.
+
+> [!TIP]
+> It is possible to mix block and leaf-level offloading for different components in a pipeline.
+
+```py
+import torch
+from diffusers import FluxPipeline
+from diffusers.hooks import apply_group_offloading
+
+model_id = "black-forest-labs/FLUX.1-dev"
+dtype = torch.bfloat16
+pipe = FluxPipeline.from_pretrained(
+	model_id,
+	torch_dtype=dtype,
+)
+
+apply_group_offloading(
+    pipe.transformer,
+    offload_type="leaf_level",
+    offload_device=torch.device("cpu"),
+    onload_device=torch.device("cuda"),
+    use_stream=True,
+)
+apply_group_offloading(
+    pipe.text_encoder, 
+    offload_device=torch.device("cpu"),
+    onload_device=torch.device("cuda"),
+    offload_type="leaf_level",
+    use_stream=True,
+)
+apply_group_offloading(
+    pipe.text_encoder_2, 
+    offload_device=torch.device("cpu"),
+    onload_device=torch.device("cuda"),
+    offload_type="leaf_level",
+    use_stream=True,
+)
+apply_group_offloading(
+    pipe.vae, 
+    offload_device=torch.device("cpu"),
+    onload_device=torch.device("cuda"),
+    offload_type="leaf_level",
+    use_stream=True,
+)
+
+prompt="A cat wearing sunglasses and working as a lifeguard at pool."
+
+generator = torch.Generator().manual_seed(181201)
+image = pipe(
+    prompt,
+    width=576,
+    height=1024,
+    num_inference_steps=30,
+    generator=generator
+).images[0]
+image
+```
+
+### Running FP16 inference
 
 Flux can generate high-quality images with FP16 (i.e. to accelerate inference on Turing/Volta GPUs) but produces different outputs compared to FP32/BF16. The issue is that some activations in the text encoders have to be clipped when running in FP16, which affects the overall image. Forcing text encoders to run with FP32 inference thus removes this output difference. See [here](https://github.com/huggingface/diffusers/pull/9097#issuecomment-2272292516) for details.
 
@@ -334,13 +554,52 @@ out = pipe(
 out.save("image.png")
 ```
 
+### Quantization
+
+Quantization helps reduce the memory requirements of very large models by storing model weights in a lower precision data type. However, quantization may have varying impact on video quality depending on the video model.
+
+Refer to the [Quantization](../../quantization/overview) overview to learn more about supported quantization backends and selecting a quantization backend that supports your use case. The example below demonstrates how to load a quantized [`FluxPipeline`] for inference with bitsandbytes.
+
+```py
+import torch
+from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig, FluxTransformer2DModel, FluxPipeline
+from transformers import BitsAndBytesConfig as BitsAndBytesConfig, T5EncoderModel
+
+quant_config = BitsAndBytesConfig(load_in_8bit=True)
+text_encoder_8bit = T5EncoderModel.from_pretrained(
+    "black-forest-labs/FLUX.1-dev",
+    subfolder="text_encoder_2",
+    quantization_config=quant_config,
+    torch_dtype=torch.float16,
+)
+
+quant_config = DiffusersBitsAndBytesConfig(load_in_8bit=True)
+transformer_8bit = FluxTransformer2DModel.from_pretrained(
+    "black-forest-labs/FLUX.1-dev",
+    subfolder="transformer",
+    quantization_config=quant_config,
+    torch_dtype=torch.float16,
+)
+
+pipeline = FluxPipeline.from_pretrained(
+    "black-forest-labs/FLUX.1-dev",
+    text_encoder_2=text_encoder_8bit,
+    transformer=transformer_8bit,
+    torch_dtype=torch.float16,
+    device_map="balanced",
+)
+
+prompt = "a tiny astronaut hatching from an egg on the moon"
+image = pipeline(prompt, guidance_scale=3.5, height=768, width=1360, num_inference_steps=50).images[0]
+image.save("flux.png")
+```
+
 ## Single File Loading for the `FluxTransformer2DModel`
 
 The `FluxTransformer2DModel` supports loading checkpoints in the original format shipped by Black Forest Labs. This is also useful when trying to load finetunes or quantized versions of the models that have been published by the community.
 
-<Tip>
-`FP8` inference can be brittle depending on the GPU type, CUDA version, and `torch` version that you are using. It is recommended that you use the `optimum-quanto` library in order to run FP8 inference on your machine.
-</Tip>
+> [!TIP]
+> `FP8` inference can be brittle depending on the GPU type, CUDA version, and `torch` version that you are using. It is recommended that you use the `optimum-quanto` library in order to run FP8 inference on your machine.
 
 The following example demonstrates how to run Flux with less than 16GB of VRAM.
 
@@ -439,5 +698,17 @@ image.save("flux-fp8-dev.png")
 ## FluxFillPipeline
 
 [[autodoc]] FluxFillPipeline
+	- all
+	- __call__
+
+## FluxKontextPipeline
+
+[[autodoc]] FluxKontextPipeline
+	- all
+	- __call__
+
+## FluxKontextInpaintPipeline
+
+[[autodoc]] FluxKontextInpaintPipeline
 	- all
 	- __call__

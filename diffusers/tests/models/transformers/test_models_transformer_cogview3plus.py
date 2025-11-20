@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc.
+# Copyright 2025 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,11 +18,11 @@ import unittest
 import torch
 
 from diffusers import CogView3PlusTransformer2DModel
-from diffusers.utils.testing_utils import (
+
+from ...testing_utils import (
     enable_full_determinism,
     torch_device,
 )
-
 from ..test_modeling_common import ModelTesterMixin
 
 
@@ -33,6 +33,7 @@ class CogView3PlusTransformerTests(ModelTesterMixin, unittest.TestCase):
     model_class = CogView3PlusTransformer2DModel
     main_input_name = "hidden_states"
     uses_custom_attn_processor = True
+    model_split_percents = [0.7, 0.6, 0.6]
 
     @property
     def dummy_input(self):
@@ -71,7 +72,7 @@ class CogView3PlusTransformerTests(ModelTesterMixin, unittest.TestCase):
         init_dict = {
             "patch_size": 2,
             "in_channels": 4,
-            "num_layers": 1,
+            "num_layers": 2,
             "attention_head_dim": 4,
             "num_attention_heads": 2,
             "out_channels": 4,

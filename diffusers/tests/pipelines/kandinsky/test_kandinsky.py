@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc.
+# Copyright 2025 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,20 +18,23 @@ import random
 import unittest
 
 import numpy as np
+import pytest
 import torch
 from transformers import XLMRobertaTokenizerFast
 
 from diffusers import DDIMScheduler, KandinskyPipeline, KandinskyPriorPipeline, UNet2DConditionModel, VQModel
 from diffusers.pipelines.kandinsky.text_encoder import MCLIPConfig, MultilingualCLIP
-from diffusers.utils.testing_utils import (
+from diffusers.utils import is_transformers_version
+
+from ...testing_utils import (
+    backend_empty_cache,
     enable_full_determinism,
     floats_tensor,
     load_numpy,
-    require_torch_gpu,
+    require_torch_accelerator,
     slow,
     torch_device,
 )
-
 from ..test_pipelines_common import PipelineTesterMixin, assert_mean_pixel_difference
 
 
@@ -204,6 +207,8 @@ class KandinskyPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     ]
     test_xformers_attention = False
 
+    supports_dduf = False
+
     def get_dummy_components(self):
         dummy = Dummies()
         return dummy.get_dummy_components()
@@ -212,6 +217,11 @@ class KandinskyPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         dummy = Dummies()
         return dummy.get_dummy_inputs(device=device, seed=seed)
 
+    @pytest.mark.xfail(
+        condition=is_transformers_version(">=", "4.56.2"),
+        reason="Latest transformers changes the slices",
+        strict=False,
+    )
     def test_kandinsky(self):
         device = "cpu"
 
@@ -237,14 +247,14 @@ class KandinskyPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
         expected_slice = np.array([1.0000, 1.0000, 0.2766, 1.0000, 0.5447, 0.1737, 1.0000, 0.4316, 0.9024])
 
-        assert (
-            np.abs(image_slice.flatten() - expected_slice).max() < 1e-2
-        ), f" expected_slice {expected_slice}, but got {image_slice.flatten()}"
-        assert (
-            np.abs(image_from_tuple_slice.flatten() - expected_slice).max() < 1e-2
-        ), f" expected_slice {expected_slice}, but got {image_from_tuple_slice.flatten()}"
+        assert np.abs(image_slice.flatten() - expected_slice).max() < 1e-2, (
+            f" expected_slice {expected_slice}, but got {image_slice.flatten()}"
+        )
+        assert np.abs(image_from_tuple_slice.flatten() - expected_slice).max() < 1e-2, (
+            f" expected_slice {expected_slice}, but got {image_from_tuple_slice.flatten()}"
+        )
 
-    @require_torch_gpu
+    @require_torch_accelerator
     def test_offloads(self):
         pipes = []
         components = self.get_dummy_components()
@@ -253,12 +263,12 @@ class KandinskyPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
         components = self.get_dummy_components()
         sd_pipe = self.pipeline_class(**components)
-        sd_pipe.enable_model_cpu_offload()
+        sd_pipe.enable_model_cpu_offload(device=torch_device)
         pipes.append(sd_pipe)
 
         components = self.get_dummy_components()
         sd_pipe = self.pipeline_class(**components)
-        sd_pipe.enable_sequential_cpu_offload()
+        sd_pipe.enable_sequential_cpu_offload(device=torch_device)
         pipes.append(sd_pipe)
 
         image_slices = []
@@ -273,19 +283,19 @@ class KandinskyPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
 
 
 @slow
-@require_torch_gpu
+@require_torch_accelerator
 class KandinskyPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def test_kandinsky_text2img(self):
         expected_image = load_numpy(
@@ -304,7 +314,7 @@ class KandinskyPipelineIntegrationTests(unittest.TestCase):
 
         prompt = "red cat, 4k photo"
 
-        generator = torch.Generator(device="cuda").manual_seed(0)
+        generator = torch.Generator(device=torch_device).manual_seed(0)
         image_emb, zero_image_emb = pipe_prior(
             prompt,
             generator=generator,
@@ -312,7 +322,7 @@ class KandinskyPipelineIntegrationTests(unittest.TestCase):
             negative_prompt="",
         ).to_tuple()
 
-        generator = torch.Generator(device="cuda").manual_seed(0)
+        generator = torch.Generator(device=torch_device).manual_seed(0)
         output = pipeline(
             prompt,
             image_embeds=image_emb,

@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,11 +16,10 @@ from math import gcd
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
-import torch.utils.checkpoint
 from torch import Tensor, nn
 
 from ...configuration_utils import ConfigMixin, register_to_config
-from ...utils import BaseOutput, is_torch_version, logging
+from ...utils import BaseOutput, logging
 from ...utils.torch_utils import apply_freeu
 from ..attention_processor import (
     ADDED_KV_ATTENTION_PROCESSORS,
@@ -294,14 +293,14 @@ class ControlNetXSAdapter(ModelMixin, ConfigMixin):
         self,
         conditioning_channels: int = 3,
         conditioning_channel_order: str = "rgb",
-        conditioning_embedding_out_channels: Tuple[int] = (16, 32, 96, 256),
+        conditioning_embedding_out_channels: Tuple[int, ...] = (16, 32, 96, 256),
         time_embedding_mix: float = 1.0,
         learn_time_embedding: bool = False,
         num_attention_heads: Union[int, Tuple[int]] = 4,
-        block_out_channels: Tuple[int] = (4, 8, 16, 16),
-        base_block_out_channels: Tuple[int] = (320, 640, 1280, 1280),
+        block_out_channels: Tuple[int, ...] = (4, 8, 16, 16),
+        base_block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
         cross_attention_dim: int = 1024,
-        down_block_types: Tuple[str] = (
+        down_block_types: Tuple[str, ...] = (
             "CrossAttnDownBlock2D",
             "CrossAttnDownBlock2D",
             "CrossAttnDownBlock2D",
@@ -437,7 +436,7 @@ class ControlNetXSAdapter(ModelMixin, ConfigMixin):
         time_embedding_mix: int = 1.0,
         conditioning_channels: int = 3,
         conditioning_channel_order: str = "rgb",
-        conditioning_embedding_out_channels: Tuple[int] = (16, 32, 96, 256),
+        conditioning_embedding_out_channels: Tuple[int, ...] = (16, 32, 96, 256),
     ):
         r"""
         Instantiate a [`ControlNetXSAdapter`] from a [`UNet2DConditionModel`].
@@ -530,14 +529,19 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
         self,
         # unet configs
         sample_size: Optional[int] = 96,
-        down_block_types: Tuple[str] = (
+        down_block_types: Tuple[str, ...] = (
             "CrossAttnDownBlock2D",
             "CrossAttnDownBlock2D",
             "CrossAttnDownBlock2D",
             "DownBlock2D",
         ),
-        up_block_types: Tuple[str] = ("UpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D"),
-        block_out_channels: Tuple[int] = (320, 640, 1280, 1280),
+        up_block_types: Tuple[str, ...] = (
+            "UpBlock2D",
+            "CrossAttnUpBlock2D",
+            "CrossAttnUpBlock2D",
+            "CrossAttnUpBlock2D",
+        ),
+        block_out_channels: Tuple[int, ...] = (320, 640, 1280, 1280),
         norm_num_groups: Optional[int] = 32,
         cross_attention_dim: Union[int, Tuple[int]] = 1024,
         transformer_layers_per_block: Union[int, Tuple[int]] = 1,
@@ -551,10 +555,10 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
         # additional controlnet configs
         time_embedding_mix: float = 1.0,
         ctrl_conditioning_channels: int = 3,
-        ctrl_conditioning_embedding_out_channels: Tuple[int] = (16, 32, 96, 256),
+        ctrl_conditioning_embedding_out_channels: Tuple[int, ...] = (16, 32, 96, 256),
         ctrl_conditioning_channel_order: str = "rgb",
         ctrl_learn_time_embedding: bool = False,
-        ctrl_block_out_channels: Tuple[int] = (4, 8, 16, 16),
+        ctrl_block_out_channels: Tuple[int, ...] = (4, 8, 16, 16),
         ctrl_num_attention_heads: Union[int, Tuple[int]] = 4,
         ctrl_max_norm_num_groups: int = 32,
     ):
@@ -734,17 +738,17 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
             unet (`UNet2DConditionModel`):
                 The UNet model we want to control.
             controlnet (`ControlNetXSAdapter`):
-                The ConntrolNet-XS adapter with which the UNet will be fused. If none is given, a new ConntrolNet-XS
+                The ControlNet-XS adapter with which the UNet will be fused. If none is given, a new ControlNet-XS
                 adapter will be created.
             size_ratio (float, *optional*, defaults to `None`):
-                Used to contruct the controlnet if none is given. See [`ControlNetXSAdapter.from_unet`] for details.
+                Used to construct the controlnet if none is given. See [`ControlNetXSAdapter.from_unet`] for details.
             ctrl_block_out_channels (`List[int]`, *optional*, defaults to `None`):
-                Used to contruct the controlnet if none is given. See [`ControlNetXSAdapter.from_unet`] for details,
+                Used to construct the controlnet if none is given. See [`ControlNetXSAdapter.from_unet`] for details,
                 where this parameter is called `block_out_channels`.
             time_embedding_mix (`float`, *optional*, defaults to None):
-                Used to contruct the controlnet if none is given. See [`ControlNetXSAdapter.from_unet`] for details.
+                Used to construct the controlnet if none is given. See [`ControlNetXSAdapter.from_unet`] for details.
             ctrl_optional_kwargs (`Dict`, *optional*, defaults to `None`):
-                Passed to the `init` of the new controlent if no controlent was given.
+                Passed to the `init` of the new controlnet if no controlnet was given.
         """
         if controlnet is None:
             controlnet = ControlNetXSAdapter.from_unet(
@@ -864,10 +868,6 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
         for u in self.up_blocks:
             u.freeze_base_params()
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        if hasattr(module, "gradient_checkpointing"):
-            module.gradient_checkpointing = value
-
     @property
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.attn_processors
     def attn_processors(self) -> Dict[str, AttentionProcessor]:
@@ -946,7 +946,7 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
 
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.enable_freeu
     def enable_freeu(self, s1: float, s2: float, b1: float, b2: float):
-        r"""Enables the FreeU mechanism from https://arxiv.org/abs/2309.11497.
+        r"""Enables the FreeU mechanism from https://huggingface.co/papers/2309.11497.
 
         The suffixes after the scaling factors represent the stage blocks where they are being applied.
 
@@ -984,11 +984,7 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
         Enables fused QKV projections. For self-attention modules, all projection matrices (i.e., query, key, value)
         are fused. For cross-attention modules, key and value projection matrices are fused.
 
-        <Tip warning={true}>
-
-        This API is 🧪 experimental.
-
-        </Tip>
+        > [!WARNING] > This API is 🧪 experimental.
         """
         self.original_attn_processors = None
 
@@ -1008,11 +1004,7 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
     def unfuse_qkv_projections(self):
         """Disables the fused QKV projection if enabled.
 
-        <Tip warning={true}>
-
-        This API is 🧪 experimental.
-
-        </Tip>
+        > [!WARNING] > This API is 🧪 experimental.
 
         """
         if self.original_attn_processors is not None:
@@ -1088,10 +1080,11 @@ class UNetControlNetXSModel(ModelMixin, ConfigMixin):
             # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
             # This would be a good case for the `match` statement (Python 3.10+)
             is_mps = sample.device.type == "mps"
+            is_npu = sample.device.type == "npu"
             if isinstance(timestep, float):
-                dtype = torch.float32 if is_mps else torch.float64
+                dtype = torch.float32 if (is_mps or is_npu) else torch.float64
             else:
-                dtype = torch.int32 if is_mps else torch.int64
+                dtype = torch.int32 if (is_mps or is_npu) else torch.int64
             timesteps = torch.tensor([timesteps], dtype=dtype, device=sample.device)
         elif len(timesteps.shape) == 0:
             timesteps = timesteps[None].to(sample.device)
@@ -1449,15 +1442,6 @@ class ControlNetXSCrossAttnDownBlock2D(nn.Module):
         base_blocks = list(zip(self.base_resnets, self.base_attentions))
         ctrl_blocks = list(zip(self.ctrl_resnets, self.ctrl_attentions))
 
-        def create_custom_forward(module, return_dict=None):
-            def custom_forward(*inputs):
-                if return_dict is not None:
-                    return module(*inputs, return_dict=return_dict)
-                else:
-                    return module(*inputs)
-
-            return custom_forward
-
         for (b_res, b_attn), (c_res, c_attn), b2c, c2b in zip(
             base_blocks, ctrl_blocks, self.base_to_ctrl, self.ctrl_to_base
         ):
@@ -1467,13 +1451,7 @@ class ControlNetXSCrossAttnDownBlock2D(nn.Module):
 
             # apply base subblock
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                h_base = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(b_res),
-                    h_base,
-                    temb,
-                    **ckpt_kwargs,
-                )
+                h_base = self._gradient_checkpointing_func(b_res, h_base, temb)
             else:
                 h_base = b_res(h_base, temb)
 
@@ -1490,13 +1468,7 @@ class ControlNetXSCrossAttnDownBlock2D(nn.Module):
             # apply ctrl subblock
             if apply_control:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    h_ctrl = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(c_res),
-                        h_ctrl,
-                        temb,
-                        **ckpt_kwargs,
-                    )
+                    h_ctrl = self._gradient_checkpointing_func(c_res, h_ctrl, temb)
                 else:
                     h_ctrl = c_res(h_ctrl, temb)
                 if c_attn is not None:
@@ -1861,15 +1833,6 @@ class ControlNetXSCrossAttnUpBlock2D(nn.Module):
             and getattr(self, "b2", None)
         )
 
-        def create_custom_forward(module, return_dict=None):
-            def custom_forward(*inputs):
-                if return_dict is not None:
-                    return module(*inputs, return_dict=return_dict)
-                else:
-                    return module(*inputs)
-
-            return custom_forward
-
         def maybe_apply_freeu_to_subblock(hidden_states, res_h_base):
             # FreeU: Only operate on the first two stages
             if is_freeu_enabled:
@@ -1899,13 +1862,7 @@ class ControlNetXSCrossAttnUpBlock2D(nn.Module):
             hidden_states = torch.cat([hidden_states, res_h_base], dim=1)
 
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet),
-                    hidden_states,
-                    temb,
-                    **ckpt_kwargs,
-                )
+                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states, temb)
             else:
                 hidden_states = resnet(hidden_states, temb)
 

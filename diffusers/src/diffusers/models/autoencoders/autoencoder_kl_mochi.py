@@ -1,4 +1,4 @@
-# Copyright 2024 The Mochi team and The HuggingFace Team.
+# Copyright 2025 The Mochi team and The HuggingFace Team.
 # All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,7 +27,7 @@ from ..attention_processor import Attention, MochiVaeAttnProcessor2_0
 from ..modeling_outputs import AutoencoderKLOutput
 from ..modeling_utils import ModelMixin
 from .autoencoder_kl_cogvideox import CogVideoXCausalConv3d
-from .vae import DecoderOutput, DiagonalGaussianDistribution
+from .vae import AutoencoderMixin, DecoderOutput, DiagonalGaussianDistribution
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -207,17 +207,10 @@ class MochiDownBlock3D(nn.Module):
             conv_cache_key = f"resnet_{i}"
 
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                def create_custom_forward(module):
-                    def create_forward(*inputs):
-                        return module(*inputs)
-
-                    return create_forward
-
-                hidden_states, new_conv_cache[conv_cache_key] = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet),
+                hidden_states, new_conv_cache[conv_cache_key] = self._gradient_checkpointing_func(
+                    resnet,
                     hidden_states,
-                    conv_cache=conv_cache.get(conv_cache_key),
+                    conv_cache.get(conv_cache_key),
                 )
             else:
                 hidden_states, new_conv_cache[conv_cache_key] = resnet(
@@ -312,15 +305,8 @@ class MochiMidBlock3D(nn.Module):
             conv_cache_key = f"resnet_{i}"
 
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                def create_custom_forward(module):
-                    def create_forward(*inputs):
-                        return module(*inputs)
-
-                    return create_forward
-
-                hidden_states, new_conv_cache[conv_cache_key] = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet), hidden_states, conv_cache=conv_cache.get(conv_cache_key)
+                hidden_states, new_conv_cache[conv_cache_key] = self._gradient_checkpointing_func(
+                    resnet, hidden_states, conv_cache.get(conv_cache_key)
                 )
             else:
                 hidden_states, new_conv_cache[conv_cache_key] = resnet(
@@ -393,17 +379,10 @@ class MochiUpBlock3D(nn.Module):
             conv_cache_key = f"resnet_{i}"
 
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                def create_custom_forward(module):
-                    def create_forward(*inputs):
-                        return module(*inputs)
-
-                    return create_forward
-
-                hidden_states, new_conv_cache[conv_cache_key] = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet),
+                hidden_states, new_conv_cache[conv_cache_key] = self._gradient_checkpointing_func(
+                    resnet,
                     hidden_states,
-                    conv_cache=conv_cache.get(conv_cache_key),
+                    conv_cache.get(conv_cache_key),
                 )
             else:
                 hidden_states, new_conv_cache[conv_cache_key] = resnet(
@@ -447,7 +426,9 @@ class FourierFeatures(nn.Module):
         w = w.repeat(num_channels)[None, :, None, None, None]  # [1, num_channels * num_freqs, 1, 1, 1]
 
         # Interleaved repeat of input channels to match w
-        h = inputs.repeat_interleave(num_freqs, dim=1)  # [B, C * num_freqs, T, H, W]
+        h = inputs.repeat_interleave(
+            num_freqs, dim=1, output_size=inputs.shape[1] * num_freqs
+        )  # [B, C * num_freqs, T, H, W]
         # Scale channels by frequency.
         h = w * h
 
@@ -516,6 +497,8 @@ class MochiEncoder3D(nn.Module):
         self.norm_out = MochiChunkedGroupNorm3D(block_out_channels[-1])
         self.proj_out = nn.Linear(block_out_channels[-1], 2 * out_channels, bias=False)
 
+        self.gradient_checkpointing = False
+
     def forward(
         self, hidden_states: torch.Tensor, conv_cache: Optional[Dict[str, torch.Tensor]] = None
     ) -> torch.Tensor:
@@ -531,21 +514,14 @@ class MochiEncoder3D(nn.Module):
         hidden_states = hidden_states.permute(0, 4, 1, 2, 3)
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def create_forward(*inputs):
-                    return module(*inputs)
-
-                return create_forward
-
-            hidden_states, new_conv_cache["block_in"] = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self.block_in), hidden_states, conv_cache=conv_cache.get("block_in")
+            hidden_states, new_conv_cache["block_in"] = self._gradient_checkpointing_func(
+                self.block_in, hidden_states, conv_cache.get("block_in")
             )
 
             for i, down_block in enumerate(self.down_blocks):
                 conv_cache_key = f"down_block_{i}"
-                hidden_states, new_conv_cache[conv_cache_key] = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(down_block), hidden_states, conv_cache=conv_cache.get(conv_cache_key)
+                hidden_states, new_conv_cache[conv_cache_key] = self._gradient_checkpointing_func(
+                    down_block, hidden_states, conv_cache.get(conv_cache_key)
                 )
         else:
             hidden_states, new_conv_cache["block_in"] = self.block_in(
@@ -648,21 +624,14 @@ class MochiDecoder3D(nn.Module):
 
         # 1. Mid
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def create_forward(*inputs):
-                    return module(*inputs)
-
-                return create_forward
-
-            hidden_states, new_conv_cache["block_in"] = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self.block_in), hidden_states, conv_cache=conv_cache.get("block_in")
+            hidden_states, new_conv_cache["block_in"] = self._gradient_checkpointing_func(
+                self.block_in, hidden_states, conv_cache.get("block_in")
             )
 
             for i, up_block in enumerate(self.up_blocks):
                 conv_cache_key = f"up_block_{i}"
-                hidden_states, new_conv_cache[conv_cache_key] = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(up_block), hidden_states, conv_cache=conv_cache.get(conv_cache_key)
+                hidden_states, new_conv_cache[conv_cache_key] = self._gradient_checkpointing_func(
+                    up_block, hidden_states, conv_cache.get(conv_cache_key)
                 )
         else:
             hidden_states, new_conv_cache["block_in"] = self.block_in(
@@ -688,7 +657,7 @@ class MochiDecoder3D(nn.Module):
         return hidden_states, new_conv_cache
 
 
-class AutoencoderKLMochi(ModelMixin, ConfigMixin):
+class AutoencoderKLMochi(ModelMixin, AutoencoderMixin, ConfigMixin):
     r"""
     A VAE model with KL loss for encoding images into latents and decoding latent representations into images. Used in
     [Mochi 1 preview](https://github.com/genmoai/models).
@@ -708,7 +677,7 @@ class AutoencoderKLMochi(ModelMixin, ConfigMixin):
             model. The latents are scaled with the formula `z = z * scaling_factor` before being passed to the
             diffusion model. When decoding, the latents are scaled back to the original scale with the formula: `z = 1
             / scaling_factor * z`. For more details, refer to sections 4.3.2 and D.1 of the [High-Resolution Image
-            Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752) paper.
+            Synthesis with Latent Diffusion Models](https://huggingface.co/papers/2112.10752) paper.
     """
 
     _supports_gradient_checkpointing = True
@@ -719,8 +688,8 @@ class AutoencoderKLMochi(ModelMixin, ConfigMixin):
         self,
         in_channels: int = 15,
         out_channels: int = 3,
-        encoder_block_out_channels: Tuple[int] = (64, 128, 256, 384),
-        decoder_block_out_channels: Tuple[int] = (128, 256, 512, 768),
+        encoder_block_out_channels: Tuple[int, ...] = (64, 128, 256, 384),
+        decoder_block_out_channels: Tuple[int, ...] = (128, 256, 512, 768),
         latent_channels: int = 12,
         layers_per_block: Tuple[int, ...] = (3, 3, 4, 6, 3),
         act_fn: str = "silu",
@@ -819,10 +788,6 @@ class AutoencoderKLMochi(ModelMixin, ConfigMixin):
         self.tile_sample_stride_height = 192
         self.tile_sample_stride_width = 192
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, (MochiEncoder3D, MochiDecoder3D)):
-            module.gradient_checkpointing = value
-
     def enable_tiling(
         self,
         tile_sample_min_height: Optional[int] = None,
@@ -852,27 +817,6 @@ class AutoencoderKLMochi(ModelMixin, ConfigMixin):
         self.tile_sample_min_width = tile_sample_min_width or self.tile_sample_min_width
         self.tile_sample_stride_height = tile_sample_stride_height or self.tile_sample_stride_height
         self.tile_sample_stride_width = tile_sample_stride_width or self.tile_sample_stride_width
-
-    def disable_tiling(self) -> None:
-        r"""
-        Disable tiled VAE decoding. If `enable_tiling` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_tiling = False
-
-    def enable_slicing(self) -> None:
-        r"""
-        Enable sliced VAE decoding. When this option is enabled, the VAE will split the input tensor in slices to
-        compute decoding in several steps. This is useful to save some memory and allow larger batch sizes.
-        """
-        self.use_slicing = True
-
-    def disable_slicing(self) -> None:
-        r"""
-        Disable sliced VAE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_slicing = False
 
     def _enable_framewise_encoding(self):
         r"""
@@ -944,7 +888,7 @@ class AutoencoderKLMochi(ModelMixin, ConfigMixin):
     def _decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
         batch_size, num_channels, num_frames, height, width = z.shape
         tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
-        tile_latent_min_width = self.tile_sample_stride_width // self.spatial_compression_ratio
+        tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
 
         if self.use_tiling and (width > tile_latent_min_width or height > tile_latent_min_height):
             return self.tiled_decode(z, return_dict=return_dict)

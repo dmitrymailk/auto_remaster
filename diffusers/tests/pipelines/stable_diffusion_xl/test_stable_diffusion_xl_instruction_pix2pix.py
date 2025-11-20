@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 Harutatsu Akiyama and HuggingFace Inc.
+# Copyright 2025 Harutatsu Akiyama and HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,8 +29,8 @@ from diffusers.image_processor import VaeImageProcessor
 from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_instruct_pix2pix import (
     StableDiffusionXLInstructPix2PixPipeline,
 )
-from diffusers.utils.testing_utils import enable_full_determinism, floats_tensor, torch_device
 
+from ...testing_utils import enable_full_determinism, floats_tensor, torch_device
 from ..pipeline_params import (
     IMAGE_TO_IMAGE_IMAGE_PARAMS,
     TEXT_GUIDED_IMAGE_INPAINTING_BATCH_PARAMS,
@@ -40,7 +40,6 @@ from ..test_pipelines_common import (
     PipelineKarrasSchedulerTesterMixin,
     PipelineLatentTesterMixin,
     PipelineTesterMixin,
-    SDXLOptionalComponentsTesterMixin,
 )
 
 
@@ -51,7 +50,6 @@ class StableDiffusionXLInstructPix2PixPipelineFastTests(
     PipelineLatentTesterMixin,
     PipelineKarrasSchedulerTesterMixin,
     PipelineTesterMixin,
-    SDXLOptionalComponentsTesterMixin,
     unittest.TestCase,
 ):
     pipeline_class = StableDiffusionXLInstructPix2PixPipeline
@@ -182,8 +180,10 @@ class StableDiffusionXLInstructPix2PixPipelineFastTests(
         max_diff = np.abs(out - out_latents_inputs).max()
         self.assertLess(max_diff, 1e-4, "passing latents as image input generate different result from passing image")
 
+    @unittest.skip("Test not supported at the moment.")
     def test_cfg(self):
         pass
 
+    @unittest.skip("Functionality is tested elsewhere.")
     def test_save_load_optional_components(self):
-        self._test_save_load_optional_components()
+        pass

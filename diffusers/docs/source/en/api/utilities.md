@@ -1,4 +1,4 @@
-<!--Copyright 2024 The HuggingFace Team. All rights reserved.
+<!--Copyright 2025 The HuggingFace Team. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
 the License. You may obtain a copy of the License at
@@ -26,6 +26,10 @@ Utility and helper functions for working with 🤗 Diffusers.
 
 [[autodoc]] utils.load_image
 
+## load_video
+
+[[autodoc]] utils.load_video
+
 ## export_to_gif
 
 [[autodoc]] utils.export_to_gif
@@ -41,3 +45,11 @@ Utility and helper functions for working with 🤗 Diffusers.
 ## randn_tensor
 
 [[autodoc]] utils.torch_utils.randn_tensor
+
+## apply_layerwise_casting
+
+[[autodoc]] hooks.layerwise_casting.apply_layerwise_casting
+
+## apply_group_offloading
+
+[[autodoc]] hooks.group_offloading.apply_group_offloading

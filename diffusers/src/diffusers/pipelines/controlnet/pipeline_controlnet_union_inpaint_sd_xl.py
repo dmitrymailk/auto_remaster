@@ -1,4 +1,4 @@
-# Copyright 2024 Harutatsu Akiyama, Jinbin Bai, and The HuggingFace Team. All rights reserved.
+# Copyright 2025 Harutatsu Akiyama, Jinbin Bai, and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import PIL.Image
 import torch
-import torch.nn.functional as F
 from transformers import (
     CLIPImageProcessor,
     CLIPTextModel,
@@ -35,7 +34,13 @@ from ...loaders import (
     StableDiffusionXLLoraLoaderMixin,
     TextualInversionLoaderMixin,
 )
-from ...models import AutoencoderKL, ControlNetModel, ControlNetUnionModel, ImageProjection, UNet2DConditionModel
+from ...models import (
+    AutoencoderKL,
+    ControlNetUnionModel,
+    ImageProjection,
+    MultiControlNetUnionModel,
+    UNet2DConditionModel,
+)
 from ...models.attention_processor import (
     AttnProcessor2_0,
     XFormersAttnProcessor,
@@ -51,7 +56,7 @@ from ...utils import (
     scale_lora_layers,
     unscale_lora_layers,
 )
-from ...utils.torch_utils import is_compiled_module, randn_tensor
+from ...utils.torch_utils import empty_device_cache, is_compiled_module, randn_tensor
 from ..pipeline_utils import DiffusionPipeline, StableDiffusionMixin
 from ..stable_diffusion_xl.pipeline_output import StableDiffusionXLPipelineOutput
 
@@ -59,6 +64,16 @@ from ..stable_diffusion_xl.pipeline_output import StableDiffusionXLPipelineOutpu
 if is_invisible_watermark_available():
     from diffusers.pipelines.stable_diffusion_xl.watermark import StableDiffusionXLWatermarker
 
+
+from ...utils import is_torch_xla_available
+
+
+if is_torch_xla_available():
+    import torch_xla.core.xla_model as xm
+
+    XLA_AVAILABLE = True
+else:
+    XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -124,7 +139,7 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     r"""
     Rescales `noise_cfg` tensor based on `guidance_rescale` to improve image quality and fix overexposure. Based on
     Section 3.4 from [Common Diffusion Noise Schedules and Sample Steps are
-    Flawed](https://arxiv.org/pdf/2305.08891.pdf).
+    Flawed](https://huggingface.co/papers/2305.08891).
 
     Args:
         noise_cfg (`torch.Tensor`):
@@ -209,6 +224,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         "add_time_ids",
         "mask",
         "masked_image_latents",
+        "control_image",
     ]
 
     def __init__(
@@ -219,7 +235,9 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         tokenizer: CLIPTokenizer,
         tokenizer_2: CLIPTokenizer,
         unet: UNet2DConditionModel,
-        controlnet: ControlNetUnionModel,
+        controlnet: Union[
+            ControlNetUnionModel, List[ControlNetUnionModel], Tuple[ControlNetUnionModel], MultiControlNetUnionModel
+        ],
         scheduler: KarrasDiffusionSchedulers,
         requires_aesthetics_score: bool = False,
         force_zeros_for_empty_prompt: bool = True,
@@ -229,8 +247,8 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
     ):
         super().__init__()
 
-        if not isinstance(controlnet, ControlNetUnionModel):
-            raise ValueError("Expected `controlnet` to be of type `ControlNetUnionModel`.")
+        if isinstance(controlnet, (list, tuple)):
+            controlnet = MultiControlNetUnionModel(controlnet)
 
         self.register_modules(
             vae=vae,
@@ -246,7 +264,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         )
         self.register_to_config(force_zeros_for_empty_prompt=force_zeros_for_empty_prompt)
         self.register_to_config(requires_aesthetics_score=requires_aesthetics_score)
-        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.mask_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_normalize=False, do_binarize=True, do_convert_grayscale=True
@@ -388,7 +406,9 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=True)
 
                 # We are only ALWAYS interested in the pooled output of the final text encoder
-                pooled_prompt_embeds = prompt_embeds[0]
+                if pooled_prompt_embeds is None and prompt_embeds[0].ndim == 2:
+                    pooled_prompt_embeds = prompt_embeds[0]
+
                 if clip_skip is None:
                     prompt_embeds = prompt_embeds.hidden_states[-2]
                 else:
@@ -447,8 +467,10 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                     uncond_input.input_ids.to(device),
                     output_hidden_states=True,
                 )
+
                 # We are only ALWAYS interested in the pooled output of the final text encoder
-                negative_pooled_prompt_embeds = negative_prompt_embeds[0]
+                if negative_pooled_prompt_embeds is None and negative_prompt_embeds[0].ndim == 2:
+                    negative_pooled_prompt_embeds = negative_prompt_embeds[0]
                 negative_prompt_embeds = negative_prompt_embeds.hidden_states[-2]
 
                 negative_prompt_embeds_list.append(negative_prompt_embeds)
@@ -572,7 +594,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
         # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
-        # eta corresponds to η in DDIM paper: https://arxiv.org/abs/2010.02502
+        # eta corresponds to η in DDIM paper: https://huggingface.co/papers/2010.02502
         # and should be between [0, 1]
 
         accepts_eta = "eta" in set(inspect.signature(self.scheduler.step).parameters.keys())
@@ -645,6 +667,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         controlnet_conditioning_scale=1.0,
         control_guidance_start=0.0,
         control_guidance_end=1.0,
+        control_mode=None,
         callback_on_step_end_tensor_inputs=None,
         padding_mask_crop=None,
     ):
@@ -712,7 +735,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         if padding_mask_crop is not None:
             if not isinstance(image, PIL.Image.Image):
                 raise ValueError(
-                    f"The image should be a PIL image when inpainting mask crop, but is of type" f" {type(image)}."
+                    f"The image should be a PIL image when inpainting mask crop, but is of type {type(image)}."
                 )
             if not isinstance(mask_image, PIL.Image.Image):
                 raise ValueError(
@@ -720,7 +743,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                     f" {type(mask_image)}."
                 )
             if output_type != "pil":
-                raise ValueError(f"The output type should be PIL when inpainting mask crop, but is" f" {output_type}.")
+                raise ValueError(f"The output type should be PIL when inpainting mask crop, but is {output_type}.")
 
         if prompt_embeds is not None and pooled_prompt_embeds is None:
             raise ValueError(
@@ -732,45 +755,34 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 "If `negative_prompt_embeds` are provided, `negative_pooled_prompt_embeds` also have to be passed. Make sure to generate `negative_pooled_prompt_embeds` from the same text encoder that was used to generate `negative_prompt_embeds`."
             )
 
+        # `prompt` needs more sophisticated handling when there are multiple
+        # conditionings.
+        if isinstance(self.controlnet, MultiControlNetUnionModel):
+            if isinstance(prompt, list):
+                logger.warning(
+                    f"You have {len(self.controlnet.nets)} ControlNets and you have passed {len(prompt)}"
+                    " prompts. The conditionings will be fixed across the prompts."
+                )
+
         # Check `image`
-        is_compiled = hasattr(F, "scaled_dot_product_attention") and isinstance(
-            self.controlnet, torch._dynamo.eval_frame.OptimizedModule
-        )
-        if (
-            isinstance(self.controlnet, ControlNetModel)
-            or is_compiled
-            and isinstance(self.controlnet._orig_mod, ControlNetModel)
-        ):
-            self.check_image(image, prompt, prompt_embeds)
-        elif (
-            isinstance(self.controlnet, ControlNetUnionModel)
-            or is_compiled
-            and isinstance(self.controlnet._orig_mod, ControlNetUnionModel)
-        ):
-            self.check_image(image, prompt, prompt_embeds)
+        controlnet = self.controlnet._orig_mod if is_compiled_module(self.controlnet) else self.controlnet
 
-        else:
-            assert False
+        if isinstance(controlnet, ControlNetUnionModel):
+            for image_ in image:
+                self.check_image(image_, prompt, prompt_embeds)
+        elif isinstance(controlnet, MultiControlNetUnionModel):
+            if not isinstance(image, list):
+                raise TypeError("For multiple controlnets: `image` must be type `list`")
+            elif not all(isinstance(i, list) for i in image):
+                raise ValueError("For multiple controlnets: elements of `image` must be list of conditionings.")
+            elif len(image) != len(self.controlnet.nets):
+                raise ValueError(
+                    f"For multiple controlnets: `image` must have the same length as the number of controlnets, but got {len(image)} images and {len(self.controlnet.nets)} ControlNets."
+                )
 
-        # Check `controlnet_conditioning_scale`
-        if (
-            isinstance(self.controlnet, ControlNetModel)
-            or is_compiled
-            and isinstance(self.controlnet._orig_mod, ControlNetModel)
-        ):
-            if not isinstance(controlnet_conditioning_scale, float):
-                raise TypeError("For single controlnet: `controlnet_conditioning_scale` must be type `float`.")
-
-        elif (
-            isinstance(self.controlnet, ControlNetUnionModel)
-            or is_compiled
-            and isinstance(self.controlnet._orig_mod, ControlNetUnionModel)
-        ):
-            if not isinstance(controlnet_conditioning_scale, float):
-                raise TypeError("For single controlnet: `controlnet_conditioning_scale` must be type `float`.")
-
-        else:
-            assert False
+            for images_ in image:
+                for image_ in images_:
+                    self.check_image(image_, prompt, prompt_embeds)
 
         if not isinstance(control_guidance_start, (tuple, list)):
             control_guidance_start = [control_guidance_start]
@@ -783,6 +795,12 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 f"`control_guidance_start` has {len(control_guidance_start)} elements, but `control_guidance_end` has {len(control_guidance_end)} elements. Make sure to provide the same number of elements to each list."
             )
 
+        if isinstance(controlnet, MultiControlNetUnionModel):
+            if len(control_guidance_start) != len(self.controlnet.nets):
+                raise ValueError(
+                    f"`control_guidance_start`: {control_guidance_start} has {len(control_guidance_start)} elements but there are {len(self.controlnet.nets)} controlnets available. Make sure to provide {len(self.controlnet.nets)}."
+                )
+
         for start, end in zip(control_guidance_start, control_guidance_end):
             if start >= end:
                 raise ValueError(
@@ -792,6 +810,28 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 raise ValueError(f"control guidance start: {start} can't be smaller than 0.")
             if end > 1.0:
                 raise ValueError(f"control guidance end: {end} can't be larger than 1.0.")
+
+        # Check `control_mode`
+        if isinstance(controlnet, ControlNetUnionModel):
+            if max(control_mode) >= controlnet.config.num_control_type:
+                raise ValueError(f"control_mode: must be lower than {controlnet.config.num_control_type}.")
+        elif isinstance(controlnet, MultiControlNetUnionModel):
+            for _control_mode, _controlnet in zip(control_mode, self.controlnet.nets):
+                if max(_control_mode) >= _controlnet.config.num_control_type:
+                    raise ValueError(f"control_mode: must be lower than {_controlnet.config.num_control_type}.")
+
+        # Equal number of `image` and `control_mode` elements
+        if isinstance(controlnet, ControlNetUnionModel):
+            if len(image) != len(control_mode):
+                raise ValueError("Expected len(control_image) == len(control_mode)")
+        elif isinstance(controlnet, MultiControlNetUnionModel):
+            if not all(isinstance(i, list) for i in control_mode):
+                raise ValueError(
+                    "For multiple controlnets: elements of control_mode must be lists representing conditioning mode."
+                )
+
+            elif sum(len(x) for x in image) != sum(len(x) for x in control_mode):
+                raise ValueError("Expected len(control_image) == len(control_mode)")
 
         if ip_adapter_image is not None and ip_adapter_image_embeds is not None:
             raise ValueError(
@@ -1096,7 +1136,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         return self._clip_skip
 
     # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-    # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+    # of the Imagen paper: https://huggingface.co/papers/2205.11487 . `guidance_scale = 1`
     # corresponds to doing no classifier free guidance.
     @property
     def do_classifier_free_guidance(self):
@@ -1122,7 +1162,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         prompt_2: Optional[Union[str, List[str]]] = None,
         image: PipelineImageInput = None,
         mask_image: PipelineImageInput = None,
-        control_image: PipelineImageInput = None,
+        control_image: Union[PipelineImageInput, List[PipelineImageInput]] = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         padding_mask_crop: Optional[int] = None,
@@ -1150,7 +1190,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         guess_mode: bool = False,
         control_guidance_start: Union[float, List[float]] = 0.0,
         control_guidance_end: Union[float, List[float]] = 1.0,
-        control_mode: Optional[Union[int, List[int]]] = None,
+        control_mode: Optional[Union[int, List[int], List[List[int]]]] = None,
         guidance_rescale: float = 0.0,
         original_size: Tuple[int, int] = None,
         crops_coords_top_left: Tuple[int, int] = (0, 0),
@@ -1182,6 +1222,13 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 repainted, while black pixels will be preserved. If `mask_image` is a PIL image, it will be converted
                 to a single channel (luminance) before use. If it's a tensor, it should contain one color channel (L)
                 instead of 3, so the expected shape would be `(B, H, W, 1)`.
+            control_image (`PipelineImageInput` or `List[PipelineImageInput]`, *optional*):
+                The ControlNet input condition to provide guidance to the `unet` for generation. If the type is
+                specified as `torch.Tensor`, it is passed to ControlNet as is. `PIL.Image.Image` can also be accepted
+                as an image. The dimensions of the output image defaults to `image`'s dimensions. If height and/or
+                width are passed, `image` is resized accordingly. If multiple ControlNets are specified in `init`,
+                images must be passed as a list such that each element of the list can be correctly batched for input
+                to a single ControlNet.
             height (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
                 The height in pixels of the generated image.
             width (`int`, *optional*, defaults to self.unet.config.sample_size * self.vae_scale_factor):
@@ -1220,11 +1267,11 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 forms a part of a "Mixture of Denoisers" multi-pipeline setup, as elaborated in [**Refining the Image
                 Output**](https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/stable_diffusion_xl#refining-the-image-output).
             guidance_scale (`float`, *optional*, defaults to 7.5):
-                Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
-                `guidance_scale` is defined as `w` of equation 2. of [Imagen
-                Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
-                1`. Higher guidance scale encourages to generate images that are closely linked to the text `prompt`,
-                usually at the expense of lower image quality.
+                Guidance scale as defined in [Classifier-Free Diffusion
+                Guidance](https://huggingface.co/papers/2207.12598). `guidance_scale` is defined as `w` of equation 2.
+                of [Imagen Paper](https://huggingface.co/papers/2205.11487). Guidance scale is enabled by setting
+                `guidance_scale > 1`. Higher guidance scale encourages to generate images that are closely linked to
+                the text `prompt`, usually at the expense of lower image quality.
             negative_prompt (`str` or `List[str]`, *optional*):
                 The prompt or prompts not to guide the image generation. If not defined, one has to pass
                 `negative_prompt_embeds` instead. Ignored when not using guidance (i.e., ignored if `guidance_scale` is
@@ -1255,15 +1302,15 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             eta (`float`, *optional*, defaults to 0.0):
-                Corresponds to parameter eta (η) in the DDIM paper: https://arxiv.org/abs/2010.02502. Only applies to
-                [`schedulers.DDIMScheduler`], will be ignored for others.
+                Corresponds to parameter eta (η) in the DDIM paper: https://huggingface.co/papers/2010.02502. Only
+                applies to [`schedulers.DDIMScheduler`], will be ignored for others.
             generator (`torch.Generator`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
                 to make generation deterministic.
             latents (`torch.Tensor`, *optional*):
                 Pre-generated noisy latents, sampled from a Gaussian distribution, to be used as inputs for image
                 generation. Can be used to tweak the same generation with different prompts. If not provided, a latents
-                tensor will ge generated by sampling using the supplied random `generator`.
+                tensor will be generated by sampling using the supplied random `generator`.
             output_type (`str`, *optional*, defaults to `"pil"`):
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
@@ -1274,6 +1321,22 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                 A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
                 `self.processor` in
                 [diffusers.models.attention_processor](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention_processor.py).
+            controlnet_conditioning_scale (`float` or `List[float]`, *optional*, defaults to 1.0):
+                The outputs of the ControlNet are multiplied by `controlnet_conditioning_scale` before they are added
+                to the residual in the original `unet`. If multiple ControlNets are specified in `init`, you can set
+                the corresponding scale as a list.
+            guess_mode (`bool`, *optional*, defaults to `False`):
+                The ControlNet encoder tries to recognize the content of the input image even if you remove all
+                prompts. A `guidance_scale` value between 3.0 and 5.0 is recommended.
+            control_guidance_start (`float` or `List[float]`, *optional*, defaults to 0.0):
+                The percentage of total steps at which the ControlNet starts applying.
+            control_guidance_end (`float` or `List[float]`, *optional*, defaults to 1.0):
+                The percentage of total steps at which the ControlNet stops applying.
+            control_mode (`int` or `List[int]` or `List[List[int]], *optional*):
+                The control condition types for the ControlNet. See the ControlNet's model card forinformation on the
+                available control modes. If multiple ControlNets are specified in `init`, control_mode should be a list
+                where each ControlNet should have its corresponding control mode list. Should reflect the order of
+                conditions in control_image.
             original_size (`Tuple[int]`, *optional*, defaults to (1024, 1024)):
                 If `original_size` is not the same as `target_size` the image will appear to be down- or upsampled.
                 `original_size` defaults to `(width, height)` if not specified. Part of SDXL's micro-conditioning as
@@ -1338,62 +1401,67 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
 
         controlnet = self.controlnet._orig_mod if is_compiled_module(self.controlnet) else self.controlnet
 
+        if not isinstance(control_image, list):
+            control_image = [control_image]
+        else:
+            control_image = control_image.copy()
+
+        if not isinstance(control_mode, list):
+            control_mode = [control_mode]
+
+        if isinstance(controlnet, MultiControlNetUnionModel):
+            control_image = [[item] for item in control_image]
+            control_mode = [[item] for item in control_mode]
+
         # align format for control guidance
         if not isinstance(control_guidance_start, list) and isinstance(control_guidance_end, list):
             control_guidance_start = len(control_guidance_end) * [control_guidance_start]
         elif not isinstance(control_guidance_end, list) and isinstance(control_guidance_start, list):
             control_guidance_end = len(control_guidance_start) * [control_guidance_end]
-
-        # # 0.0 Default height and width to unet
-        # height = height or self.unet.config.sample_size * self.vae_scale_factor
-        # width = width or self.unet.config.sample_size * self.vae_scale_factor
-
-        # 0.1 align format for control guidance
-        if not isinstance(control_guidance_start, list) and isinstance(control_guidance_end, list):
-            control_guidance_start = len(control_guidance_end) * [control_guidance_start]
-        elif not isinstance(control_guidance_end, list) and isinstance(control_guidance_start, list):
-            control_guidance_end = len(control_guidance_start) * [control_guidance_end]
-
-        if not isinstance(control_image, list):
-            control_image = [control_image]
-
-        if not isinstance(control_mode, list):
-            control_mode = [control_mode]
-
-        if len(control_image) != len(control_mode):
-            raise ValueError("Expected len(control_image) == len(control_type)")
-
-        num_control_type = controlnet.config.num_control_type
-
-        # 1. Check inputs
-        control_type = [0 for _ in range(num_control_type)]
-        for _image, control_idx in zip(control_image, control_mode):
-            control_type[control_idx] = 1
-            self.check_inputs(
-                prompt,
-                prompt_2,
-                _image,
-                mask_image,
-                strength,
-                num_inference_steps,
-                callback_steps,
-                output_type,
-                negative_prompt,
-                negative_prompt_2,
-                prompt_embeds,
-                negative_prompt_embeds,
-                ip_adapter_image,
-                ip_adapter_image_embeds,
-                pooled_prompt_embeds,
-                negative_pooled_prompt_embeds,
-                controlnet_conditioning_scale,
-                control_guidance_start,
-                control_guidance_end,
-                callback_on_step_end_tensor_inputs,
-                padding_mask_crop,
+        elif not isinstance(control_guidance_start, list) and not isinstance(control_guidance_end, list):
+            mult = len(controlnet.nets) if isinstance(controlnet, MultiControlNetUnionModel) else len(control_mode)
+            control_guidance_start, control_guidance_end = (
+                mult * [control_guidance_start],
+                mult * [control_guidance_end],
             )
 
-        control_type = torch.Tensor(control_type)
+        if isinstance(controlnet_conditioning_scale, float):
+            mult = len(controlnet.nets) if isinstance(controlnet, MultiControlNetUnionModel) else len(control_mode)
+            controlnet_conditioning_scale = [controlnet_conditioning_scale] * mult
+
+        # 1. Check inputs
+        self.check_inputs(
+            prompt,
+            prompt_2,
+            control_image,
+            mask_image,
+            strength,
+            num_inference_steps,
+            callback_steps,
+            output_type,
+            negative_prompt,
+            negative_prompt_2,
+            prompt_embeds,
+            negative_prompt_embeds,
+            ip_adapter_image,
+            ip_adapter_image_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+            controlnet_conditioning_scale,
+            control_guidance_start,
+            control_guidance_end,
+            control_mode,
+            callback_on_step_end_tensor_inputs,
+            padding_mask_crop,
+        )
+
+        if isinstance(controlnet, ControlNetUnionModel):
+            control_type = torch.zeros(controlnet.config.num_control_type).scatter_(0, torch.tensor(control_mode), 1)
+        elif isinstance(controlnet, MultiControlNetUnionModel):
+            control_type = [
+                torch.zeros(controlnet_.config.num_control_type).scatter_(0, torch.tensor(control_mode_), 1)
+                for control_mode_, controlnet_ in zip(control_mode, self.controlnet.nets)
+            ]
 
         self._guidance_scale = guidance_scale
         self._clip_skip = clip_skip
@@ -1486,21 +1554,55 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         init_image = init_image.to(dtype=torch.float32)
 
         # 5.2 Prepare control images
-        for idx, _ in enumerate(control_image):
-            control_image[idx] = self.prepare_control_image(
-                image=control_image[idx],
-                width=width,
-                height=height,
-                batch_size=batch_size * num_images_per_prompt,
-                num_images_per_prompt=num_images_per_prompt,
-                device=device,
-                dtype=controlnet.dtype,
-                crops_coords=crops_coords,
-                resize_mode=resize_mode,
-                do_classifier_free_guidance=self.do_classifier_free_guidance,
-                guess_mode=guess_mode,
-            )
-            height, width = control_image[idx].shape[-2:]
+        if isinstance(controlnet, ControlNetUnionModel):
+            control_images = []
+
+            for image_ in control_image:
+                image_ = self.prepare_control_image(
+                    image=image_,
+                    width=width,
+                    height=height,
+                    batch_size=batch_size * num_images_per_prompt,
+                    num_images_per_prompt=num_images_per_prompt,
+                    device=device,
+                    dtype=controlnet.dtype,
+                    crops_coords=crops_coords,
+                    resize_mode=resize_mode,
+                    do_classifier_free_guidance=self.do_classifier_free_guidance,
+                    guess_mode=guess_mode,
+                )
+
+                control_images.append(image_)
+
+            control_image = control_images
+            height, width = control_image[0].shape[-2:]
+
+        elif isinstance(controlnet, MultiControlNetUnionModel):
+            control_images = []
+
+            for control_image_ in control_image:
+                images = []
+
+                for image_ in control_image_:
+                    image_ = self.prepare_control_image(
+                        image=image_,
+                        width=width,
+                        height=height,
+                        batch_size=batch_size * num_images_per_prompt,
+                        num_images_per_prompt=num_images_per_prompt,
+                        device=device,
+                        dtype=controlnet.dtype,
+                        crops_coords=crops_coords,
+                        resize_mode=resize_mode,
+                        do_classifier_free_guidance=self.do_classifier_free_guidance,
+                        guess_mode=guess_mode,
+                    )
+
+                    images.append(image_)
+                control_images.append(images)
+
+            control_image = control_images
+            height, width = control_image[0][0].shape[-2:]
 
         # 5.3 Prepare mask
         mask = self.mask_processor.preprocess(
@@ -1562,10 +1664,11 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         # 8.2 Create tensor stating which controlnets to keep
         controlnet_keep = []
         for i in range(len(timesteps)):
-            controlnet_keep.append(
-                1.0
-                - float(i / len(timesteps) < control_guidance_start or (i + 1) / len(timesteps) > control_guidance_end)
-            )
+            keeps = [
+                1.0 - float(i / len(timesteps) < s or (i + 1) / len(timesteps) > e)
+                for s, e in zip(control_guidance_start, control_guidance_end)
+            ]
+            controlnet_keep.append(keeps)
 
         # 9. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         height, width = latents.shape[-2:]
@@ -1630,11 +1733,24 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
             num_inference_steps = len(list(filter(lambda ts: ts >= discrete_timestep_cutoff, timesteps)))
             timesteps = timesteps[:num_inference_steps]
 
-        control_type = (
-            control_type.reshape(1, -1)
-            .to(device, dtype=prompt_embeds.dtype)
-            .repeat(batch_size * num_images_per_prompt * 2, 1)
+        control_type_repeat_factor = (
+            batch_size * num_images_per_prompt * (2 if self.do_classifier_free_guidance else 1)
         )
+
+        if isinstance(controlnet, ControlNetUnionModel):
+            control_type = (
+                control_type.reshape(1, -1)
+                .to(self._execution_device, dtype=prompt_embeds.dtype)
+                .repeat(control_type_repeat_factor, 1)
+            )
+        elif isinstance(controlnet, MultiControlNetUnionModel):
+            control_type = [
+                _control_type.reshape(1, -1)
+                .to(self._execution_device, dtype=prompt_embeds.dtype)
+                .repeat(control_type_repeat_factor, 1)
+                for _control_type in control_type
+            ]
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -1718,7 +1834,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 if self.do_classifier_free_guidance and guidance_rescale > 0.0:
-                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                    # Based on 3.4. in https://huggingface.co/papers/2305.08891
                     noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
 
                 # compute the previous noisy sample x_t -> x_t-1
@@ -1747,6 +1863,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                     latents = callback_outputs.pop("latents", latents)
                     prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
                     negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
+                    control_image = callback_outputs.pop("control_image", control_image)
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -1754,6 +1871,9 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
+
+                if XLA_AVAILABLE:
+                    xm.mark_step()
 
         # make sure the VAE is in float32 mode, as it overflows in float16
         if self.vae.dtype == torch.float16 and self.vae.config.force_upcast:
@@ -1765,7 +1885,7 @@ class StableDiffusionXLControlNetUnionInpaintPipeline(
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
             self.unet.to("cpu")
             self.controlnet.to("cpu")
-            torch.cuda.empty_cache()
+            empty_device_cache()
 
         if not output_type == "latent":
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]

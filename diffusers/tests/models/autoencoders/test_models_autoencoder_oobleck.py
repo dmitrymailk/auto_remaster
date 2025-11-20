@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc.
+# Copyright 2025 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,8 @@ from datasets import load_dataset
 from parameterized import parameterized
 
 from diffusers import AutoencoderOobleck
-from diffusers.utils.testing_utils import (
+
+from ...testing_utils import (
     backend_empty_cache,
     enable_full_determinism,
     floats_tensor,
@@ -29,14 +30,14 @@ from diffusers.utils.testing_utils import (
     torch_all_close,
     torch_device,
 )
-
-from ..test_modeling_common import ModelTesterMixin, UNetTesterMixin
+from ..test_modeling_common import ModelTesterMixin
+from .testing_utils import AutoencoderTesterMixin
 
 
 enable_full_determinism()
 
 
-class AutoencoderOobleckTests(ModelTesterMixin, UNetTesterMixin, unittest.TestCase):
+class AutoencoderOobleckTests(ModelTesterMixin, AutoencoderTesterMixin, unittest.TestCase):
     model_class = AutoencoderOobleck
     main_input_name = "sample"
     base_precision = 1e-2
@@ -106,13 +107,33 @@ class AutoencoderOobleckTests(ModelTesterMixin, UNetTesterMixin, unittest.TestCa
             "Without slicing outputs should match with the outputs when slicing is manually disabled.",
         )
 
-    @unittest.skip("Test unsupported.")
-    def test_forward_with_norm_groups(self):
-        pass
-
     @unittest.skip("No attention module used in this model")
     def test_set_attn_processor_for_determinism(self):
         return
+
+    @unittest.skip(
+        "Test not supported because of 'weight_norm_fwd_first_dim_kernel' not implemented for 'Float8_e4m3fn'"
+    )
+    def test_layerwise_casting_training(self):
+        return super().test_layerwise_casting_training()
+
+    @unittest.skip(
+        "The convolution layers of AutoencoderOobleck are wrapped with torch.nn.utils.weight_norm. This causes the hook's pre_forward to not "
+        "cast the module weights to compute_dtype (as required by forward pass). As a result, forward pass errors out. To fix:\n"
+        "1. Make sure `nn::Module::to` works with `torch.nn.utils.weight_norm` wrapped convolution layer.\n"
+        "2. Unskip this test."
+    )
+    def test_layerwise_casting_inference(self):
+        pass
+
+    @unittest.skip(
+        "The convolution layers of AutoencoderOobleck are wrapped with torch.nn.utils.weight_norm. This causes the hook's pre_forward to not "
+        "cast the module weights to compute_dtype (as required by forward pass). As a result, forward pass errors out. To fix:\n"
+        "1. Make sure `nn::Module::to` works with `torch.nn.utils.weight_norm` wrapped convolution layer.\n"
+        "2. Unskip this test."
+    )
+    def test_layerwise_casting_memory(self):
+        pass
 
 
 @slow
@@ -159,7 +180,7 @@ class AutoencoderOobleckIntegrationTests(unittest.TestCase):
         return model
 
     def get_generator(self, seed=0):
-        generator_device = "cpu" if not torch_device.startswith("cuda") else "cuda"
+        generator_device = "cpu" if not torch_device.startswith(torch_device) else torch_device
         if torch_device != "mps":
             return torch.Generator(device=generator_device).manual_seed(seed)
         return torch.manual_seed(seed)

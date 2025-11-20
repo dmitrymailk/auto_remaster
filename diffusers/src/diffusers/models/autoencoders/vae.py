@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ...utils import BaseOutput, is_torch_version
+from ...utils import BaseOutput
 from ...utils.torch_utils import randn_tensor
 from ..activations import get_activation
 from ..attention_processor import SpatialNorm
@@ -156,28 +156,11 @@ class Encoder(nn.Module):
         sample = self.conv_in(sample)
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
             # down
-            if is_torch_version(">=", "1.11.0"):
-                for down_block in self.down_blocks:
-                    sample = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(down_block), sample, use_reentrant=False
-                    )
-                # middle
-                sample = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.mid_block), sample, use_reentrant=False
-                )
-            else:
-                for down_block in self.down_blocks:
-                    sample = torch.utils.checkpoint.checkpoint(create_custom_forward(down_block), sample)
-                # middle
-                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.mid_block), sample)
+            for down_block in self.down_blocks:
+                sample = self._gradient_checkpointing_func(down_block, sample)
+            # middle
+            sample = self._gradient_checkpointing_func(self.mid_block, sample)
 
         else:
             # down
@@ -272,7 +255,7 @@ class Decoder(nn.Module):
                 num_layers=self.layers_per_block + 1,
                 in_channels=prev_output_channel,
                 out_channels=output_channel,
-                prev_output_channel=None,
+                prev_output_channel=prev_output_channel,
                 add_upsample=not is_final_block,
                 resnet_eps=1e-6,
                 resnet_act_fn=act_fn,
@@ -303,47 +286,16 @@ class Decoder(nn.Module):
 
         sample = self.conv_in(sample)
 
-        upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
         if torch.is_grad_enabled() and self.gradient_checkpointing:
+            # middle
+            sample = self._gradient_checkpointing_func(self.mid_block, sample, latent_embeds)
 
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
-            if is_torch_version(">=", "1.11.0"):
-                # middle
-                sample = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.mid_block),
-                    sample,
-                    latent_embeds,
-                    use_reentrant=False,
-                )
-                sample = sample.to(upscale_dtype)
-
-                # up
-                for up_block in self.up_blocks:
-                    sample = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(up_block),
-                        sample,
-                        latent_embeds,
-                        use_reentrant=False,
-                    )
-            else:
-                # middle
-                sample = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.mid_block), sample, latent_embeds
-                )
-                sample = sample.to(upscale_dtype)
-
-                # up
-                for up_block in self.up_blocks:
-                    sample = torch.utils.checkpoint.checkpoint(create_custom_forward(up_block), sample, latent_embeds)
+            # up
+            for up_block in self.up_blocks:
+                sample = self._gradient_checkpointing_func(up_block, sample, latent_embeds)
         else:
             # middle
             sample = self.mid_block(sample, latent_embeds)
-            sample = sample.to(upscale_dtype)
 
             # up
             for up_block in self.up_blocks:
@@ -558,72 +510,28 @@ class MaskConditionDecoder(nn.Module):
 
         upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
         if torch.is_grad_enabled() and self.gradient_checkpointing:
+            # middle
+            sample = self._gradient_checkpointing_func(self.mid_block, sample, latent_embeds)
+            sample = sample.to(upscale_dtype)
 
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
-            if is_torch_version(">=", "1.11.0"):
-                # middle
-                sample = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.mid_block),
-                    sample,
-                    latent_embeds,
-                    use_reentrant=False,
+            # condition encoder
+            if image is not None and mask is not None:
+                masked_image = (1 - mask) * image
+                im_x = self._gradient_checkpointing_func(
+                    self.condition_encoder,
+                    masked_image,
+                    mask,
                 )
-                sample = sample.to(upscale_dtype)
 
-                # condition encoder
+            # up
+            for up_block in self.up_blocks:
                 if image is not None and mask is not None:
-                    masked_image = (1 - mask) * image
-                    im_x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(self.condition_encoder),
-                        masked_image,
-                        mask,
-                        use_reentrant=False,
-                    )
-
-                # up
-                for up_block in self.up_blocks:
-                    if image is not None and mask is not None:
-                        sample_ = im_x[str(tuple(sample.shape))]
-                        mask_ = nn.functional.interpolate(mask, size=sample.shape[-2:], mode="nearest")
-                        sample = sample * mask_ + sample_ * (1 - mask_)
-                    sample = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(up_block),
-                        sample,
-                        latent_embeds,
-                        use_reentrant=False,
-                    )
-                if image is not None and mask is not None:
-                    sample = sample * mask + im_x[str(tuple(sample.shape))] * (1 - mask)
-            else:
-                # middle
-                sample = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.mid_block), sample, latent_embeds
-                )
-                sample = sample.to(upscale_dtype)
-
-                # condition encoder
-                if image is not None and mask is not None:
-                    masked_image = (1 - mask) * image
-                    im_x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(self.condition_encoder),
-                        masked_image,
-                        mask,
-                    )
-
-                # up
-                for up_block in self.up_blocks:
-                    if image is not None and mask is not None:
-                        sample_ = im_x[str(tuple(sample.shape))]
-                        mask_ = nn.functional.interpolate(mask, size=sample.shape[-2:], mode="nearest")
-                        sample = sample * mask_ + sample_ * (1 - mask_)
-                    sample = torch.utils.checkpoint.checkpoint(create_custom_forward(up_block), sample, latent_embeds)
-                if image is not None and mask is not None:
-                    sample = sample * mask + im_x[str(tuple(sample.shape))] * (1 - mask)
+                    sample_ = im_x[str(tuple(sample.shape))]
+                    mask_ = nn.functional.interpolate(mask, size=sample.shape[-2:], mode="nearest")
+                    sample = sample * mask_ + sample_ * (1 - mask_)
+                sample = self._gradient_checkpointing_func(up_block, sample, latent_embeds)
+            if image is not None and mask is not None:
+                sample = sample * mask + im_x[str(tuple(sample.shape))] * (1 - mask)
         else:
             # middle
             sample = self.mid_block(sample, latent_embeds)
@@ -833,6 +741,17 @@ class DiagonalGaussianDistribution(object):
         return self.mean
 
 
+class IdentityDistribution(object):
+    def __init__(self, parameters: torch.Tensor):
+        self.parameters = parameters
+
+    def sample(self, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+        return self.parameters
+
+    def mode(self) -> torch.Tensor:
+        return self.parameters
+
+
 class EncoderTiny(nn.Module):
     r"""
     The `EncoderTiny` layer is a simpler version of the `Encoder` layer.
@@ -890,17 +809,7 @@ class EncoderTiny(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         r"""The forward method of the `EncoderTiny` class."""
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
-            if is_torch_version(">=", "1.11.0"):
-                x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.layers), x, use_reentrant=False)
-            else:
-                x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.layers), x)
+            x = self._gradient_checkpointing_func(self.layers, x)
 
         else:
             # scale image from [-1, 1] to [0, 1] to match TAESD convention
@@ -976,20 +885,44 @@ class DecoderTiny(nn.Module):
         x = torch.tanh(x / 3) * 3
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
-            if is_torch_version(">=", "1.11.0"):
-                x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.layers), x, use_reentrant=False)
-            else:
-                x = torch.utils.checkpoint.checkpoint(create_custom_forward(self.layers), x)
-
+            x = self._gradient_checkpointing_func(self.layers, x)
         else:
             x = self.layers(x)
 
         # scale image from [0, 1] to [-1, 1] to match diffusers convention
         return x.mul(2).sub(1)
+
+
+class AutoencoderMixin:
+    def enable_tiling(self):
+        r"""
+        Enable tiled VAE decoding. When this option is enabled, the VAE will split the input tensor into tiles to
+        compute decoding and encoding in several steps. This is useful for saving a large amount of memory and to allow
+        processing larger images.
+        """
+        if not hasattr(self, "use_tiling"):
+            raise NotImplementedError(f"Tiling doesn't seem to be implemented for {self.__class__.__name__}.")
+        self.use_tiling = True
+
+    def disable_tiling(self):
+        r"""
+        Disable tiled VAE decoding. If `enable_tiling` was previously enabled, this method will go back to computing
+        decoding in one step.
+        """
+        self.use_tiling = False
+
+    def enable_slicing(self):
+        r"""
+        Enable sliced VAE decoding. When this option is enabled, the VAE will split the input tensor in slices to
+        compute decoding in several steps. This is useful to save some memory and allow larger batch sizes.
+        """
+        if not hasattr(self, "use_slicing"):
+            raise NotImplementedError(f"Slicing doesn't seem to be implemented for {self.__class__.__name__}.")
+        self.use_slicing = True
+
+    def disable_slicing(self):
+        r"""
+        Disable sliced VAE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
+        decoding in one step.
+        """
+        self.use_slicing = False

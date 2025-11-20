@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,15 +17,24 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 
-from ...utils import logging
+from ...models import UNet1DModel
+from ...schedulers import SchedulerMixin
+from ...utils import is_torch_xla_available, logging
 from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import AudioPipelineOutput, DiffusionPipeline
+from ..pipeline_utils import AudioPipelineOutput, DeprecatedPipelineMixin, DiffusionPipeline
 
+
+if is_torch_xla_available():
+    import torch_xla.core.xla_model as xm
+
+    XLA_AVAILABLE = True
+else:
+    XLA_AVAILABLE = False
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-class DanceDiffusionPipeline(DiffusionPipeline):
+class DanceDiffusionPipeline(DeprecatedPipelineMixin, DiffusionPipeline):
     r"""
     Pipeline for audio generation.
 
@@ -40,9 +49,10 @@ class DanceDiffusionPipeline(DiffusionPipeline):
             [`IPNDMScheduler`].
     """
 
+    _last_supported_version = "0.33.1"
     model_cpu_offload_seq = "unet"
 
-    def __init__(self, unet, scheduler):
+    def __init__(self, unet: UNet1DModel, scheduler: SchedulerMixin):
         super().__init__()
         self.register_modules(unet=unet, scheduler=scheduler)
 
@@ -88,7 +98,7 @@ class DanceDiffusionPipeline(DiffusionPipeline):
         for i, audio in enumerate(audios):
             write(f"maestro_test_{i}.wav", pipe.unet.sample_rate, audio.transpose())
 
-        # To dislay in google colab
+        # To display in google colab
         import IPython.display as ipd
 
         for audio in audios:
@@ -145,6 +155,9 @@ class DanceDiffusionPipeline(DiffusionPipeline):
 
             # 2. compute previous audio sample: x_t -> t_t-1
             audio = self.scheduler.step(model_output, t, audio).prev_sample
+
+            if XLA_AVAILABLE:
+                xm.mark_step()
 
         audio = audio.clamp(-1, 1).float().cpu().numpy()
 

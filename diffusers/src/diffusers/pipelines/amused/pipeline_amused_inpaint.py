@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,8 +21,16 @@ from transformers import CLIPTextModelWithProjection, CLIPTokenizer
 from ...image_processor import PipelineImageInput, VaeImageProcessor
 from ...models import UVit2DModel, VQModel
 from ...schedulers import AmusedScheduler
-from ...utils import replace_example_docstring
-from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from ...utils import is_torch_xla_available, replace_example_docstring
+from ..pipeline_utils import DeprecatedPipelineMixin, DiffusionPipeline, ImagePipelineOutput
+
+
+if is_torch_xla_available():
+    import torch_xla.core.xla_model as xm
+
+    XLA_AVAILABLE = True
+else:
+    XLA_AVAILABLE = False
 
 
 EXAMPLE_DOC_STRING = """
@@ -57,7 +65,8 @@ EXAMPLE_DOC_STRING = """
 """
 
 
-class AmusedInpaintPipeline(DiffusionPipeline):
+class AmusedInpaintPipeline(DeprecatedPipelineMixin, DiffusionPipeline):
+    _last_supported_version = "0.33.1"
     image_processor: VaeImageProcessor
     vqvae: VQModel
     tokenizer: CLIPTokenizer
@@ -89,7 +98,9 @@ class AmusedInpaintPipeline(DiffusionPipeline):
             transformer=transformer,
             scheduler=scheduler,
         )
-        self.vae_scale_factor = 2 ** (len(self.vqvae.config.block_out_channels) - 1)
+        self.vae_scale_factor = (
+            2 ** (len(self.vqvae.config.block_out_channels) - 1) if getattr(self, "vqvae", None) else 8
+        )
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_normalize=False)
         self.mask_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor,
@@ -193,10 +204,10 @@ class AmusedInpaintPipeline(DiffusionPipeline):
             micro_conditioning_aesthetic_score (`int`, *optional*, defaults to 6):
                 The targeted aesthetic score according to the laion aesthetic classifier. See
                 https://laion.ai/blog/laion-aesthetics/ and the micro-conditioning section of
-                https://arxiv.org/abs/2307.01952.
+                https://huggingface.co/papers/2307.01952.
             micro_conditioning_crop_coord (`Tuple[int]`, *optional*, defaults to (0, 0)):
                 The targeted height, width crop coordinates. See the micro-conditioning section of
-                https://arxiv.org/abs/2307.01952.
+                https://huggingface.co/papers/2307.01952.
             temperature (`Union[int, Tuple[int, int], List[int]]`, *optional*, defaults to (2, 0)):
                 Configures the temperature scheduler on `self.scheduler` see `AmusedScheduler#set_timesteps`.
 
@@ -353,6 +364,9 @@ class AmusedInpaintPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, timestep, latents)
+
+                if XLA_AVAILABLE:
+                    xm.mark_step()
 
         if output_type == "latent":
             output = latents

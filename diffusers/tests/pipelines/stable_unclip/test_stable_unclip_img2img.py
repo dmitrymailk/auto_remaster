@@ -17,17 +17,21 @@ from diffusers import AutoencoderKL, DDIMScheduler, DDPMScheduler, StableUnCLIPI
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.stable_diffusion.stable_unclip_image_normalizer import StableUnCLIPImageNormalizer
 from diffusers.utils.import_utils import is_xformers_available
-from diffusers.utils.testing_utils import (
+
+from ...testing_utils import (
+    backend_empty_cache,
+    backend_max_memory_allocated,
+    backend_reset_max_memory_allocated,
+    backend_reset_peak_memory_stats,
     enable_full_determinism,
     floats_tensor,
     load_image,
     load_numpy,
     nightly,
-    require_torch_gpu,
+    require_torch_accelerator,
     skip_mps,
     torch_device,
 )
-
 from ..pipeline_params import TEXT_GUIDED_IMAGE_VARIATION_BATCH_PARAMS, TEXT_GUIDED_IMAGE_VARIATION_PARAMS
 from ..test_pipelines_common import (
     PipelineKarrasSchedulerTesterMixin,
@@ -50,6 +54,8 @@ class StableUnCLIPImg2ImgPipelineFastTests(
         []
     )  # TO-DO: update image_params once pipeline is refactored with VaeImageProcessor.preprocess
     image_latents_params = frozenset([])
+
+    supports_dduf = False
 
     def get_dummy_components(self):
         embedder_hidden_size = 32
@@ -205,21 +211,25 @@ class StableUnCLIPImg2ImgPipelineFastTests(
     def test_xformers_attention_forwardGenerator_pass(self):
         self._test_xformers_attention_forwardGenerator_pass(test_max_difference=False)
 
+    @unittest.skip("Test not supported at the moment.")
+    def test_encode_prompt_works_in_isolation(self):
+        pass
+
 
 @nightly
-@require_torch_gpu
+@require_torch_accelerator
 class StableUnCLIPImg2ImgPipelineIntegrationTests(unittest.TestCase):
     def setUp(self):
         # clean up the VRAM before each test
         super().setUp()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def tearDown(self):
         # clean up the VRAM after each test
         super().tearDown()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def test_stable_unclip_l_img2img(self):
         input_image = load_image(
@@ -240,7 +250,7 @@ class StableUnCLIPImg2ImgPipelineIntegrationTests(unittest.TestCase):
         pipe.enable_sequential_cpu_offload()
 
         generator = torch.Generator(device="cpu").manual_seed(0)
-        output = pipe(input_image, "anime turle", generator=generator, output_type="np")
+        output = pipe(input_image, "anime turtle", generator=generator, output_type="np")
 
         image = output.images[0]
 
@@ -267,7 +277,7 @@ class StableUnCLIPImg2ImgPipelineIntegrationTests(unittest.TestCase):
         pipe.enable_sequential_cpu_offload()
 
         generator = torch.Generator(device="cpu").manual_seed(0)
-        output = pipe(input_image, "anime turle", generator=generator, output_type="np")
+        output = pipe(input_image, "anime turtle", generator=generator, output_type="np")
 
         image = output.images[0]
 
@@ -280,9 +290,9 @@ class StableUnCLIPImg2ImgPipelineIntegrationTests(unittest.TestCase):
             "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main/stable_unclip/turtle.png"
         )
 
-        torch.cuda.empty_cache()
-        torch.cuda.reset_max_memory_allocated()
-        torch.cuda.reset_peak_memory_stats()
+        backend_empty_cache(torch_device)
+        backend_reset_max_memory_allocated(torch_device)
+        backend_reset_peak_memory_stats(torch_device)
 
         pipe = StableUnCLIPImg2ImgPipeline.from_pretrained(
             "fusing/stable-unclip-2-1-h-img2img", torch_dtype=torch.float16
@@ -298,6 +308,6 @@ class StableUnCLIPImg2ImgPipelineIntegrationTests(unittest.TestCase):
             output_type="np",
         )
 
-        mem_bytes = torch.cuda.max_memory_allocated()
+        mem_bytes = backend_max_memory_allocated(torch_device)
         # make sure that less than 7 GB is allocated
         assert mem_bytes < 7 * 10**9

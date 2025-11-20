@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright 2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,12 +17,10 @@ from ..models.embeddings import (
     ImageProjection,
     MultiIPAdapterImageProjection,
 )
-from ..models.modeling_utils import load_model_dict_into_meta
-from ..utils import (
-    is_accelerate_available,
-    is_torch_version,
-    logging,
-)
+from ..models.model_loading_utils import load_model_dict_into_meta
+from ..models.modeling_utils import _LOW_CPU_MEM_USAGE_DEFAULT
+from ..utils import is_accelerate_available, is_torch_version, logging
+from ..utils.torch_utils import empty_device_cache
 
 
 if is_accelerate_available():
@@ -36,7 +34,7 @@ class FluxTransformer2DLoadersMixin:
     Load layers into a [`FluxTransformer2DModel`].
     """
 
-    def _convert_ip_adapter_image_proj_to_diffusers(self, state_dict, low_cpu_mem_usage=False):
+    def _convert_ip_adapter_image_proj_to_diffusers(self, state_dict, low_cpu_mem_usage=_LOW_CPU_MEM_USAGE_DEFAULT):
         if low_cpu_mem_usage:
             if is_accelerate_available():
                 from accelerate import init_empty_weights
@@ -82,14 +80,14 @@ class FluxTransformer2DLoadersMixin:
         if not low_cpu_mem_usage:
             image_projection.load_state_dict(updated_state_dict, strict=True)
         else:
-            load_model_dict_into_meta(image_projection, updated_state_dict, device=self.device, dtype=self.dtype)
+            device_map = {"": self.device}
+            load_model_dict_into_meta(image_projection, updated_state_dict, device_map=device_map, dtype=self.dtype)
+            empty_device_cache()
 
         return image_projection
 
-    def _convert_ip_adapter_attn_to_diffusers(self, state_dicts, low_cpu_mem_usage=False):
-        from ..models.attention_processor import (
-            FluxIPAdapterJointAttnProcessor2_0,
-        )
+    def _convert_ip_adapter_attn_to_diffusers(self, state_dicts, low_cpu_mem_usage=_LOW_CPU_MEM_USAGE_DEFAULT):
+        from ..models.transformers.transformer_flux import FluxIPAdapterAttnProcessor
 
         if low_cpu_mem_usage:
             if is_accelerate_available():
@@ -121,7 +119,7 @@ class FluxTransformer2DLoadersMixin:
             else:
                 cross_attention_dim = self.config.joint_attention_dim
                 hidden_size = self.inner_dim
-                attn_processor_class = FluxIPAdapterJointAttnProcessor2_0
+                attn_processor_class = FluxIPAdapterAttnProcessor
                 num_image_text_embeds = []
                 for state_dict in state_dicts:
                     if "proj.weight" in state_dict["image_proj"]:
@@ -151,15 +149,17 @@ class FluxTransformer2DLoadersMixin:
                 if not low_cpu_mem_usage:
                     attn_procs[name].load_state_dict(value_dict)
                 else:
-                    device = self.device
+                    device_map = {"": self.device}
                     dtype = self.dtype
-                    load_model_dict_into_meta(attn_procs[name], value_dict, device=device, dtype=dtype)
+                    load_model_dict_into_meta(attn_procs[name], value_dict, device_map=device_map, dtype=dtype)
 
                 key_id += 1
 
+        empty_device_cache()
+
         return attn_procs
 
-    def _load_ip_adapter_weights(self, state_dicts, low_cpu_mem_usage=False):
+    def _load_ip_adapter_weights(self, state_dicts, low_cpu_mem_usage=_LOW_CPU_MEM_USAGE_DEFAULT):
         if not isinstance(state_dicts, list):
             state_dicts = [state_dicts]
 
@@ -177,5 +177,3 @@ class FluxTransformer2DLoadersMixin:
 
         self.encoder_hid_proj = MultiIPAdapterImageProjection(image_projection_layers)
         self.config.encoder_hid_dim_type = "ip_image_proj"
-
-        self.to(dtype=self.dtype, device=self.device)

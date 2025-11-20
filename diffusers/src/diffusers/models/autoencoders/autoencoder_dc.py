@@ -1,4 +1,4 @@
-# Copyright 2024 MIT, Tsinghua University, NVIDIA CORPORATION and The HuggingFace Team.
+# Copyright 2025 MIT, Tsinghua University, NVIDIA CORPORATION and The HuggingFace Team.
 # All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,7 +27,7 @@ from ..attention_processor import SanaMultiscaleLinearAttention
 from ..modeling_utils import ModelMixin
 from ..normalization import RMSNorm, get_normalization
 from ..transformers.sana_transformer import GLUMBConv
-from .vae import DecoderOutput, EncoderOutput
+from .vae import AutoencoderMixin, DecoderOutput, EncoderOutput
 
 
 class ResBlock(nn.Module):
@@ -102,7 +102,7 @@ def get_block(
     attention_head_dim: int,
     norm_type: str,
     act_fn: str,
-    qkv_mutliscales: Tuple[int] = (),
+    qkv_mutliscales: Tuple[int, ...] = (),
 ):
     if block_type == "ResBlock":
         block = ResBlock(in_channels, out_channels, norm_type, act_fn)
@@ -190,7 +190,7 @@ class DCUpBlock2d(nn.Module):
             x = F.pixel_shuffle(x, self.factor)
 
         if self.shortcut:
-            y = hidden_states.repeat_interleave(self.repeats, dim=1)
+            y = hidden_states.repeat_interleave(self.repeats, dim=1, output_size=hidden_states.shape[1] * self.repeats)
             y = F.pixel_shuffle(y, self.factor)
             hidden_states = x + y
         else:
@@ -206,8 +206,8 @@ class Encoder(nn.Module):
         latent_channels: int,
         attention_head_dim: int = 32,
         block_type: Union[str, Tuple[str]] = "ResBlock",
-        block_out_channels: Tuple[int] = (128, 256, 512, 512, 1024, 1024),
-        layers_per_block: Tuple[int] = (2, 2, 2, 2, 2, 2),
+        block_out_channels: Tuple[int, ...] = (128, 256, 512, 512, 1024, 1024),
+        layers_per_block: Tuple[int, ...] = (2, 2, 2, 2, 2, 2),
         qkv_multiscales: Tuple[Tuple[int, ...], ...] = ((), (), (), (5,), (5,), (5,)),
         downsample_block_type: str = "pixel_unshuffle",
         out_shortcut: bool = True,
@@ -292,13 +292,14 @@ class Decoder(nn.Module):
         latent_channels: int,
         attention_head_dim: int = 32,
         block_type: Union[str, Tuple[str]] = "ResBlock",
-        block_out_channels: Tuple[int] = (128, 256, 512, 512, 1024, 1024),
-        layers_per_block: Tuple[int] = (2, 2, 2, 2, 2, 2),
+        block_out_channels: Tuple[int, ...] = (128, 256, 512, 512, 1024, 1024),
+        layers_per_block: Tuple[int, ...] = (2, 2, 2, 2, 2, 2),
         qkv_multiscales: Tuple[Tuple[int, ...], ...] = ((), (), (), (5,), (5,), (5,)),
         norm_type: Union[str, Tuple[str]] = "rms_norm",
         act_fn: Union[str, Tuple[str]] = "silu",
         upsample_block_type: str = "pixel_shuffle",
         in_shortcut: bool = True,
+        conv_act_fn: str = "relu",
     ):
         super().__init__()
 
@@ -349,7 +350,7 @@ class Decoder(nn.Module):
         channels = block_out_channels[0] if layers_per_block[0] > 0 else block_out_channels[1]
 
         self.norm_out = RMSNorm(channels, 1e-5, elementwise_affine=True, bias=True)
-        self.conv_act = nn.ReLU()
+        self.conv_act = get_activation(conv_act_fn)
         self.conv_out = None
 
         if layers_per_block[0] > 0:
@@ -361,7 +362,9 @@ class Decoder(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.in_shortcut:
-            x = hidden_states.repeat_interleave(self.in_shortcut_repeats, dim=1)
+            x = hidden_states.repeat_interleave(
+                self.in_shortcut_repeats, dim=1, output_size=hidden_states.shape[1] * self.in_shortcut_repeats
+            )
             hidden_states = self.conv_in(hidden_states) + x
         else:
             hidden_states = self.conv_in(hidden_states)
@@ -375,10 +378,10 @@ class Decoder(nn.Module):
         return hidden_states
 
 
-class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+class AutoencoderDC(ModelMixin, AutoencoderMixin, ConfigMixin, FromOriginalModelMixin):
     r"""
-    An Autoencoder model introduced in [DCAE](https://arxiv.org/abs/2410.10733) and used in
-    [SANA](https://arxiv.org/abs/2410.10629).
+    An Autoencoder model introduced in [DCAE](https://huggingface.co/papers/2410.10733) and used in
+    [SANA](https://huggingface.co/papers/2410.10629).
 
     This model inherits from [`ModelMixin`]. Check the superclass documentation for it's generic methods implemented
     for all models (such as downloading or saving).
@@ -412,6 +415,12 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             The normalization type(s) to use in the decoder.
         decoder_act_fns (`Union[str, Tuple[str]]`, defaults to `"silu"`):
             The activation function(s) to use in the decoder.
+        encoder_out_shortcut  (`bool`, defaults to `True`):
+            Whether to use shortcut at the end of the encoder.
+        decoder_in_shortcut (`bool`, defaults to `True`):
+            Whether to use shortcut at the beginning of the decoder.
+        decoder_conv_act_fn (`str`, defaults to `"relu"`):
+            The activation function to use at the end of the decoder.
         scaling_factor (`float`, defaults to `1.0`):
             The multiplicative inverse of the root mean square of the latent features. This is used to scale the latent
             space to have unit variance when training the diffusion model. The latents are scaled with the formula `z =
@@ -431,14 +440,17 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         decoder_block_types: Union[str, Tuple[str]] = "ResBlock",
         encoder_block_out_channels: Tuple[int, ...] = (128, 256, 512, 512, 1024, 1024),
         decoder_block_out_channels: Tuple[int, ...] = (128, 256, 512, 512, 1024, 1024),
-        encoder_layers_per_block: Tuple[int] = (2, 2, 2, 3, 3, 3),
-        decoder_layers_per_block: Tuple[int] = (3, 3, 3, 3, 3, 3),
+        encoder_layers_per_block: Tuple[int, ...] = (2, 2, 2, 3, 3, 3),
+        decoder_layers_per_block: Tuple[int, ...] = (3, 3, 3, 3, 3, 3),
         encoder_qkv_multiscales: Tuple[Tuple[int, ...], ...] = ((), (), (), (5,), (5,), (5,)),
         decoder_qkv_multiscales: Tuple[Tuple[int, ...], ...] = ((), (), (), (5,), (5,), (5,)),
         upsample_block_type: str = "pixel_shuffle",
         downsample_block_type: str = "pixel_unshuffle",
         decoder_norm_types: Union[str, Tuple[str]] = "rms_norm",
         decoder_act_fns: Union[str, Tuple[str]] = "silu",
+        encoder_out_shortcut: bool = True,
+        decoder_in_shortcut: bool = True,
+        decoder_conv_act_fn: str = "relu",
         scaling_factor: float = 1.0,
     ) -> None:
         super().__init__()
@@ -452,6 +464,7 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             layers_per_block=encoder_layers_per_block,
             qkv_multiscales=encoder_qkv_multiscales,
             downsample_block_type=downsample_block_type,
+            out_shortcut=encoder_out_shortcut,
         )
         self.decoder = Decoder(
             in_channels=in_channels,
@@ -464,6 +477,8 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             norm_type=decoder_norm_types,
             act_fn=decoder_act_fns,
             upsample_block_type=upsample_block_type,
+            in_shortcut=decoder_in_shortcut,
+            conv_act_fn=decoder_conv_act_fn,
         )
 
         self.spatial_compression_ratio = 2 ** (len(encoder_block_out_channels) - 1)
@@ -485,6 +500,9 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # The minimal distance between two spatial tiles
         self.tile_sample_stride_height = 448
         self.tile_sample_stride_width = 448
+
+        self.tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
+        self.tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
 
     def enable_tiling(
         self,
@@ -515,27 +533,8 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         self.tile_sample_min_width = tile_sample_min_width or self.tile_sample_min_width
         self.tile_sample_stride_height = tile_sample_stride_height or self.tile_sample_stride_height
         self.tile_sample_stride_width = tile_sample_stride_width or self.tile_sample_stride_width
-
-    def disable_tiling(self) -> None:
-        r"""
-        Disable tiled AE decoding. If `enable_tiling` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_tiling = False
-
-    def enable_slicing(self) -> None:
-        r"""
-        Enable sliced AE decoding. When this option is enabled, the AE will split the input tensor in slices to compute
-        decoding in several steps. This is useful to save some memory and allow larger batch sizes.
-        """
-        self.use_slicing = True
-
-    def disable_slicing(self) -> None:
-        r"""
-        Disable sliced AE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_slicing = False
+        self.tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
+        self.tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, num_channels, height, width = x.shape
@@ -597,7 +596,7 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 returned.
         """
         if self.use_slicing and z.size(0) > 1:
-            decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
+            decoded_slices = [self._decode(z_slice) for z_slice in z.split(1)]
             decoded = torch.cat(decoded_slices)
         else:
             decoded = self._decode(z)
@@ -606,11 +605,106 @@ class AutoencoderDC(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (decoded,)
         return DecoderOutput(sample=decoded)
 
+    def blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
+        blend_extent = min(a.shape[2], b.shape[2], blend_extent)
+        for y in range(blend_extent):
+            b[:, :, y, :] = a[:, :, -blend_extent + y, :] * (1 - y / blend_extent) + b[:, :, y, :] * (y / blend_extent)
+        return b
+
+    def blend_h(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
+        blend_extent = min(a.shape[3], b.shape[3], blend_extent)
+        for x in range(blend_extent):
+            b[:, :, :, x] = a[:, :, :, -blend_extent + x] * (1 - x / blend_extent) + b[:, :, :, x] * (x / blend_extent)
+        return b
+
     def tiled_encode(self, x: torch.Tensor, return_dict: bool = True) -> torch.Tensor:
-        raise NotImplementedError("`tiled_encode` has not been implemented for AutoencoderDC.")
+        batch_size, num_channels, height, width = x.shape
+        latent_height = height // self.spatial_compression_ratio
+        latent_width = width // self.spatial_compression_ratio
+
+        tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
+        tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
+        tile_latent_stride_height = self.tile_sample_stride_height // self.spatial_compression_ratio
+        tile_latent_stride_width = self.tile_sample_stride_width // self.spatial_compression_ratio
+        blend_height = tile_latent_min_height - tile_latent_stride_height
+        blend_width = tile_latent_min_width - tile_latent_stride_width
+
+        # Split x into overlapping tiles and encode them separately.
+        # The tiles have an overlap to avoid seams between tiles.
+        rows = []
+        for i in range(0, x.shape[2], self.tile_sample_stride_height):
+            row = []
+            for j in range(0, x.shape[3], self.tile_sample_stride_width):
+                tile = x[:, :, i : i + self.tile_sample_min_height, j : j + self.tile_sample_min_width]
+                if (
+                    tile.shape[2] % self.spatial_compression_ratio != 0
+                    or tile.shape[3] % self.spatial_compression_ratio != 0
+                ):
+                    pad_h = (self.spatial_compression_ratio - tile.shape[2]) % self.spatial_compression_ratio
+                    pad_w = (self.spatial_compression_ratio - tile.shape[3]) % self.spatial_compression_ratio
+                    tile = F.pad(tile, (0, pad_w, 0, pad_h))
+                tile = self.encoder(tile)
+                row.append(tile)
+            rows.append(row)
+        result_rows = []
+        for i, row in enumerate(rows):
+            result_row = []
+            for j, tile in enumerate(row):
+                # blend the above tile and the left tile
+                # to the current tile and add the current tile to the result row
+                if i > 0:
+                    tile = self.blend_v(rows[i - 1][j], tile, blend_height)
+                if j > 0:
+                    tile = self.blend_h(row[j - 1], tile, blend_width)
+                result_row.append(tile[:, :, :tile_latent_stride_height, :tile_latent_stride_width])
+            result_rows.append(torch.cat(result_row, dim=3))
+
+        encoded = torch.cat(result_rows, dim=2)[:, :, :latent_height, :latent_width]
+
+        if not return_dict:
+            return (encoded,)
+        return EncoderOutput(latent=encoded)
 
     def tiled_decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
-        raise NotImplementedError("`tiled_decode` has not been implemented for AutoencoderDC.")
+        batch_size, num_channels, height, width = z.shape
+
+        tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
+        tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
+        tile_latent_stride_height = self.tile_sample_stride_height // self.spatial_compression_ratio
+        tile_latent_stride_width = self.tile_sample_stride_width // self.spatial_compression_ratio
+
+        blend_height = self.tile_sample_min_height - self.tile_sample_stride_height
+        blend_width = self.tile_sample_min_width - self.tile_sample_stride_width
+
+        # Split z into overlapping tiles and decode them separately.
+        # The tiles have an overlap to avoid seams between tiles.
+        rows = []
+        for i in range(0, height, tile_latent_stride_height):
+            row = []
+            for j in range(0, width, tile_latent_stride_width):
+                tile = z[:, :, i : i + tile_latent_min_height, j : j + tile_latent_min_width]
+                decoded = self.decoder(tile)
+                row.append(decoded)
+            rows.append(row)
+
+        result_rows = []
+        for i, row in enumerate(rows):
+            result_row = []
+            for j, tile in enumerate(row):
+                # blend the above tile and the left tile
+                # to the current tile and add the current tile to the result row
+                if i > 0:
+                    tile = self.blend_v(rows[i - 1][j], tile, blend_height)
+                if j > 0:
+                    tile = self.blend_h(row[j - 1], tile, blend_width)
+                result_row.append(tile[:, :, : self.tile_sample_stride_height, : self.tile_sample_stride_width])
+            result_rows.append(torch.cat(result_row, dim=3))
+
+        decoded = torch.cat(result_rows, dim=2)
+
+        if not return_dict:
+            return (decoded,)
+        return DecoderOutput(sample=decoded)
 
     def forward(self, sample: torch.Tensor, return_dict: bool = True) -> torch.Tensor:
         encoded = self.encode(sample, return_dict=False)[0]

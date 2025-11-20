@@ -7,8 +7,8 @@ on:
         default: 'diffusers/diffusers-pytorch-cuda'
         description: 'Name of the Docker image'
         required: true
-      branch:
-        description: 'PR Branch to test on'
+      pr_number:
+        description: 'PR number to test on'
         required: true
       test:
         description: 'Tests to run (e.g.: `tests/models`).'
@@ -30,7 +30,7 @@ jobs:
       group: aws-g4dn-2xlarge
     container:
       image: ${{ github.event.inputs.docker_image }}
-      options: --gpus 0 --privileged --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
+      options: --gpus all --privileged --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
 
     steps:
       - name: Validate test files input
@@ -43,8 +43,8 @@ jobs:
             exit 1
           fi
 
-          if [[ ! "$PY_TEST" =~ ^tests/(models|pipelines) ]]; then
-            echo "Error: The input string must contain either 'models' or 'pipelines' after 'tests/'."
+          if [[ ! "$PY_TEST" =~ ^tests/(models|pipelines|lora) ]]; then
+            echo "Error: The input string must contain either 'models', 'pipelines', or 'lora' after 'tests/'."
             exit 1
           fi
 
@@ -53,19 +53,18 @@ jobs:
             exit 1
           fi
           echo "$PY_TEST"
+        
+        shell: bash -e {0}
 
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-
+          ref: refs/pull/${{ inputs.pr_number }}/head
 
       - name: Install pytest
         run: |
-          python -m venv /opt/venv && export PATH="/opt/venv/bin:$PATH"
-          python -m uv pip install -e [quality,test]
-          python -m uv pip install peft
+          uv pip install -e ".[quality]"
+          uv pip install peft
 
       - name: Run tests
         env:

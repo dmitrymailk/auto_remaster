@@ -1,4 +1,4 @@
-# Copyright 2024 The RhymesAI and The HuggingFace Team.
+# Copyright 2025 The RhymesAI and The HuggingFace Team.
 # All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,6 +28,7 @@ from ..modeling_outputs import AutoencoderKLOutput
 from ..modeling_utils import ModelMixin
 from ..resnet import ResnetBlock2D
 from ..upsampling import Upsample2D
+from .vae import AutoencoderMixin
 
 
 class AllegroTemporalConvLayer(nn.Module):
@@ -103,7 +104,7 @@ class AllegroTemporalConvLayer(nn.Module):
         if self.down_sample:
             identity = hidden_states[:, :, ::2]
         elif self.up_sample:
-            identity = hidden_states.repeat_interleave(2, dim=2)
+            identity = hidden_states.repeat_interleave(2, dim=2, output_size=hidden_states.shape[2] * 2)
         else:
             identity = hidden_states
 
@@ -507,19 +508,12 @@ class AllegroEncoder3D(nn.Module):
         sample = sample + residual
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
             # Down blocks
             for down_block in self.down_blocks:
-                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(down_block), sample)
+                sample = self._gradient_checkpointing_func(down_block, sample)
 
             # Mid block
-            sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.mid_block), sample)
+            sample = self._gradient_checkpointing_func(self.mid_block, sample)
         else:
             # Down blocks
             for down_block in self.down_blocks:
@@ -647,19 +641,12 @@ class AllegroDecoder3D(nn.Module):
         upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    return module(*inputs)
-
-                return custom_forward
-
             # Mid block
-            sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.mid_block), sample)
+            sample = self._gradient_checkpointing_func(self.mid_block, sample)
 
             # Up blocks
             for up_block in self.up_blocks:
-                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(up_block), sample)
+                sample = self._gradient_checkpointing_func(up_block, sample)
 
         else:
             # Mid block
@@ -687,7 +674,7 @@ class AllegroDecoder3D(nn.Module):
         return sample
 
 
-class AutoencoderKLAllegro(ModelMixin, ConfigMixin):
+class AutoencoderKLAllegro(ModelMixin, AutoencoderMixin, ConfigMixin):
     r"""
     A VAE model with KL loss for encoding videos into latents and decoding latent representations into videos. Used in
     [Allegro](https://github.com/rhymes-ai/Allegro).
@@ -726,11 +713,11 @@ class AutoencoderKLAllegro(ModelMixin, ConfigMixin):
             model. The latents are scaled with the formula `z = z * scaling_factor` before being passed to the
             diffusion model. When decoding, the latents are scaled back to the original scale with the formula: `z = 1
             / scaling_factor * z`. For more details, refer to sections 4.3.2 and D.1 of the [High-Resolution Image
-            Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752) paper.
+            Synthesis with Latent Diffusion Models](https://huggingface.co/papers/2112.10752) paper.
         force_upcast (`bool`, default to `True`):
             If enabled it will force the VAE to run in float32 for high image resolution pipelines, such as SD-XL. VAE
-            can be fine-tuned / trained to a lower range without loosing too much precision in which case
-            `force_upcast` can be set to `False` - see: https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
+            can be fine-tuned / trained to a lower range without losing too much precision in which case `force_upcast`
+            can be set to `False` - see: https://huggingface.co/madebyollin/sdxl-vae-fp16-fix
     """
 
     _supports_gradient_checkpointing = True
@@ -808,39 +795,6 @@ class AutoencoderKLAllegro(ModelMixin, ConfigMixin):
             sample_size - self.tile_overlap_h,
             sample_size - self.tile_overlap_w,
         )
-
-    def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, (AllegroEncoder3D, AllegroDecoder3D)):
-            module.gradient_checkpointing = value
-
-    def enable_tiling(self) -> None:
-        r"""
-        Enable tiled VAE decoding. When this option is enabled, the VAE will split the input tensor into tiles to
-        compute decoding and encoding in several steps. This is useful for saving a large amount of memory and to allow
-        processing larger images.
-        """
-        self.use_tiling = True
-
-    def disable_tiling(self) -> None:
-        r"""
-        Disable tiled VAE decoding. If `enable_tiling` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_tiling = False
-
-    def enable_slicing(self) -> None:
-        r"""
-        Enable sliced VAE decoding. When this option is enabled, the VAE will split the input tensor in slices to
-        compute decoding in several steps. This is useful to save some memory and allow larger batch sizes.
-        """
-        self.use_slicing = True
-
-    def disable_slicing(self) -> None:
-        r"""
-        Disable sliced VAE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_slicing = False
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         # TODO(aryan)

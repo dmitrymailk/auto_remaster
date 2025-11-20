@@ -193,7 +193,8 @@ class StableDiffusionXLControlNetReferencePipeline(StableDiffusionXLControlNetPi
 
     def prepare_ref_latents(self, refimage, batch_size, dtype, device, generator, do_classifier_free_guidance):
         refimage = refimage.to(device=device)
-        if self.vae.dtype == torch.float16 and self.vae.config.force_upcast:
+        needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
+        if needs_upcasting:
             self.upcast_vae()
             refimage = refimage.to(next(iter(self.vae.post_quant_conv.parameters())).dtype)
         if refimage.dtype != self.vae.dtype:
@@ -223,6 +224,11 @@ class StableDiffusionXLControlNetReferencePipeline(StableDiffusionXLControlNetPi
 
         # aligning device to prevent device errors when concating it with the latent model input
         ref_image_latents = ref_image_latents.to(device=device, dtype=dtype)
+
+        # cast back to fp16 if needed
+        if needs_upcasting:
+            self.vae.to(dtype=torch.float16)
+
         return ref_image_latents
 
     def prepare_ref_image(
@@ -425,7 +431,7 @@ class StableDiffusionXLControlNetReferencePipeline(StableDiffusionXLControlNetPi
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             eta (`float`, *optional*, defaults to 0.0):
-                Corresponds to parameter eta (η) from the [DDIM](https://arxiv.org/abs/2010.02502) paper. Only applies
+                Corresponds to parameter eta (η) from the [DDIM](https://huggingface.co/papers/2010.02502) paper. Only applies
                 to the [`~schedulers.DDIMScheduler`], and is ignored in other schedulers.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
                 A [`torch.Generator`](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make

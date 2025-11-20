@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc.
+# Copyright 2025 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ from torch import nn
 
 from diffusers import ControlNetXSAdapter, UNet2DConditionModel, UNetControlNetXSModel
 from diffusers.utils import logging
-from diffusers.utils.testing_utils import enable_full_determinism, floats_tensor, is_flaky, torch_device
 
+from ...testing_utils import enable_full_determinism, floats_tensor, is_flaky, torch_device
 from ..test_modeling_common import ModelTesterMixin, UNetTesterMixin
 
 
@@ -320,6 +320,7 @@ class UNetControlNetXSModelTests(ModelTesterMixin, UNetTesterMixin, unittest.Tes
 
         assert output.shape == output_mix_time.shape
 
+    @unittest.skip("Test not supported.")
     def test_forward_with_norm_groups(self):
         # UNetControlNetXSModel currently only supports StableDiffusion and StableDiffusion-XL, both of which have norm_num_groups fixed at 32. So we don't need to test different values for norm_num_groups.
         pass

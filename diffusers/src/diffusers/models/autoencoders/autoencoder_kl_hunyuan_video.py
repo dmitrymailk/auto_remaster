@@ -1,4 +1,4 @@
-# Copyright 2024 The Hunyuan Team and The HuggingFace Team. All rights reserved.
+# Copyright 2025 The Hunyuan Team and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,22 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint
 
 from ...configuration_utils import ConfigMixin, register_to_config
-from ...utils import is_torch_version, logging
+from ...utils import logging
 from ...utils.accelerate_utils import apply_forward_hook
 from ..activations import get_activation
 from ..attention_processor import Attention
 from ..modeling_outputs import AutoencoderKLOutput
 from ..modeling_utils import ModelMixin
-from .vae import DecoderOutput, DiagonalGaussianDistribution
+from .vae import AutoencoderMixin, DecoderOutput, DiagonalGaussianDistribution
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -36,11 +35,11 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 def prepare_causal_attention_mask(
     num_frames: int, height_width: int, dtype: torch.dtype, device: torch.device, batch_size: int = None
 ) -> torch.Tensor:
-    seq_len = num_frames * height_width
-    mask = torch.full((seq_len, seq_len), float("-inf"), dtype=dtype, device=device)
-    for i in range(seq_len):
-        i_frame = i // height_width
-        mask[i, : (i_frame + 1) * height_width] = 0
+    indices = torch.arange(1, num_frames + 1, dtype=torch.int32, device=device)
+    indices_blocks = indices.repeat_interleave(height_width)
+    x, y = torch.meshgrid(indices_blocks, indices_blocks, indexing="xy")
+    mask = torch.where(x <= y, 0, -float("inf")).to(dtype=dtype)
+
     if batch_size is not None:
         mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
     return mask
@@ -252,21 +251,7 @@ class HunyuanVideoMidBlock3D(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module, return_dict=None):
-                def custom_forward(*inputs):
-                    if return_dict is not None:
-                        return module(*inputs, return_dict=return_dict)
-                    else:
-                        return module(*inputs)
-
-                return custom_forward
-
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
-            hidden_states = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self.resnets[0]), hidden_states, **ckpt_kwargs
-            )
+            hidden_states = self._gradient_checkpointing_func(self.resnets[0], hidden_states)
 
             for attn, resnet in zip(self.attentions, self.resnets[1:]):
                 if attn is not None:
@@ -278,9 +263,7 @@ class HunyuanVideoMidBlock3D(nn.Module):
                     hidden_states = attn(hidden_states, attention_mask=attention_mask)
                     hidden_states = hidden_states.unflatten(1, (num_frames, height, width)).permute(0, 4, 1, 2, 3)
 
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet), hidden_states, **ckpt_kwargs
-                )
+                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
 
         else:
             hidden_states = self.resnets[0](hidden_states)
@@ -350,22 +333,8 @@ class HunyuanVideoDownBlock3D(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module, return_dict=None):
-                def custom_forward(*inputs):
-                    if return_dict is not None:
-                        return module(*inputs, return_dict=return_dict)
-                    else:
-                        return module(*inputs)
-
-                return custom_forward
-
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
             for resnet in self.resnets:
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet), hidden_states, **ckpt_kwargs
-                )
+                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
         else:
             for resnet in self.resnets:
                 hidden_states = resnet(hidden_states)
@@ -426,22 +395,8 @@ class HunyuanVideoUpBlock3D(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module, return_dict=None):
-                def custom_forward(*inputs):
-                    if return_dict is not None:
-                        return module(*inputs, return_dict=return_dict)
-                    else:
-                        return module(*inputs)
-
-                return custom_forward
-
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
             for resnet in self.resnets:
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(resnet), hidden_states, **ckpt_kwargs
-                )
+                hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
 
         else:
             for resnet in self.resnets:
@@ -545,26 +500,10 @@ class HunyuanVideoEncoder3D(nn.Module):
         hidden_states = self.conv_in(hidden_states)
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module, return_dict=None):
-                def custom_forward(*inputs):
-                    if return_dict is not None:
-                        return module(*inputs, return_dict=return_dict)
-                    else:
-                        return module(*inputs)
-
-                return custom_forward
-
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
             for down_block in self.down_blocks:
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(down_block), hidden_states, **ckpt_kwargs
-                )
+                hidden_states = self._gradient_checkpointing_func(down_block, hidden_states)
 
-            hidden_states = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self.mid_block), hidden_states, **ckpt_kwargs
-            )
+            hidden_states = self._gradient_checkpointing_func(self.mid_block, hidden_states)
         else:
             for down_block in self.down_blocks:
                 hidden_states = down_block(hidden_states)
@@ -667,26 +606,10 @@ class HunyuanVideoDecoder3D(nn.Module):
         hidden_states = self.conv_in(hidden_states)
 
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-            def create_custom_forward(module, return_dict=None):
-                def custom_forward(*inputs):
-                    if return_dict is not None:
-                        return module(*inputs, return_dict=return_dict)
-                    else:
-                        return module(*inputs)
-
-                return custom_forward
-
-            ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-
-            hidden_states = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self.mid_block), hidden_states, **ckpt_kwargs
-            )
+            hidden_states = self._gradient_checkpointing_func(self.mid_block, hidden_states)
 
             for up_block in self.up_blocks:
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(up_block), hidden_states, **ckpt_kwargs
-                )
+                hidden_states = self._gradient_checkpointing_func(up_block, hidden_states)
         else:
             hidden_states = self.mid_block(hidden_states)
 
@@ -701,7 +624,7 @@ class HunyuanVideoDecoder3D(nn.Module):
         return hidden_states
 
 
-class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
+class AutoencoderKLHunyuanVideo(ModelMixin, AutoencoderMixin, ConfigMixin):
     r"""
     A VAE model with KL loss for encoding videos into latents and decoding latent representations into videos.
     Introduced in [HunyuanVideo](https://huggingface.co/papers/2412.03603).
@@ -730,7 +653,7 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
             "HunyuanVideoUpBlock3D",
             "HunyuanVideoUpBlock3D",
         ),
-        block_out_channels: Tuple[int] = (128, 256, 512, 512),
+        block_out_channels: Tuple[int, ...] = (128, 256, 512, 512),
         layers_per_block: int = 2,
         act_fn: str = "silu",
         norm_num_groups: int = 32,
@@ -786,7 +709,7 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
         self.use_tiling = False
 
         # When decoding temporally long video latents, the memory requirement is very high. By decoding latent frames
-        # at a fixed frame batch size (based on `self.num_latent_frames_batch_sizes`), the memory requirement can be lowered.
+        # at a fixed frame batch size (based on `self.tile_sample_min_num_frames`), the memory requirement can be lowered.
         self.use_framewise_encoding = True
         self.use_framewise_decoding = True
 
@@ -799,10 +722,6 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
         self.tile_sample_stride_height = 192
         self.tile_sample_stride_width = 192
         self.tile_sample_stride_num_frames = 12
-
-    def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, (HunyuanVideoEncoder3D, HunyuanVideoDecoder3D)):
-            module.gradient_checkpointing = value
 
     def enable_tiling(
         self,
@@ -844,31 +763,10 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
         self.tile_sample_stride_width = tile_sample_stride_width or self.tile_sample_stride_width
         self.tile_sample_stride_num_frames = tile_sample_stride_num_frames or self.tile_sample_stride_num_frames
 
-    def disable_tiling(self) -> None:
-        r"""
-        Disable tiled VAE decoding. If `enable_tiling` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_tiling = False
-
-    def enable_slicing(self) -> None:
-        r"""
-        Enable sliced VAE decoding. When this option is enabled, the VAE will split the input tensor in slices to
-        compute decoding in several steps. This is useful to save some memory and allow larger batch sizes.
-        """
-        self.use_slicing = True
-
-    def disable_slicing(self) -> None:
-        r"""
-        Disable sliced VAE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
-        decoding in one step.
-        """
-        self.use_slicing = False
-
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, num_channels, num_frames, height, width = x.shape
 
-        if self.use_framewise_decoding and num_frames > self.tile_sample_min_num_frames:
+        if self.use_framewise_encoding and num_frames > self.tile_sample_min_num_frames:
             return self._temporal_tiled_encode(x)
 
         if self.use_tiling and (width > self.tile_sample_min_width or height > self.tile_sample_min_height):
@@ -909,7 +807,7 @@ class AutoencoderKLHunyuanVideo(ModelMixin, ConfigMixin):
     def _decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
         batch_size, num_channels, num_frames, height, width = z.shape
         tile_latent_min_height = self.tile_sample_min_height // self.spatial_compression_ratio
-        tile_latent_min_width = self.tile_sample_stride_width // self.spatial_compression_ratio
+        tile_latent_min_width = self.tile_sample_min_width // self.spatial_compression_ratio
         tile_latent_min_num_frames = self.tile_sample_min_num_frames // self.temporal_compression_ratio
 
         if self.use_framewise_decoding and num_frames > tile_latent_min_num_frames:

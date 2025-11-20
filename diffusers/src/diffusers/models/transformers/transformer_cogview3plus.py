@@ -1,4 +1,4 @@
-# Copyright 2024 The CogView team, Tsinghua University & ZhipuAI and The HuggingFace Team. All rights reserved.
+# Copyright 2025 The CogView team, Tsinghua University & ZhipuAI and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,24 +13,19 @@
 # limitations under the License.
 
 
-from typing import Any, Dict, Union
+from typing import Dict, Tuple, Union
 
 import torch
 import torch.nn as nn
 
 from ...configuration_utils import ConfigMixin, register_to_config
-from ...models.attention import FeedForward
-from ...models.attention_processor import (
-    Attention,
-    AttentionProcessor,
-    CogVideoXAttnProcessor2_0,
-)
-from ...models.modeling_utils import ModelMixin
-from ...models.normalization import AdaLayerNormContinuous
-from ...utils import is_torch_version, logging
+from ...utils import logging
+from ..attention import FeedForward
+from ..attention_processor import Attention, AttentionProcessor, CogVideoXAttnProcessor2_0
 from ..embeddings import CogView3CombinedTimestepSizeEmbeddings, CogView3PlusPatchEmbed
 from ..modeling_outputs import Transformer2DModelOutput
-from ..normalization import CogView3PlusAdaLayerNormZeroTextImage
+from ..modeling_utils import ModelMixin
+from ..normalization import AdaLayerNormContinuous, CogView3PlusAdaLayerNormZeroTextImage
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -84,7 +79,7 @@ class CogView3PlusTransformerBlock(nn.Module):
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         emb: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         text_seq_length = encoder_hidden_states.size(1)
 
         # norm & modulate
@@ -166,6 +161,8 @@ class CogView3PlusTransformer2DModel(ModelMixin, ConfigMixin):
     """
 
     _supports_gradient_checkpointing = True
+    _skip_layerwise_casting_patterns = ["patch_embed", "norm"]
+    _no_split_modules = ["CogView3PlusTransformerBlock", "CogView3PlusPatchEmbed"]
 
     @register_to_config
     def __init__(
@@ -287,10 +284,6 @@ class CogView3PlusTransformer2DModel(ModelMixin, ConfigMixin):
         for name, module in self.named_children():
             fn_recursive_attn_processor(name, module, processor)
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        if hasattr(module, "gradient_checkpointing"):
-            module.gradient_checkpointing = value
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -300,7 +293,7 @@ class CogView3PlusTransformer2DModel(ModelMixin, ConfigMixin):
         target_size: torch.Tensor,
         crop_coords: torch.Tensor,
         return_dict: bool = True,
-    ) -> Union[torch.Tensor, Transformer2DModelOutput]:
+    ) -> Union[Tuple[torch.Tensor], Transformer2DModelOutput]:
         """
         The [`CogView3PlusTransformer2DModel`] forward method.
 
@@ -342,20 +335,11 @@ class CogView3PlusTransformer2DModel(ModelMixin, ConfigMixin):
 
         for index_block, block in enumerate(self.transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
-
-                    return custom_forward
-
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                hidden_states, encoder_hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
+                hidden_states, encoder_hidden_states = self._gradient_checkpointing_func(
+                    block,
                     hidden_states,
                     encoder_hidden_states,
                     emb,
-                    **ckpt_kwargs,
                 )
             else:
                 hidden_states, encoder_hidden_states = block(

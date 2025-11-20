@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc.
+# Copyright 2025 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,9 +54,7 @@ class InstructPix2Pix(ExamplesTestsAccelerate):
                 {"checkpoint-4", "checkpoint-6"},
             )
 
-    def test_instruct_pix2pix_checkpointing_checkpoints_total_limit_removes_multiple_checkpoints(
-        self,
-    ):
+    def test_instruct_pix2pix_checkpointing_checkpoints_total_limit_removes_multiple_checkpoints(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             test_args = f"""
                 examples/instruct_pix2pix/train_instruct_pix2pix.py

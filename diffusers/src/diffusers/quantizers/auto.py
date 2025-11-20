@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,13 +21,17 @@ from typing import Dict, Optional, Union
 
 from .bitsandbytes import BnB4BitDiffusersQuantizer, BnB8BitDiffusersQuantizer
 from .gguf import GGUFQuantizer
+from .modelopt import NVIDIAModelOptQuantizer
 from .quantization_config import (
     BitsAndBytesConfig,
     GGUFQuantizationConfig,
+    NVIDIAModelOptConfig,
     QuantizationConfigMixin,
     QuantizationMethod,
+    QuantoConfig,
     TorchAoConfig,
 )
+from .quanto import QuantoQuantizer
 from .torchao import TorchAoHfQuantizer
 
 
@@ -35,14 +39,18 @@ AUTO_QUANTIZER_MAPPING = {
     "bitsandbytes_4bit": BnB4BitDiffusersQuantizer,
     "bitsandbytes_8bit": BnB8BitDiffusersQuantizer,
     "gguf": GGUFQuantizer,
+    "quanto": QuantoQuantizer,
     "torchao": TorchAoHfQuantizer,
+    "modelopt": NVIDIAModelOptQuantizer,
 }
 
 AUTO_QUANTIZATION_CONFIG_MAPPING = {
     "bitsandbytes_4bit": BitsAndBytesConfig,
     "bitsandbytes_8bit": BitsAndBytesConfig,
     "gguf": GGUFQuantizationConfig,
+    "quanto": QuantoConfig,
     "torchao": TorchAoConfig,
+    "modelopt": NVIDIAModelOptConfig,
 }
 
 
@@ -132,6 +140,9 @@ class DiffusersAutoQuantizer:
 
         if isinstance(quantization_config, dict):
             quantization_config = cls.from_dict(quantization_config)
+
+        if isinstance(quantization_config, NVIDIAModelOptConfig):
+            quantization_config.check_model_patching()
 
         if warning_msg != "":
             warnings.warn(warning_msg)

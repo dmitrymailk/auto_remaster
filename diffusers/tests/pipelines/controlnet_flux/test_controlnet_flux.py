@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2024 HuggingFace Inc and The InstantX Team.
+# Copyright 2025 HuggingFace Inc and The InstantX Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ import gc
 import unittest
 
 import numpy as np
-import pytest
 import torch
 from huggingface_hub import hf_hub_download
 from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5TokenizerFast
@@ -30,26 +29,29 @@ from diffusers import (
 )
 from diffusers.models import FluxControlNetModel
 from diffusers.utils import load_image
-from diffusers.utils.testing_utils import (
-    enable_full_determinism,
-    numpy_cosine_similarity_distance,
-    require_big_gpu_with_torch_cuda,
-    slow,
-    torch_device,
-)
 from diffusers.utils.torch_utils import randn_tensor
 
-from ..test_pipelines_common import PipelineTesterMixin
+from ...testing_utils import (
+    backend_empty_cache,
+    enable_full_determinism,
+    nightly,
+    numpy_cosine_similarity_distance,
+    require_big_accelerator,
+    torch_device,
+)
+from ..test_pipelines_common import FluxIPAdapterTesterMixin, PipelineTesterMixin
 
 
 enable_full_determinism()
 
 
-class FluxControlNetPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
+class FluxControlNetPipelineFastTests(unittest.TestCase, PipelineTesterMixin, FluxIPAdapterTesterMixin):
     pipeline_class = FluxControlNetPipeline
 
     params = frozenset(["prompt", "height", "width", "guidance_scale", "prompt_embeds", "pooled_prompt_embeds"])
     batch_params = frozenset(["prompt"])
+    test_layerwise_casting = True
+    test_group_offloading = True
 
     def get_dummy_components(self):
         torch.manual_seed(0)
@@ -126,6 +128,8 @@ class FluxControlNetPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
             "transformer": transformer,
             "vae": vae,
             "controlnet": controlnet,
+            "image_encoder": None,
+            "feature_extractor": None,
         }
 
     def get_dummy_inputs(self, device, seed=0):
@@ -173,9 +177,9 @@ class FluxControlNetPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
             [0.47387695, 0.63134766, 0.5605469, 0.61621094, 0.7207031, 0.7089844, 0.70410156, 0.6113281, 0.64160156]
         )
 
-        assert (
-            np.abs(image_slice.flatten() - expected_slice).max() < 1e-2
-        ), f"Expected: {expected_slice}, got: {image_slice.flatten()}"
+        assert np.abs(image_slice.flatten() - expected_slice).max() < 1e-2, (
+            f"Expected: {expected_slice}, got: {image_slice.flatten()}"
+        )
 
     @unittest.skip("xFormersAttnProcessor does not work with SD3 Joint Attention")
     def test_xformers_attention_forwardGenerator_pass(self):
@@ -204,21 +208,20 @@ class FluxControlNetPipelineFastTests(unittest.TestCase, PipelineTesterMixin):
             assert (output_height, output_width) == (expected_height, expected_width)
 
 
-@slow
-@require_big_gpu_with_torch_cuda
-@pytest.mark.big_gpu_with_torch_cuda
+@nightly
+@require_big_accelerator
 class FluxControlNetPipelineSlowTests(unittest.TestCase):
     pipeline_class = FluxControlNetPipeline
 
     def setUp(self):
         super().setUp()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def tearDown(self):
         super().tearDown()
         gc.collect()
-        torch.cuda.empty_cache()
+        backend_empty_cache(torch_device)
 
     def test_canny(self):
         controlnet = FluxControlNetModel.from_pretrained(
@@ -230,8 +233,7 @@ class FluxControlNetPipelineSlowTests(unittest.TestCase):
             text_encoder_2=None,
             controlnet=controlnet,
             torch_dtype=torch.bfloat16,
-        )
-        pipe.enable_model_cpu_offload()
+        ).to(torch_device)
         pipe.set_progress_bar_config(disable=None)
 
         generator = torch.Generator(device="cpu").manual_seed(0)
@@ -241,12 +243,12 @@ class FluxControlNetPipelineSlowTests(unittest.TestCase):
 
         prompt_embeds = torch.load(
             hf_hub_download(repo_id="diffusers/test-slices", repo_type="dataset", filename="flux/prompt_embeds.pt")
-        )
+        ).to(torch_device)
         pooled_prompt_embeds = torch.load(
             hf_hub_download(
                 repo_id="diffusers/test-slices", repo_type="dataset", filename="flux/pooled_prompt_embeds.pt"
             )
-        )
+        ).to(torch_device)
 
         output = pipe(
             prompt_embeds=prompt_embeds,

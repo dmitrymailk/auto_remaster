@@ -1,4 +1,4 @@
-<!--Copyright 2024 The HuggingFace Team. All rights reserved.
+<!--Copyright 2025 The HuggingFace Team. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
 the License. You may obtain a copy of the License at
@@ -10,541 +10,438 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 -->
 
-# Text or image-to-video
+# Video generation
 
-Driven by the success of text-to-image diffusion models, generative video models are able to generate short clips of video from a text prompt or an initial image. These models extend a pretrained diffusion model to generate videos by adding some type of temporal and/or spatial convolution layer to the architecture. A mixed dataset of images and videos are used to train the model which learns to output a series of video frames based on the text or image conditioning.
+Video generation models extend image generation (can be considered a 1-frame video) to also process data related to space and time. Making sure all this data - text, space, time - remain consistent and aligned from frame-to-frame is a big challenge in generating long and high-resolution videos.
 
-This guide will show you how to generate videos, how to configure video model parameters, and how to control video generation.
+Modern video models tackle this challenge with the diffusion transformer (DiT) architecture. This reduces computational costs and allows more efficient scaling to larger and higher-quality image and video data.
 
-## Popular models
+Check out what some of these video models are capable of below.
 
-> [!TIP]
-> Discover other cool and trending video generation models on the Hub [here](https://huggingface.co/models?pipeline_tag=text-to-video&sort=trending)!
+<hfoptions id="popular models">
+<hfoption id="Wan2.1">
 
-[Stable Video Diffusions (SVD)](https://huggingface.co/stabilityai/stable-video-diffusion-img2vid), [I2VGen-XL](https://huggingface.co/ali-vilab/i2vgen-xl/), [AnimateDiff](https://huggingface.co/guoyww/animatediff), and [ModelScopeT2V](https://huggingface.co/ali-vilab/text-to-video-ms-1.7b) are popular models used for video diffusion. Each model is distinct. For example, AnimateDiff inserts a motion modeling module into a frozen text-to-image model to generate personalized animated images, whereas SVD is entirely pretrained from scratch with a three-stage training process to generate short high-quality videos.
+```py
+# pip install ftfy
+import torch
+import numpy as np
+from diffusers import AutoModel, WanPipeline
+from diffusers.hooks.group_offloading import apply_group_offloading
+from diffusers.utils import export_to_video, load_image
+from transformers import UMT5EncoderModel
 
-[CogVideoX](https://huggingface.co/collections/THUDM/cogvideo-66c08e62f1685a3ade464cce) is another popular video generation model. The model is a multidimensional transformer that integrates text, time, and space. It employs full attention in the attention module and includes an expert block at the layer level to spatially align text and video.
+text_encoder = UMT5EncoderModel.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="text_encoder", torch_dtype=torch.bfloat16)
+vae = AutoModel.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="vae", torch_dtype=torch.float32)
+transformer = AutoModel.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="transformer", torch_dtype=torch.bfloat16)
 
-### CogVideoX
- 
-[CogVideoX](../api/pipelines/cogvideox) uses a 3D Variational Autoencoder (VAE) to compress videos along the spatial and temporal dimensions.
+# group-offloading
+onload_device = torch.device("cuda")
+offload_device = torch.device("cpu")
+apply_group_offloading(text_encoder,
+    onload_device=onload_device,
+    offload_device=offload_device,
+    offload_type="block_level",
+    num_blocks_per_group=4
+)
+transformer.enable_group_offload(
+    onload_device=onload_device,
+    offload_device=offload_device,
+    offload_type="leaf_level",
+    use_stream=True
+)
 
-Begin by loading the [`CogVideoXPipeline`] and passing an initial text or image to generate a video.
-<Tip>
+pipeline = WanPipeline.from_pretrained(
+    "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+    vae=vae,
+    transformer=transformer,
+    text_encoder=text_encoder,
+    torch_dtype=torch.bfloat16
+)
+pipeline.to("cuda")
 
-CogVideoX is available for image-to-video and text-to-video. [THUDM/CogVideoX-5b-I2V](https://huggingface.co/THUDM/CogVideoX-5b-I2V) uses the [`CogVideoXImageToVideoPipeline`] for image-to-video. [THUDM/CogVideoX-5b](https://huggingface.co/THUDM/CogVideoX-5b) and [THUDM/CogVideoX-2b](https://huggingface.co/THUDM/CogVideoX-2b) are available for text-to-video with the [`CogVideoXPipeline`].
- 
-</Tip>
+prompt = """
+The camera rushes from far to near in a low-angle shot, 
+revealing a white ferret on a log. It plays, leaps into the water, and emerges, as the camera zooms in 
+for a close-up. Water splashes berry bushes nearby, while moss, snow, and leaves blanket the ground. 
+Birch trees and a light blue sky frame the scene, with ferns in the foreground. Side lighting casts dynamic 
+shadows and warm highlights. Medium composition, front view, low angle, with depth of field.
+"""
+negative_prompt = """
+Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, 
+low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, 
+misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards
+"""
+
+output = pipeline(
+    prompt=prompt,
+    negative_prompt=negative_prompt,
+    num_frames=81,
+    guidance_scale=5.0,
+).frames[0]
+export_to_video(output, "output.mp4", fps=16)
+```
+
+</hfoption>
+<hfoption id="HunyuanVideo">
 
 ```py
 import torch
-from diffusers import CogVideoXImageToVideoPipeline
-from diffusers.utils import export_to_video, load_image
+from diffusers importAutoModel, HunyuanVideoPipeline
+from diffusers.quantizers import PipelineQuantizationConfig
+from diffusers.utils import export_to_video
 
-prompt = "A vast, shimmering ocean flows gracefully under a twilight sky, its waves undulating in a mesmerizing dance of blues and greens. The surface glints with the last rays of the setting sun, casting golden highlights that ripple across the water. Seagulls soar above, their cries blending with the gentle roar of the waves. The horizon stretches infinitely, where the ocean meets the sky in a seamless blend of hues. Close-ups reveal the intricate patterns of the waves, capturing the fluidity and dynamic beauty of the sea in motion."
-image = load_image(image="cogvideox_rocket.png")
-pipe = CogVideoXImageToVideoPipeline.from_pretrained(
-    "THUDM/CogVideoX-5b-I2V",
+# quantize weights to int4 with bitsandbytes
+pipeline_quant_config = PipelineQuantizationConfig(
+  quant_backend="bitsandbytes_4bit",
+  quant_kwargs={
+    "load_in_4bit": True,
+    "bnb_4bit_quant_type": "nf4",
+    "bnb_4bit_compute_dtype": torch.bfloat16
+    },
+  components_to_quantize="transformer"
+)
+
+pipeline = HunyuanVideoPipeline.from_pretrained(
+    "hunyuanvideo-community/HunyuanVideo",
+    quantization_config=pipeline_quant_config,
+    torch_dtype=torch.bfloat16,
+)
+
+# model-offloading and tiling
+pipeline.enable_model_cpu_offload()
+pipeline.vae.enable_tiling()
+
+prompt = "A fluffy teddy bear sits on a bed of soft pillows surrounded by children's toys."
+video = pipeline(prompt=prompt, num_frames=61, num_inference_steps=30).frames[0]
+export_to_video(video, "output.mp4", fps=15)
+```
+
+</hfoption>
+<hfoption id="LTX-Video">
+
+```py
+import torch
+from diffusers import LTXPipeline, AutoModel
+from diffusers.hooks import apply_group_offloading
+from diffusers.utils import export_to_video
+
+# fp8 layerwise weight-casting
+transformer = AutoModel.from_pretrained(
+    "Lightricks/LTX-Video",
+    subfolder="transformer",
     torch_dtype=torch.bfloat16
 )
- 
-pipe.vae.enable_tiling()
-pipe.vae.enable_slicing()
+transformer.enable_layerwise_casting(
+    storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16
+)
 
-video = pipe(
+pipeline = LTXPipeline.from_pretrained("Lightricks/LTX-Video", transformer=transformer, torch_dtype=torch.bfloat16)
+
+# group-offloading
+onload_device = torch.device("cuda")
+offload_device = torch.device("cpu")
+pipeline.transformer.enable_group_offload(onload_device=onload_device, offload_device=offload_device, offload_type="leaf_level", use_stream=True)
+apply_group_offloading(pipeline.text_encoder, onload_device=onload_device, offload_type="block_level", num_blocks_per_group=2)
+apply_group_offloading(pipeline.vae, onload_device=onload_device, offload_type="leaf_level")
+
+prompt = """
+A woman with long brown hair and light skin smiles at another woman with long blonde hair. The woman with brown hair wears a black jacket and has a small, barely noticeable mole on her right cheek. The camera angle is a close-up, focused on the woman with brown hair's face. The lighting is warm and natural, likely from the setting sun, casting a soft glow on the scene. The scene appears to be real-life footage
+"""
+negative_prompt = "worst quality, inconsistent motion, blurry, jittery, distorted"
+
+video = pipeline(
     prompt=prompt,
-    image=image,
-    num_videos_per_prompt=1,
+    negative_prompt=negative_prompt,
+    width=768,
+    height=512,
+    num_frames=161,
+    decode_timestep=0.03,
+    decode_noise_scale=0.025,
     num_inference_steps=50,
-    num_frames=49,
-    guidance_scale=6,
-    generator=torch.Generator(device="cuda").manual_seed(42),
 ).frames[0]
+export_to_video(video, "output.mp4", fps=24)
+```
 
+</hfoption>
+</hfoptions>
+
+This guide will cover video generation basics such as which parameters to configure and how to reduce their memory usage.
+
+> [!TIP]
+> If you're interested in learning more about how to use a specific model, please refer to their pipeline API model card.
+
+## Pipeline parameters
+
+There are several parameters to configure in the pipeline that'll affect video generation quality or speed. Experimenting with different parameter values is important for discovering the appropriate quality and speed tradeoff.
+
+### num_frames
+
+A frame is a still image that is played in a sequence of other frames to create motion or a video. Control the number of frames generated per second with `num_frames`. Increasing `num_frames` increases perceived motion smoothness and visual coherence, making it especially important for videos with dynamic content. A higher `num_frames` value also increases video duration.
+
+Some video models require more specific `num_frames` values for inference. For example, [`HunyuanVideoPipeline`] recommends calculating the `num_frames` with `(4 * num_frames) +1`. Always check a pipelines API model card to see if there is a recommended value.
+
+```py
+import torch
+from diffusers import LTXPipeline
+from diffusers.utils import export_to_video
+
+pipeline = LTXPipeline.from_pretrained(
+    "Lightricks/LTX-Video", torch_dtype=torch.bfloat16
+).to("cuda")
+
+prompt = """
+A woman with long brown hair and light skin smiles at another woman with long blonde hair. The woman 
+with brown hair wears a black jacket and has a small, barely noticeable mole on her right cheek. The 
+camera angle is a close-up, focused on the woman with brown hair's face. The lighting is warm and 
+natural, likely from the setting sun, casting a soft glow on the scene. The scene appears to be 
+real-life footage
+"""
+
+video = pipeline(
+    prompt=prompt,
+    negative_prompt=negative_prompt,
+    width=768,
+    height=512,
+    num_frames=161,
+    decode_timestep=0.03,
+    decode_noise_scale=0.025,
+    num_inference_steps=50,
+).frames[0]
+export_to_video(video, "output.mp4", fps=24)
+```
+
+### guidance_scale
+
+Guidance scale or "cfg" controls how closely the generated frames adhere to the input conditioning (text, image or both). Increasing `guidance_scale` generates frames that resemble the input conditions more closely and includes finer details, but risk introducing artifacts and reducing output diversity. Lower `guidance_scale` values encourages looser prompt adherence and increased output variety, but details may not be as great. If it's too low, it may ignore your prompt entirely and generate random noise.
+
+```py
+import torch
+from diffusers import CogVideoXPipeline, CogVideoXTransformer3DModel
+from diffusers.utils import export_to_video
+
+pipeline = CogVideoXPipeline.from_pretrained(
+  "THUDM/CogVideoX-2b",
+  torch_dtype=torch.float16
+).to("cuda")
+
+prompt = """
+A detailed wooden toy ship with intricately carved masts and sails is seen gliding smoothly over
+a plush, blue carpet that mimics the waves of the sea. The ship's hull is painted a rich brown, 
+with tiny windows. The carpet, soft and textured, provides a perfect backdrop, resembling an 
+oceanic expanse. Surrounding the ship are various other toys and children's items, hinting at 
+a playful environment. The scene captures the innocence and imagination of childhood, 
+with the toy ship's journey symbolizing endless adventures in a whimsical, indoor setting.
+"""
+
+video = pipeline(
+  prompt=prompt,
+  guidance_scale=6,
+  num_inference_steps=50
+).frames[0]
 export_to_video(video, "output.mp4", fps=8)
 ```
 
-<div class="flex gap-4">
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/cogvideox/cogvideox_rocket.png"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">initial image</figcaption>
-  </div>
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/cogvideox/cogvideox_outrocket.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">generated video</figcaption>
-  </div>
-</div>
+### negative_prompt
 
- 
-### Stable Video Diffusion
-
-[SVD](../api/pipelines/svd) is based on the Stable Diffusion 2.1 model and it is trained on images, then low-resolution videos, and finally a smaller dataset of high-resolution videos. This model generates a short 2-4 second video from an initial image. You can learn more details about model, like micro-conditioning, in the [Stable Video Diffusion](../using-diffusers/svd) guide.
-
-Begin by loading the [`StableVideoDiffusionPipeline`] and passing an initial image to generate a video from.
+A negative prompt is useful for excluding things you don't want to see in the generated video. It is commonly used to refine the quality and alignment of the generated video by pushing the model away from undesirable elements like "blurry, distorted, ugly". This can create cleaner and more focused videos.
 
 ```py
+# pip install ftfy
 import torch
-from diffusers import StableVideoDiffusionPipeline
-from diffusers.utils import load_image, export_to_video
-
-pipeline = StableVideoDiffusionPipeline.from_pretrained(
-    "stabilityai/stable-video-diffusion-img2vid-xt", torch_dtype=torch.float16, variant="fp16"
-)
-pipeline.enable_model_cpu_offload()
-
-image = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/svd/rocket.png")
-image = image.resize((1024, 576))
-
-generator = torch.manual_seed(42)
-frames = pipeline(image, decode_chunk_size=8, generator=generator).frames[0]
-export_to_video(frames, "generated.mp4", fps=7)
-```
-
-<div class="flex gap-4">
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/svd/rocket.png"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">initial image</figcaption>
-  </div>
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/svd/output_rocket.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">generated video</figcaption>
-  </div>
-</div>
-
-### I2VGen-XL
-
-[I2VGen-XL](../api/pipelines/i2vgenxl) is a diffusion model that can generate higher resolution videos than SVD and it is also capable of accepting text prompts in addition to images. The model is trained with two hierarchical encoders (detail and global encoder) to better capture low and high-level details in images. These learned details are used to train a video diffusion model which refines the video resolution and details in the generated video.
-
-You can use I2VGen-XL by loading the [`I2VGenXLPipeline`], and passing a text and image prompt to generate a video.
-
-```py
-import torch
-from diffusers import I2VGenXLPipeline
-from diffusers.utils import export_to_gif, load_image
-
-pipeline = I2VGenXLPipeline.from_pretrained("ali-vilab/i2vgen-xl", torch_dtype=torch.float16, variant="fp16")
-pipeline.enable_model_cpu_offload()
-
-image_url = "https://huggingface.co/datasets/diffusers/docs-images/resolve/main/i2vgen_xl_images/img_0009.png"
-image = load_image(image_url).convert("RGB")
-
-prompt = "Papers were floating in the air on a table in the library"
-negative_prompt = "Distorted, discontinuous, Ugly, blurry, low resolution, motionless, static, disfigured, disconnected limbs, Ugly faces, incomplete arms"
-generator = torch.manual_seed(8888)
-
-frames = pipeline(
-    prompt=prompt,
-    image=image,
-    num_inference_steps=50,
-    negative_prompt=negative_prompt,
-    guidance_scale=9.0,
-    generator=generator
-).frames[0]
-export_to_gif(frames, "i2v.gif")
-```
-
-<div class="flex gap-4">
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/diffusers/docs-images/resolve/main/i2vgen_xl_images/img_0009.png"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">initial image</figcaption>
-  </div>
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/i2vgen-xl-example.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">generated video</figcaption>
-  </div>
-</div>
-
-### AnimateDiff
-
-[AnimateDiff](../api/pipelines/animatediff) is an adapter model that inserts a motion module into a pretrained diffusion model to animate an image. The adapter is trained on video clips to learn motion which is used to condition the generation process to create a video. It is faster and easier to only train the adapter and it can be loaded into most diffusion models, effectively turning them into "video models".
-
-Start by loading a [`MotionAdapter`].
-
-```py
-import torch
-from diffusers import AnimateDiffPipeline, DDIMScheduler, MotionAdapter
-from diffusers.utils import export_to_gif
-
-adapter = MotionAdapter.from_pretrained("guoyww/animatediff-motion-adapter-v1-5-2", torch_dtype=torch.float16)
-```
-
-Then load a finetuned Stable Diffusion model with the [`AnimateDiffPipeline`].
-
-```py
-pipeline = AnimateDiffPipeline.from_pretrained("emilianJR/epiCRealism", motion_adapter=adapter, torch_dtype=torch.float16)
-scheduler = DDIMScheduler.from_pretrained(
-    "emilianJR/epiCRealism",
-    subfolder="scheduler",
-    clip_sample=False,
-    timestep_spacing="linspace",
-    beta_schedule="linear",
-    steps_offset=1,
-)
-pipeline.scheduler = scheduler
-pipeline.enable_vae_slicing()
-pipeline.enable_model_cpu_offload()
-```
-
-Create a prompt and generate the video.
-
-```py
-output = pipeline(
-    prompt="A space rocket with trails of smoke behind it launching into space from the desert, 4k, high resolution",
-    negative_prompt="bad quality, worse quality, low resolution",
-    num_frames=16,
-    guidance_scale=7.5,
-    num_inference_steps=50,
-    generator=torch.Generator("cpu").manual_seed(49),
-)
-frames = output.frames[0]
-export_to_gif(frames, "animation.gif")
-```
-
-<div class="flex justify-center">
-    <img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/animatediff.gif"/>
-</div>
-
-### ModelscopeT2V
-
-[ModelscopeT2V](../api/pipelines/text_to_video) adds spatial and temporal convolutions and attention to a UNet, and it is trained on image-text and video-text datasets to enhance what it learns during training. The model takes a prompt, encodes it and creates text embeddings which are denoised by the UNet, and then decoded by a VQGAN into a video.
-
-<Tip>
-
-ModelScopeT2V generates watermarked videos due to the datasets it was trained on. To use a watermark-free model, try the [cerspense/zeroscope_v2_76w](https://huggingface.co/cerspense/zeroscope_v2_576w) model with the [`TextToVideoSDPipeline`] first, and then upscale it's output with the [cerspense/zeroscope_v2_XL](https://huggingface.co/cerspense/zeroscope_v2_XL) checkpoint using the [`VideoToVideoSDPipeline`].
-
-</Tip>
-
-Load a ModelScopeT2V checkpoint into the [`DiffusionPipeline`] along with a prompt to generate a video.
-
-```py
-import torch
-from diffusers import DiffusionPipeline
+from diffusers import WanPipeline
+from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
 from diffusers.utils import export_to_video
 
-pipeline = DiffusionPipeline.from_pretrained("damo-vilab/text-to-video-ms-1.7b", torch_dtype=torch.float16, variant="fp16")
-pipeline.enable_model_cpu_offload()
-pipeline.enable_vae_slicing()
-
-prompt = "Confident teddy bear surfer rides the wave in the tropics"
-video_frames = pipeline(prompt).frames[0]
-export_to_video(video_frames, "modelscopet2v.mp4", fps=10)
-```
-
-<div class="flex justify-center">
-    <img src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/modelscopet2v.gif" />
-</div>
-
-## Configure model parameters
-
-There are a few important parameters you can configure in the pipeline that'll affect the video generation process and quality. Let's take a closer look at what these parameters do and how changing them affects the output.
-
-### Number of frames
-
-The `num_frames` parameter determines how many video frames are generated per second. A frame is an image that is played in a sequence of other frames to create motion or a video. This affects video length because the pipeline generates a certain number of frames per second (check a pipeline's API reference for the default value). To increase the video duration, you'll need to increase the `num_frames` parameter.
-
-```py
-import torch
-from diffusers import StableVideoDiffusionPipeline
-from diffusers.utils import load_image, export_to_video
-
-pipeline = StableVideoDiffusionPipeline.from_pretrained(
-    "stabilityai/stable-video-diffusion-img2vid", torch_dtype=torch.float16, variant="fp16"
+vae = AutoencoderKLWan.from_pretrained(
+  "Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="vae", torch_dtype=torch.float32
 )
-pipeline.enable_model_cpu_offload()
-
-image = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/svd/rocket.png")
-image = image.resize((1024, 576))
-
-generator = torch.manual_seed(42)
-frames = pipeline(image, decode_chunk_size=8, generator=generator, num_frames=25).frames[0]
-export_to_video(frames, "generated.mp4", fps=7)
-```
-
-<div class="flex gap-4">
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/num_frames_14.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">num_frames=14</figcaption>
-  </div>
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/num_frames_25.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">num_frames=25</figcaption>
-  </div>
-</div>
-
-### Guidance scale
-
-The `guidance_scale` parameter controls how closely aligned the generated video and text prompt or initial image is. A higher `guidance_scale` value means your generated video is more aligned with the text prompt or initial image, while a lower `guidance_scale` value means your generated video is less aligned which could give the model more "creativity" to interpret the conditioning input.
-
-<Tip>
-
-SVD uses the `min_guidance_scale` and `max_guidance_scale` parameters for applying guidance to the first and last frames respectively.
-
-</Tip>
-
-```py
-import torch
-from diffusers import I2VGenXLPipeline
-from diffusers.utils import export_to_gif, load_image
-
-pipeline = I2VGenXLPipeline.from_pretrained("ali-vilab/i2vgen-xl", torch_dtype=torch.float16, variant="fp16")
-pipeline.enable_model_cpu_offload()
-
-image_url = "https://huggingface.co/datasets/diffusers/docs-images/resolve/main/i2vgen_xl_images/img_0009.png"
-image = load_image(image_url).convert("RGB")
-
-prompt = "Papers were floating in the air on a table in the library"
-negative_prompt = "Distorted, discontinuous, Ugly, blurry, low resolution, motionless, static, disfigured, disconnected limbs, Ugly faces, incomplete arms"
-generator = torch.manual_seed(0)
-
-frames = pipeline(
-    prompt=prompt,
-    image=image,
-    num_inference_steps=50,
-    negative_prompt=negative_prompt,
-    guidance_scale=1.0,
-    generator=generator
-).frames[0]
-export_to_gif(frames, "i2v.gif")
-```
-
-<div class="flex gap-4">
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/i2vgen-xl-example.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">guidance_scale=9.0</figcaption>
-  </div>
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/guidance_scale_1.0.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">guidance_scale=1.0</figcaption>
-  </div>
-</div>
-
-### Negative prompt
-
-A negative prompt deters the model from generating things you don’t want it to. This parameter is commonly used to improve overall generation quality by removing poor or bad features such as “low resolution” or “bad details”.
-
-```py
-import torch
-from diffusers import AnimateDiffPipeline, DDIMScheduler, MotionAdapter
-from diffusers.utils import export_to_gif
-
-adapter = MotionAdapter.from_pretrained("guoyww/animatediff-motion-adapter-v1-5-2", torch_dtype=torch.float16)
-
-pipeline = AnimateDiffPipeline.from_pretrained("emilianJR/epiCRealism", motion_adapter=adapter, torch_dtype=torch.float16)
-scheduler = DDIMScheduler.from_pretrained(
-    "emilianJR/epiCRealism",
-    subfolder="scheduler",
-    clip_sample=False,
-    timestep_spacing="linspace",
-    beta_schedule="linear",
-    steps_offset=1,
+pipeline = WanPipeline.from_pretrained(
+  "Wan-AI/Wan2.1-T2V-14B-Diffusers", vae=vae, torch_dtype=torch.bfloat16
 )
-pipeline.scheduler = scheduler
-pipeline.enable_vae_slicing()
+pipeline.scheduler = UniPCMultistepScheduler.from_config(
+  pipeline.scheduler.config, flow_shift=5.0
+)
+pipeline.to("cuda")
+
+pipeline.load_lora_weights("benjamin-paine/steamboat-willie-14b", adapter_name="steamboat-willie")
+pipeline.set_adapters("steamboat-willie")
+
 pipeline.enable_model_cpu_offload()
+
+# use "steamboat willie style" to trigger the LoRA
+prompt = """
+steamboat willie style, golden era animation, The camera rushes from far to near in a low-angle shot, 
+revealing a white ferret on a log. It plays, leaps into the water, and emerges, as the camera zooms in 
+for a close-up. Water splashes berry bushes nearby, while moss, snow, and leaves blanket the ground. 
+Birch trees and a light blue sky frame the scene, with ferns in the foreground. Side lighting casts 
+dynamic shadows and warm highlights. Medium composition, front view, low angle, with depth of field.
+"""
 
 output = pipeline(
-    prompt="360 camera shot of a sushi roll in a restaurant",
-    negative_prompt="Distorted, discontinuous, ugly, blurry, low resolution, motionless, static",
-    num_frames=16,
-    guidance_scale=7.5,
-    num_inference_steps=50,
-    generator=torch.Generator("cpu").manual_seed(0),
+  prompt=prompt,
+  num_frames=81,
+  guidance_scale=5.0,
+).frames[0]
+export_to_video(output, "output.mp4", fps=16)
+```
+
+## Reduce memory usage
+
+Recent video models like [`HunyuanVideoPipeline`] and [`WanPipeline`], which have 10B+ parameters, require a lot of memory and it often exceeds the memory available on consumer hardware. Diffusers offers several techniques for reducing the memory requirements of these large models.
+
+> [!TIP]
+> Refer to the [Reduce memory usage](../optimization/memory) guide for more details about other memory saving techniques.
+
+One of these techniques is [group-offloading](../optimization/memory#group-offloading), which offloads groups of internal model layers (such as `torch.nn.Sequential`) to the CPU when it isn't being used. These layers are only loaded when they're needed for computation to avoid storing **all** the model components on the GPU. For a 14B parameter model like [`WanPipeline`], group-offloading can lower the required memory to ~13GB of VRAM.
+
+```py
+# pip install ftfy
+import torch
+import numpy as np
+from diffusers import AutoModel, WanPipeline
+from diffusers.hooks.group_offloading import apply_group_offloading
+from diffusers.utils import export_to_video, load_image
+from transformers import UMT5EncoderModel
+
+text_encoder = UMT5EncoderModel.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="text_encoder", torch_dtype=torch.bfloat16)
+vae = AutoModel.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="vae", torch_dtype=torch.float32)
+transformer = AutoModel.from_pretrained("Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="transformer", torch_dtype=torch.bfloat16)
+
+# group-offloading
+onload_device = torch.device("cuda")
+offload_device = torch.device("cpu")
+apply_group_offloading(text_encoder,
+    onload_device=onload_device,
+    offload_device=offload_device,
+    offload_type="block_level",
+    num_blocks_per_group=4
 )
-frames = output.frames[0]
-export_to_gif(frames, "animation.gif")
+transformer.enable_group_offload(
+    onload_device=onload_device,
+    offload_device=offload_device,
+    offload_type="leaf_level",
+    use_stream=True
+)
+
+pipeline = WanPipeline.from_pretrained(
+    "Wan-AI/Wan2.1-T2V-14B-Diffusers",
+    vae=vae,
+    transformer=transformer,
+    text_encoder=text_encoder,
+    torch_dtype=torch.bfloat16
+)
+pipeline.to("cuda")
+
+prompt = """
+The camera rushes from far to near in a low-angle shot, 
+revealing a white ferret on a log. It plays, leaps into the water, and emerges, as the camera zooms in 
+for a close-up. Water splashes berry bushes nearby, while moss, snow, and leaves blanket the ground. 
+Birch trees and a light blue sky frame the scene, with ferns in the foreground. Side lighting casts dynamic 
+shadows and warm highlights. Medium composition, front view, low angle, with depth of field.
+"""
+negative_prompt = """
+Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, 
+low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, 
+misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards
+"""
+
+output = pipeline(
+    prompt=prompt,
+    negative_prompt=negative_prompt,
+    num_frames=81,
+    guidance_scale=5.0,
+).frames[0]
+export_to_video(output, "output.mp4", fps=16)
 ```
 
-<div class="flex gap-4">
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/animatediff_no_neg.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">no negative prompt</figcaption>
-  </div>
-  <div>
-    <img class="rounded-xl" src="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/animatediff_neg.gif"/>
-    <figcaption class="mt-2 text-center text-sm text-gray-500">negative prompt applied</figcaption>
-  </div>
-</div>
+Another option for reducing memory is to consider quantizing a model, which stores the model weights in a lower precision data type. However, quantization may impact video quality depending on the specific video model. Refer to the quantization [Overivew](../quantization/overview) to learn more about the different supported quantization backends.
 
-### Model-specific parameters
-
-There are some pipeline parameters that are unique to each model such as adjusting the motion in a video or adding noise to the initial image.
-
-<hfoptions id="special-parameters">
-<hfoption id="Stable Video Diffusion">
-
-Stable Video Diffusion provides additional micro-conditioning for the frame rate with the `fps` parameter and for motion with the `motion_bucket_id` parameter. Together, these parameters allow for adjusting the amount of motion in the generated video.
-
-There is also a `noise_aug_strength` parameter that increases the amount of noise added to the initial image. Varying this parameter affects how similar the generated video and initial image are. A higher `noise_aug_strength` also increases the amount of motion. To learn more, read the [Micro-conditioning](../using-diffusers/svd#micro-conditioning) guide.
-
-</hfoption>
-<hfoption id="Text2Video-Zero">
-
-Text2Video-Zero computes the amount of motion to apply to each frame from randomly sampled latents. You can use the `motion_field_strength_x` and `motion_field_strength_y` parameters to control the amount of motion to apply to the x and y-axes of the video. The parameters `t0` and `t1` are the timesteps to apply motion to the latents.
-
-</hfoption>
-</hfoptions>
-
-## Control video generation
-
-Video generation can be controlled similar to how text-to-image, image-to-image, and inpainting can be controlled with a [`ControlNetModel`]. The only difference is you need to use the [`~pipelines.text_to_video_synthesis.pipeline_text_to_video_zero.CrossFrameAttnProcessor`] so each frame attends to the first frame.
-
-### Text2Video-Zero
-
-Text2Video-Zero video generation can be conditioned on pose and edge images for even greater control over a subject's motion in the generated video or to preserve the identity of a subject/object in the video. You can also use Text2Video-Zero with [InstructPix2Pix](../api/pipelines/pix2pix) for editing videos with text.
-
-<hfoptions id="t2v-zero">
-<hfoption id="pose control">
-
-Start by downloading a video and extracting the pose images from it.
+The example below uses [bitsandbytes](../quantization/bitsandbytes) to quantize a model.
 
 ```py
-from huggingface_hub import hf_hub_download
-from PIL import Image
-import imageio
+# pip install ftfy
 
-filename = "__assets__/poses_skeleton_gifs/dance1_corr.mp4"
-repo_id = "PAIR/Text2Video-Zero"
-video_path = hf_hub_download(repo_type="space", repo_id=repo_id, filename=filename)
+import torch
+from diffusers import WanPipeline
+from diffusers import AutoModel, WanPipeline
+from diffusers.quantizers import PipelineQuantizationConfig
+from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
+from transformers import UMT5EncoderModel
+from diffusers.utils import export_to_video
 
-reader = imageio.get_reader(video_path, "ffmpeg")
-frame_count = 8
-pose_images = [Image.fromarray(reader.get_data(i)) for i in range(frame_count)]
+# quantize transformer and text encoder weights with bitsandbytes
+pipeline_quant_config = PipelineQuantizationConfig(
+  quant_backend="bitsandbytes_4bit",
+  quant_kwargs={"load_in_4bit": True},
+  components_to_quantize=["transformer", "text_encoder"]
+)
+
+vae = AutoModel.from_pretrained(
+  "Wan-AI/Wan2.1-T2V-14B-Diffusers", subfolder="vae", torch_dtype=torch.float32
+)
+pipeline = WanPipeline.from_pretrained(
+  "Wan-AI/Wan2.1-T2V-14B-Diffusers", vae=vae, quantization_config=pipeline_quant_config, torch_dtype=torch.bfloat16
+)
+pipeline.scheduler = UniPCMultistepScheduler.from_config(
+  pipeline.scheduler.config, flow_shift=5.0
+)
+pipeline.to("cuda")
+
+pipeline.load_lora_weights("benjamin-paine/steamboat-willie-14b", adapter_name="steamboat-willie")
+pipeline.set_adapters("steamboat-willie")
+
+pipeline.enable_model_cpu_offload()
+
+# use "steamboat willie style" to trigger the LoRA
+prompt = """
+steamboat willie style, golden era animation, The camera rushes from far to near in a low-angle shot, 
+revealing a white ferret on a log. It plays, leaps into the water, and emerges, as the camera zooms in 
+for a close-up. Water splashes berry bushes nearby, while moss, snow, and leaves blanket the ground. 
+Birch trees and a light blue sky frame the scene, with ferns in the foreground. Side lighting casts 
+dynamic shadows and warm highlights. Medium composition, front view, low angle, with depth of field.
+"""
+
+output = pipeline(
+  prompt=prompt,
+  num_frames=81,
+  guidance_scale=5.0,
+).frames[0]
+export_to_video(output, "output.mp4", fps=16)
 ```
 
-Load a [`ControlNetModel`] for pose estimation and a checkpoint into the [`StableDiffusionControlNetPipeline`]. Then you'll use the [`~pipelines.text_to_video_synthesis.pipeline_text_to_video_zero.CrossFrameAttnProcessor`] for the UNet and ControlNet.
+## Inference speed
+
+[torch.compile](https://pytorch.org/tutorials/intermediate/torch_compile_tutorial_.html) can speedup inference by using optimized kernels. Compilation takes longer the first time, but once compiled, it is much faster. It is best to compile the pipeline once, and then use the pipeline multiple times without changing anything. A change, such as in the image size, triggers recompilation.
+
+The example below compiles the transformer in the pipeline and uses the `"max-autotune"` mode to maximize performance.
 
 ```py
 import torch
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from diffusers.pipelines.text_to_video_synthesis.pipeline_text_to_video_zero import CrossFrameAttnProcessor
+from diffusers import CogVideoXPipeline, CogVideoXTransformer3DModel
+from diffusers.utils import export_to_video
 
-model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
-controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-openpose", torch_dtype=torch.float16)
-pipeline = StableDiffusionControlNetPipeline.from_pretrained(
-    model_id, controlnet=controlnet, torch_dtype=torch.float16
+pipeline = CogVideoXPipeline.from_pretrained(
+  "THUDM/CogVideoX-2b",
+  torch_dtype=torch.float16
 ).to("cuda")
 
-pipeline.unet.set_attn_processor(CrossFrameAttnProcessor(batch_size=2))
-pipeline.controlnet.set_attn_processor(CrossFrameAttnProcessor(batch_size=2))
-```
+# torch.compile
+pipeline.transformer.to(memory_format=torch.channels_last)
+pipeline.transformer = torch.compile(
+    pipeline.transformer, mode="max-autotune", fullgraph=True
+)
 
-Fix the latents for all the frames, and then pass your prompt and extracted pose images to the model to generate a video.
+prompt = """
+A detailed wooden toy ship with intricately carved masts and sails is seen gliding smoothly over a plush, blue carpet that mimics the waves of the sea. 
+The ship's hull is painted a rich brown, with tiny windows. The carpet, soft and textured, provides a perfect backdrop, resembling an oceanic expanse. 
+Surrounding the ship are various other toys and children's items, hinting at a playful environment. The scene captures the innocence and imagination of childhood, 
+with the toy ship's journey symbolizing endless adventures in a whimsical, indoor setting.
+"""
 
-```py
-latents = torch.randn((1, 4, 64, 64), device="cuda", dtype=torch.float16).repeat(len(pose_images), 1, 1, 1)
-
-prompt = "Darth Vader dancing in a desert"
-result = pipeline(prompt=[prompt] * len(pose_images), image=pose_images, latents=latents).images
-imageio.mimsave("video.mp4", result, fps=4)
-```
-
-</hfoption>
-<hfoption id="edge control">
-
-Download a video and extract the edges from it.
-
-```py
-from huggingface_hub import hf_hub_download
-from PIL import Image
-import imageio
-
-filename = "__assets__/poses_skeleton_gifs/dance1_corr.mp4"
-repo_id = "PAIR/Text2Video-Zero"
-video_path = hf_hub_download(repo_type="space", repo_id=repo_id, filename=filename)
-
-reader = imageio.get_reader(video_path, "ffmpeg")
-frame_count = 8
-pose_images = [Image.fromarray(reader.get_data(i)) for i in range(frame_count)]
-```
-
-Load a [`ControlNetModel`] for canny edge and a checkpoint into the [`StableDiffusionControlNetPipeline`]. Then you'll use the [`~pipelines.text_to_video_synthesis.pipeline_text_to_video_zero.CrossFrameAttnProcessor`] for the UNet and ControlNet.
-
-```py
-import torch
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from diffusers.pipelines.text_to_video_synthesis.pipeline_text_to_video_zero import CrossFrameAttnProcessor
-
-model_id = "stable-diffusion-v1-5/stable-diffusion-v1-5"
-controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
-pipeline = StableDiffusionControlNetPipeline.from_pretrained(
-    model_id, controlnet=controlnet, torch_dtype=torch.float16
-).to("cuda")
-
-pipeline.unet.set_attn_processor(CrossFrameAttnProcessor(batch_size=2))
-pipeline.controlnet.set_attn_processor(CrossFrameAttnProcessor(batch_size=2))
-```
-
-Fix the latents for all the frames, and then pass your prompt and extracted edge images to the model to generate a video.
-
-```py
-latents = torch.randn((1, 4, 64, 64), device="cuda", dtype=torch.float16).repeat(len(pose_images), 1, 1, 1)
-
-prompt = "Darth Vader dancing in a desert"
-result = pipeline(prompt=[prompt] * len(pose_images), image=pose_images, latents=latents).images
-imageio.mimsave("video.mp4", result, fps=4)
-```
-
-</hfoption>
-<hfoption id="InstructPix2Pix">
-
-InstructPix2Pix allows you to use text to describe the changes you want to make to the video. Start by downloading and reading a video.
-
-```py
-from huggingface_hub import hf_hub_download
-from PIL import Image
-import imageio
-
-filename = "__assets__/pix2pix video/camel.mp4"
-repo_id = "PAIR/Text2Video-Zero"
-video_path = hf_hub_download(repo_type="space", repo_id=repo_id, filename=filename)
-
-reader = imageio.get_reader(video_path, "ffmpeg")
-frame_count = 8
-video = [Image.fromarray(reader.get_data(i)) for i in range(frame_count)]
-```
-
-Load the [`StableDiffusionInstructPix2PixPipeline`] and set the [`~pipelines.text_to_video_synthesis.pipeline_text_to_video_zero.CrossFrameAttnProcessor`] for the UNet.
-
-```py
-import torch
-from diffusers import StableDiffusionInstructPix2PixPipeline
-from diffusers.pipelines.text_to_video_synthesis.pipeline_text_to_video_zero import CrossFrameAttnProcessor
-
-pipeline = StableDiffusionInstructPix2PixPipeline.from_pretrained("timbrooks/instruct-pix2pix", torch_dtype=torch.float16).to("cuda")
-pipeline.unet.set_attn_processor(CrossFrameAttnProcessor(batch_size=3))
-```
-
-Pass a prompt describing the change you want to apply to the video.
-
-```py
-prompt = "make it Van Gogh Starry Night style"
-result = pipeline(prompt=[prompt] * len(video), image=video).images
-imageio.mimsave("edited_video.mp4", result, fps=4)
-```
-
-</hfoption>
-</hfoptions>
-
-## Optimize
-
-Video generation requires a lot of memory because you're generating many video frames at once. You can reduce your memory requirements at the expense of some inference speed. Try:
-
-1. offloading pipeline components that are no longer needed to the CPU
-2. feed-forward chunking runs the feed-forward layer in a loop instead of all at once
-3. break up the number of frames the VAE has to decode into chunks instead of decoding them all at once
-
-```diff
-- pipeline.enable_model_cpu_offload()
-- frames = pipeline(image, decode_chunk_size=8, generator=generator).frames[0]
-+ pipeline.enable_model_cpu_offload()
-+ pipeline.unet.enable_forward_chunking()
-+ frames = pipeline(image, decode_chunk_size=2, generator=generator, num_frames=25).frames[0]
-```
-
-If memory is not an issue and you want to optimize for speed, try wrapping the UNet with [`torch.compile`](../optimization/torch2.0#torchcompile).
-
-```diff
-- pipeline.enable_model_cpu_offload()
-+ pipeline.to("cuda")
-+ pipeline.unet = torch.compile(pipeline.unet, mode="reduce-overhead", fullgraph=True)
+video = pipeline(
+  prompt=prompt,
+  guidance_scale=6,
+  num_inference_steps=50
+).frames[0]
+export_to_video(video, "output.mp4", fps=8)
 ```
