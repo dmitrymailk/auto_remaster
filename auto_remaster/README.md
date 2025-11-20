@@ -1,3 +1,4 @@
+### Порядок перебора методов для image2image
 - DDPM
 - sd-turbo
 - LBM
@@ -7,12 +8,13 @@
 - I2SB: Image-to-Image Schrödinger Bridge
 - Piecewise Rectified Flow
 - LCM
+- control net
 
 ### Fast diffusion models
 - [Sana: Efficient High-Resolution Image Synthesis with Linear Diffusion Transformer](https://github.com/NVlabs/Sana)
 - [HART: Efficient Visual Generation with Hybrid Autoregressive Transformer](https://github.com/mit-han-lab/hart)
 - [One-step image-to-image with Stable Diffusion turbo: sketch2image, day2night, and more](https://github.com/GaParmar/img2img-turbo)
-- 
+- [SeedVR2: One-Step Video Restoration via Diffusion Adversarial Post-Training](https://github.com/ByteDance-Seed/SeedVR)
 
 ### Fast vae
 - [Tiny AutoEncoder for Stable Diffusion](https://github.com/madebyollin/taesd)
