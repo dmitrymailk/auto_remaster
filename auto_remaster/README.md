@@ -9,6 +9,13 @@
 - Piecewise Rectified Flow
 - LCM
 - control net
+- [DREAM](https://github.com/jinxinzhou/dream)
+- [Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556)
+
+### Базовые методы которые стоит попробовать 
+- аугментация через сдвиг, поворот и кроп
+- EMA
+- обучение на 8 шагов, затем дистиляция
 
 ### Fast diffusion models
 - [Sana: Efficient High-Resolution Image Synthesis with Linear Diffusion Transformer](https://github.com/NVlabs/Sana)
@@ -29,3 +36,6 @@
 ### Diffusion Distillation (no code)
 - [Diffusion Adversarial Post-Training for One-Step Video Generation](https://arxiv.org/pdf/2501.08316)
 - [OSV: One Step is Enough for High-Quality Image to Video Generation](https://openaccess.thecvf.com/content/CVPR2025/papers/Mao_OSV_One_Step_is_Enough_for_High-Quality_Image_to_Video_CVPR_2025_paper.pdf)
+
+### hyperparameter tuning
+- [Analyzing and Improving the Training Dynamics of Diffusion Models](https://arxiv.org/pdf/2312.02696)

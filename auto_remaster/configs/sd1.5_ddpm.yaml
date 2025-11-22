@@ -1,0 +1,27 @@
+# model params
+model_name_or_path: CompVis/stable-diffusion-v1-4 
+dataset_name: lambdalabs/naruto-blip-captions
+
+output_dir: checkpoints/sd-naruto-model 
+learning_rate: 1e-05 
+use_ema: false 
+max_grad_norm: 1 
+lr_scheduler_type: "constant"
+warmup_steps: 0 
+report_to: wandb
+
+# train optimization
+eval_on_start: true
+resolution: 320
+per_device_train_batch_size: 1 
+gradient_accumulation_steps: 1 
+gradient_checkpointing: false 
+
+# save params
+save_steps: 1000
+max_steps: 15000 
+
+# diffusion params
+source_image_name: image
+caption_column: text
+num_inference_steps: 20

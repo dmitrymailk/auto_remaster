@@ -1,10 +1,8 @@
-from huggingface_hub import snapshot_download
+# from huggingface_hub import snapshot_download
+from datasets import load_dataset
 
-snapshot_download(
-    repo_id="QingyanBai/Ditto-1M",
-    repo_type="dataset",
-    local_dir="./Ditto-1M",
-    allow_patterns=[
-        "videos/global_style1/*",
-    ],
+load_dataset(
+    "dim/nfs_pix2pix_1920_1080_v6",
+    cache_dir="dataset/nfs_pix2pix_1920_1080_v6",
+    num_proc=16,
 )
