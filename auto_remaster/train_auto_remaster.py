@@ -61,6 +61,7 @@ from trl import (
 from typing import cast, Tuple, Any
 from dataclasses import dataclass, field
 import wandb
+import gc
 
 
 @dataclass
@@ -243,6 +244,8 @@ def log_validation(
         )
 
     del pipeline
+    torch.cuda.empty_cache()
+    gc.collect()
     torch.cuda.empty_cache()
 
     return images
