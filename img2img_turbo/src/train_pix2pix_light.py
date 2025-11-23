@@ -20,7 +20,9 @@ from diffusers.optimization import get_scheduler
 import wandb
 from cleanfid.fid import get_folder_features, build_feature_extractor, fid_from_feats
 
-from pix2pix_turbo import Pix2PixLight, Pix2PixLightV2
+from pix2pix_turbo import Pix2PixLight
+
+# from pix2pix_turbo import Pix2PixLight, Pix2PixLightV2
 from my_utils.training_utils import (
     parse_args_paired_training,
     PairedDataset,
@@ -64,7 +66,7 @@ def main(args):
     version = args.diff_ver
     diffusion_classes = {
         "v1": Pix2PixLight,
-        "v2": Pix2PixLightV2,
+        # "v2": Pix2PixLightV2,
     }
     diffusion_class = diffusion_classes[version]
     print("Diffusion version=", version, diffusion_class)
@@ -338,7 +340,7 @@ def main(args):
                             ],
                             "train/model_output": [
                                 wandb.Image(
-                                    x_tgt_pred[idx].float().detach().cpu(),
+                                    x_tgt_pred[idx].float().detach().cpu() * 0.5 + 0.5,
                                     caption=f"idx={idx}",
                                 )
                                 for idx in range(B)

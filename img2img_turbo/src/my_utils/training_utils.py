@@ -622,7 +622,11 @@ class NFSPairedDatasetPureImages(torch.utils.data.Dataset):
         - tokenizer: The tokenizer used for tokenizing the captions (or prompts).
         """
         super().__init__()
-        dataset = load_dataset(dataset_folder, num_proc=4)
+        dataset = load_dataset(
+            dataset_folder,
+            num_proc=4,
+            cache_dir="/code/dataset/nfs_pix2pix_1920_1080_v5",
+        )
         dataset = dataset["train"]
         dataset = dataset.train_test_split(test_size=40, shuffle=True, seed=42)
         self.dataset = dataset

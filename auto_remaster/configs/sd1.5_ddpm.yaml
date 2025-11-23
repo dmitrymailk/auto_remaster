@@ -12,13 +12,16 @@ max_grad_norm: 1
 lr_scheduler_type: "constant"
 warmup_steps: 0 
 report_to: wandb
+warmup_steps: 500
+weight_decay: 1e-2
+
 
 # train optimization
 # eval_on_start: true
 eval_on_start: false
-resolution: 320
+resolution: 512
 per_device_train_batch_size: 4 
-gradient_accumulation_steps: 1 
+gradient_accumulation_steps: 8 
 gradient_checkpointing: false 
 
 # save params

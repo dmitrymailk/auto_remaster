@@ -281,8 +281,8 @@ def is_librosa_available():
 
 
 def is_xformers_available():
-    # return _xformers_available
-    return False
+    return _xformers_available
+    # return False
 
 
 def is_accelerate_available():

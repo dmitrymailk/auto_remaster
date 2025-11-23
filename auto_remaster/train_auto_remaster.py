@@ -35,6 +35,7 @@ from diffusers import (
     UNet2DConditionModel,
     StableDiffusionImg2ImgPipeline,
     AutoencoderTiny,
+    UNet2DModel,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
@@ -90,6 +91,30 @@ class DiffusionTrainingArguments:
     num_inference_steps: int = field(default=1)
     noise_scheduler_type: str = field(default="stabilityai/sd-turbo")
 
+
+unet2d_config = {
+    "sample_size": 64,
+    "in_channels": 4,
+    "out_channels": 4,
+    "center_input_sample": False,
+    "time_embedding_type": "positional",
+    "freq_shift": 0,
+    "flip_sin_to_cos": True,
+    "down_block_types": ("DownBlock2D", "DownBlock2D", "DownBlock2D"),
+    "up_block_types": ("UpBlock2D", "UpBlock2D", "UpBlock2D"),
+    "block_out_channels": [320, 640, 1280],
+    "layers_per_block": 1,
+    "mid_block_scale_factor": 1,
+    "downsample_padding": 1,
+    "downsample_type": "conv",
+    "upsample_type": "conv",
+    "dropout": 0.0,
+    "act_fn": "silu",
+    "norm_num_groups": 32,
+    "norm_eps": 1e-05,
+    "resnet_time_scale_shift": "default",
+    "add_attention": False,
+}
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.36.0.dev0")
@@ -190,12 +215,9 @@ def log_validation(
     diffusion_args: DiffusionTrainingArguments = None,
     dataset=None,
     dummy_emb=None,
+    train_transforms=None,
 ):
     logger.info("Running validation... ")
-
-    generator = torch.Generator(device=accelerator.device).manual_seed(
-        training_args.seed
-    )
 
     valid_transforms = transforms.Compose(
         [
@@ -217,20 +239,15 @@ def log_validation(
         autocast_ctx = torch.autocast(accelerator.device.type)
         item = dataset[idx]
         source = valid_transforms(item[diffusion_args.source_image_name].convert("RGB"))
-        target = valid_transforms(item[diffusion_args.target_image_name].convert("RGB"))
-
-        c_t = (
-            transforms.functional.to_tensor(source)
-            .unsqueeze(0)
-            .to(vae.dtype)
-            .to(vae.device)
-        )
+        orig_source = item[diffusion_args.target_image_name].convert("RGB")
+        target = valid_transforms(orig_source)
+        c_t = train_transforms(orig_source).unsqueeze(0).to(vae.dtype).to(vae.device)
         with torch.no_grad():
             encoded_control = vae.encode(c_t, False)[0] * vae.config.scaling_factor
             model_pred = unet(
                 encoded_control,
                 timesteps,
-                dummy_emb,
+                # dummy_emb,
                 return_dict=False,
             )[0]
             x_denoised = noise_scheduler.step(
@@ -305,6 +322,7 @@ def main():
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         log_with=training_args.report_to,
         project_config=accelerator_project_config,
+        mixed_precision="no",
     )
 
     # Make one log on every process with the configuration for debugging.
@@ -332,7 +350,6 @@ def main():
         subfolder="scheduler",
     )
     noise_scheduler.set_timesteps(1, device="cuda")
-    noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.cuda()
 
     tokenizer = CLIPTokenizer.from_pretrained(
         model_args.model_name_or_path,
@@ -341,6 +358,18 @@ def main():
     )
     # weight_dtype = torch.bfloat16
     weight_dtype = torch.float32
+    noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(
+        device=accelerator.device, dtype=weight_dtype
+    )
+    noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(
+        device=accelerator.device, dtype=weight_dtype
+    )
+    noise_scheduler.betas = noise_scheduler.betas.to(
+        device=accelerator.device, dtype=weight_dtype
+    )
+    noise_scheduler.alphas = noise_scheduler.alphas.to(
+        device=accelerator.device, dtype=weight_dtype
+    )
     text_encoder = CLIPTextModel.from_pretrained(
         model_args.model_name_or_path,
         subfolder="text_encoder",
@@ -353,14 +382,15 @@ def main():
         torch_device="cuda",
         torch_dtype=weight_dtype,
     )
-    # vae.decoder.ignore_skip = False
+    vae.decoder.ignore_skip = False
 
-    unet = UNet2DConditionModel.from_pretrained(
-        model_args.model_name_or_path,
-        subfolder="unet",
-        revision=diffusion_args.non_ema_revision,
-        torch_dtype=weight_dtype,
-    )
+    # unet = UNet2DConditionModel.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     subfolder="unet",
+    #     revision=diffusion_args.non_ema_revision,
+    #     torch_dtype=weight_dtype,
+    # )
+    unet = UNet2DModel(**unet2d_config)
     unet.set_attention_backend("flash")
 
     # vae.requires_grad_(False)
@@ -412,7 +442,7 @@ def main():
             del load_model
 
     accelerator.register_save_state_pre_hook(save_model_hook)
-    accelerator.register_load_state_pre_hook(load_model_hook)
+    # accelerator.register_load_state_pre_hook(load_model_hook)
 
     if training_args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
@@ -689,24 +719,6 @@ def main():
         initial_global_step = 0
 
     dummy_emb = dummy_emb.to(accelerator.device).to(weight_dtype)
-    if training_args.eval_on_start:
-        # start validation
-        log_validation(
-            vae=vae,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            unet=unet,
-            noise_scheduler=noise_scheduler,
-            accelerator=accelerator,
-            weight_dtype=weight_dtype,
-            global_step=global_step,
-            script_args=script_args,
-            training_args=training_args,
-            model_args=model_args,
-            diffusion_args=diffusion_args,
-            dataset=dataset["train"],
-            dummy_emb=dummy_emb,
-        )
 
     progress_bar = tqdm(
         range(0, training_args.max_steps),
@@ -719,7 +731,8 @@ def main():
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(unet):
+            l_acc = [unet, net_disc, vae]
+            with accelerator.accumulate(*l_acc):
                 # Convert images to latent space
                 source_latents = vae.encode(batch["source_images"].to(weight_dtype))[0]
                 source_latents = source_latents * vae.config.scaling_factor
@@ -729,23 +742,11 @@ def main():
                     [999], device=source_latents.device
                 ).long()
 
-                # текстовые эмбединги рудимент чтобы использовать претренированные модели
-                encoder_hidden_states = dummy_emb.expand(
-                    source_latents.shape[0],
-                    -1,
-                    -1,
-                )
-
-                # if noise_scheduler.config.prediction_type == "epsilon":
-                #     target = target_latents
-                # else:
-                #     pass
-
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     source_latents,
                     timesteps,
-                    encoder_hidden_states,
+                    # encoder_hidden_states,
                     return_dict=False,
                 )[0]
                 x_denoised = noise_scheduler.step(
@@ -790,7 +791,7 @@ def main():
                 model_pred = unet(
                     source_latents,
                     timesteps,
-                    encoder_hidden_states,
+                    # encoder_hidden_states,
                     return_dict=False,
                 )[0]
                 x_denoised = noise_scheduler.step(
@@ -891,7 +892,15 @@ def main():
                         save_path = os.path.join(
                             training_args.output_dir, f"checkpoint-{global_step}"
                         )
-                        accelerator.save_state(save_path)
+                        # accelerator.save_state(save_path)
+                        # Сохраняем UNet
+                        unwrap_model(unet).save_pretrained(
+                            os.path.join(save_path, "unet")
+                        )
+                        # Сохраняем VAE
+                        unwrap_model(vae).save_pretrained(
+                            os.path.join(save_path, "vae")
+                        )
                         logger.info(f"Saved state to {save_path}")
 
                         # start validation
@@ -910,6 +919,7 @@ def main():
                             diffusion_args=diffusion_args,
                             dataset=dataset["train"],
                             dummy_emb=dummy_emb,
+                            train_transforms=train_transforms,
                         )
 
             logs = {
