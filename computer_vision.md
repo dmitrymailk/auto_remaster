@@ -46,7 +46,8 @@
 
 ### Gaussian splatting
 - [Original reference implementation of "3D Gaussian Splatting for Real-Time Radiance Field Rendering"](https://github.com/graphdeco-inria/gaussian-splatting)
-- 
+- [A Hierarchical 3D Gaussian Representation for Real-Time Rendering of Very Large Datasets](https://repo-sam.inria.fr/fungraph/hierarchical-3d-gaussians/)
+- [LongSplat Robust Unposed 3D Gaussian Splatting for Casual Long Videos](https://linjohnss.github.io/longsplat/)
 
 ### Video Tracking
 - [DINOv3 semantic video tracking running locally in your browser (WebGPU)](https://www.reddit.com/r/LocalLLaMA/comments/1mx7q58/dinov3_semantic_video_tracking_running_locally_in/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1&utm_content=share_button)

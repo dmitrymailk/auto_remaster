@@ -1,10 +1,12 @@
 # model params
-model_name_or_path: stablediffusionapi/juggernaut-reborn 
-dataset_name: lambdalabs/naruto-blip-captions
+# model_name_or_path: stablediffusionapi/juggernaut-reborn 
+model_name_or_path: stabilityai/sd-turbo
+# dataset_name: lambdalabs/naruto-blip-captions
+dataset_name: dim/nfs_pix2pix_1920_1080_v5
 seed: 2025
 
-output_dir: checkpoints/sd-naruto-model 
-learning_rate: 1e-05 
+output_dir: checkpoints/auto_remaster/sd1.5_ddpm 
+learning_rate: 5e-6 
 use_ema: false 
 max_grad_norm: 1 
 lr_scheduler_type: "constant"
@@ -12,9 +14,10 @@ warmup_steps: 0
 report_to: wandb
 
 # train optimization
-eval_on_start: true
+# eval_on_start: true
+eval_on_start: false
 resolution: 320
-per_device_train_batch_size: 16 
+per_device_train_batch_size: 4 
 gradient_accumulation_steps: 1 
 gradient_checkpointing: false 
 
@@ -23,6 +26,9 @@ save_steps: 100
 max_steps: 15000 
 
 # diffusion params
-source_image_name: image
-caption_column: text
-num_inference_steps: 20
+source_image_name: input_image
+target_image_name: edited_image
+caption_column: edit_prompt
+num_inference_steps: 1
+cache_dir: dataset/nfs_pix2pix_1920_1080_v5
+noise_scheduler_type: stabilityai/sd-turbo

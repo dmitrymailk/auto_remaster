@@ -25,3 +25,8 @@ more-itertools==10.8.0
 seaborn==0.13.2
 xformers==0.0.33
 trl==0.25.1
+lpips
+clean-fid
+vision_aided_loss
+clip @ git+https://github.com/openai/CLIP.git
+open-clip-torch>=2.20.0

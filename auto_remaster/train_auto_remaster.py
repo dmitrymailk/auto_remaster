@@ -33,6 +33,8 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
     UNet2DConditionModel,
+    StableDiffusionImg2ImgPipeline,
+    AutoencoderTiny,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
@@ -62,6 +64,12 @@ from typing import cast, Tuple, Any
 from dataclasses import dataclass, field
 import wandb
 import gc
+from PIL import Image
+import clip
+from cleanfid.fid import get_folder_features, build_feature_extractor, fid_from_feats
+import lpips
+import vision_aided_loss
+import torchvision
 
 
 @dataclass
@@ -80,16 +88,13 @@ class DiffusionTrainingArguments:
     noise_offset: float = field(default=0.0)
     input_perturbation: float = field(default=0.0)
     num_inference_steps: int = field(default=1)
+    noise_scheduler_type: str = field(default="stabilityai/sd-turbo")
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.36.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
-
-DATASET_NAME_MAPPING = {
-    "lambdalabs/naruto-blip-captions": ("image", "text"),
-}
 
 
 def save_model_card(
@@ -175,6 +180,7 @@ def log_validation(
     text_encoder=None,
     tokenizer=None,
     unet=None,
+    noise_scheduler=None,
     accelerator: Accelerator = None,
     weight_dtype=None,
     global_step=None,
@@ -182,468 +188,86 @@ def log_validation(
     training_args: SFTConfig = None,
     model_args: ModelConfig = None,
     diffusion_args: DiffusionTrainingArguments = None,
+    dataset=None,
+    dummy_emb=None,
 ):
     logger.info("Running validation... ")
-
-    pipeline = StableDiffusionPipeline.from_pretrained(
-        model_args.model_name_or_path,
-        vae=accelerator.unwrap_model(vae),
-        text_encoder=accelerator.unwrap_model(text_encoder),
-        tokenizer=tokenizer,
-        unet=accelerator.unwrap_model(unet),
-        safety_checker=None,
-        revision=diffusion_args.revision,
-        variant=diffusion_args.variant,
-        torch_dtype=weight_dtype,
-    )
-    pipeline.unet.set_attention_backend("flash")
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
 
     generator = torch.Generator(device=accelerator.device).manual_seed(
         training_args.seed
     )
 
-    # TODO rewrite validation logic
-    # Assert that will always fail
-    # assert (
-    #     False
-    # ), "TODO rewrite validation logic. This assertion is intentionally placed to always fail."
-    prompts = [
-        "a woman with green hair and a black and white outfit",
-        "a man in a green shirt with a sword",
-        "a man in a suit and tie looking at the camera",
-        "a guy with a bandage on his face",
-        "a woman with a sword in her hand",
-        "an older man wearing sunglasses and a hat",
-        "a man with a sword in his hand",
-        "a person with long white hair and blue eyes",
-        "a man with a cell in his hand",
-        "a person with blue hair and a hoodie",
-        "a man in the woods wearing a green jacket",
-        "a boy and a girl looking at each other boy",
-        "a man with red hair and a hoodie",
-        "a man with a sword in his hand",
-    ]
+    valid_transforms = transforms.Compose(
+        [
+            transforms.Resize(
+                diffusion_args.resolution,
+                interpolation=transforms.InterpolationMode.LANCZOS,
+            ),
+            transforms.CenterCrop(diffusion_args.resolution),
+        ]
+    )
+
+    test_images_ids = list(range(0, len(dataset), 30))
+    rng = random.Random(training_args.seed)
+    amount = min(30, len(test_images_ids))
+    selected_ids = rng.sample(test_images_ids, amount)
     images = []
-    for i in range(len(prompts)):
+    timesteps = torch.tensor([999], device="cuda:0")
+    for idx in selected_ids:
         autocast_ctx = torch.autocast(accelerator.device.type)
+        item = dataset[idx]
+        source = valid_transforms(item[diffusion_args.source_image_name].convert("RGB"))
+        target = valid_transforms(item[diffusion_args.target_image_name].convert("RGB"))
 
-        with autocast_ctx:
-            image = pipeline(
-                prompts[i],
-                num_inference_steps=diffusion_args.num_inference_steps,
-                generator=generator,
-            ).images[0]
+        c_t = (
+            transforms.functional.to_tensor(source)
+            .unsqueeze(0)
+            .to(vae.dtype)
+            .to(vae.device)
+        )
+        with torch.no_grad():
+            encoded_control = vae.encode(c_t, False)[0] * vae.config.scaling_factor
+            model_pred = unet(
+                encoded_control,
+                timesteps,
+                dummy_emb,
+                return_dict=False,
+            )[0]
+            x_denoised = noise_scheduler.step(
+                model_pred,
+                timesteps,
+                encoded_control,
+                return_dict=False,
+            )[0].to(vae.dtype)
+            output_image = (
+                vae.decode(
+                    x_denoised / vae.config.scaling_factor,
+                    return_dict=False,
+                )[0]
+            ).clamp(-1, 1)
+            pred_image = transforms.ToPILImage()(
+                output_image[0].cpu().float() * 0.5 + 0.5
+            )
+        img_h = Image.fromarray(
+            np.hstack(
+                (
+                    np.array(source),
+                    np.array(pred_image),
+                    np.array(target),
+                )
+            )
+        )
 
-        images.append(image)
+        images.append(img_h)
 
     for tracker in accelerator.trackers:
         tracker.log(
             {"validation": [wandb.Image(image) for i, image in enumerate(images)]}
         )
 
-    del pipeline
     torch.cuda.empty_cache()
     gc.collect()
     torch.cuda.empty_cache()
-
-    return images
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    parser.add_argument(
-        "--input_perturbation",
-        type=float,
-        default=0,
-        help="The scale of input perturbation. Recommended 0.1.",
-    )
-    parser.add_argument(
-        "--pretrained_model_name_or_path",
-        type=str,
-        default=None,
-        required=True,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--revision",
-        type=str,
-        default=None,
-        required=False,
-        help="Revision of pretrained model identifier from huggingface.co/models.",
-    )
-    parser.add_argument(
-        "--variant",
-        type=str,
-        default=None,
-        help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
-    )
-    parser.add_argument(
-        "--dataset_name",
-        type=str,
-        default=None,
-        help=(
-            "The name of the Dataset (from the HuggingFace hub) to train on (could be your own, possibly private,"
-            " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
-            " or to a folder containing files that 🤗 Datasets can understand."
-        ),
-    )
-    parser.add_argument(
-        "--dataset_config_name",
-        type=str,
-        default=None,
-        help="The config of the Dataset, leave as None if there's only one config.",
-    )
-    parser.add_argument(
-        "--train_data_dir",
-        type=str,
-        default=None,
-        help=(
-            "A folder containing the training data. Folder contents must follow the structure described in"
-            " https://huggingface.co/docs/datasets/image_dataset#imagefolder. In particular, a `metadata.jsonl` file"
-            " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
-        ),
-    )
-    parser.add_argument(
-        "--image_column",
-        type=str,
-        default="image",
-        help="The column of the dataset containing an image.",
-    )
-    parser.add_argument(
-        "--caption_column",
-        type=str,
-        default="text",
-        help="The column of the dataset containing a caption or a list of captions.",
-    )
-    parser.add_argument(
-        "--max_train_samples",
-        type=int,
-        default=None,
-        help=(
-            "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        ),
-    )
-    parser.add_argument(
-        "--validation_prompts",
-        type=str,
-        default=None,
-        nargs="+",
-        help=(
-            "A set of prompts evaluated every `--validation_epochs` and logged to `--report_to`."
-        ),
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="sd-model-finetuned",
-        help="The output directory where the model predictions and checkpoints will be written.",
-    )
-    parser.add_argument(
-        "--cache_dir",
-        type=str,
-        default=None,
-        help="The directory where the downloaded models and datasets will be stored.",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
-    )
-    parser.add_argument(
-        "--resolution",
-        type=int,
-        default=512,
-        help=(
-            "The resolution for input images, all the images in the train/validation dataset will be resized to this"
-            " resolution"
-        ),
-    )
-    parser.add_argument(
-        "--center_crop",
-        default=False,
-        action="store_true",
-        help=(
-            "Whether to center crop the input images to the resolution. If not set, the images will be randomly"
-            " cropped. The images will be resized to the resolution first before cropping."
-        ),
-    )
-    parser.add_argument(
-        "--random_flip",
-        action="store_true",
-        help="whether to randomly flip images horizontally",
-    )
-    parser.add_argument(
-        "--per_device_train_batch_size",
-        type=int,
-        default=16,
-        help="Batch size (per device) for the training dataloader.",
-    )
-    parser.add_argument("--num_train_epochs", type=int, default=100)
-    parser.add_argument(
-        "--max_train_steps",
-        type=int,
-        default=None,
-        help="Total number of training steps to perform.  If provided, overrides num_train_epochs.",
-    )
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        type=int,
-        default=1,
-        help="Number of updates steps to accumulate before performing a backward/update pass.",
-    )
-    parser.add_argument(
-        "--gradient_checkpointing",
-        action="store_true",
-        help="Whether or not to use gradient checkpointing to save memory at the expense of slower backward pass.",
-    )
-    parser.add_argument(
-        "--learning_rate",
-        type=float,
-        default=1e-4,
-        help="Initial learning rate (after the potential warmup period) to use.",
-    )
-    parser.add_argument(
-        "--scale_lr",
-        action="store_true",
-        default=False,
-        help="Scale the learning rate by the number of GPUs, gradient accumulation steps, and batch size.",
-    )
-    parser.add_argument(
-        "--lr_scheduler",
-        type=str,
-        default="constant",
-        help=(
-            'The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial",'
-            ' "constant", "constant_with_warmup"]'
-        ),
-    )
-    parser.add_argument(
-        "--lr_warmup_steps",
-        type=int,
-        default=500,
-        help="Number of steps for the warmup in the lr scheduler.",
-    )
-    parser.add_argument(
-        "--snr_gamma",
-        type=float,
-        default=None,
-        help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
-        "More details here: https://huggingface.co/papers/2303.09556.",
-    )
-    parser.add_argument(
-        "--dream_training",
-        action="store_true",
-        help=(
-            "Use the DREAM training method, which makes training more efficient and accurate at the "
-            "expense of doing an extra forward pass. See: https://huggingface.co/papers/2312.00210"
-        ),
-    )
-    parser.add_argument(
-        "--dream_detail_preservation",
-        type=float,
-        default=1.0,
-        help="Dream detail preservation factor p (should be greater than 0; default=1.0, as suggested in the paper)",
-    )
-    parser.add_argument(
-        "--use_8bit_adam",
-        action="store_true",
-        help="Whether or not to use 8-bit Adam from bitsandbytes.",
-    )
-    parser.add_argument(
-        "--allow_tf32",
-        action="store_true",
-        help=(
-            "Whether or not to allow TF32 on Ampere GPUs. Can be used to speed up training. For more information, see"
-            " https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices"
-        ),
-    )
-    parser.add_argument(
-        "--use_ema", action="store_true", help="Whether to use EMA model."
-    )
-    parser.add_argument(
-        "--offload_ema",
-        action="store_true",
-        help="Offload EMA model to CPU during training step.",
-    )
-    parser.add_argument(
-        "--foreach_ema",
-        action="store_true",
-        help="Use faster foreach implementation of EMAModel.",
-    )
-    parser.add_argument(
-        "--non_ema_revision",
-        type=str,
-        default=None,
-        required=False,
-        help=(
-            "Revision of pretrained non-ema model identifier. Must be a branch, tag or git identifier of the local or"
-            " remote repository specified with --pretrained_model_name_or_path."
-        ),
-    )
-    parser.add_argument(
-        "--dataloader_num_workers",
-        type=int,
-        default=0,
-        help=(
-            "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
-        ),
-    )
-    parser.add_argument(
-        "--adam_beta1",
-        type=float,
-        default=0.9,
-        help="The beta1 parameter for the Adam optimizer.",
-    )
-    parser.add_argument(
-        "--adam_beta2",
-        type=float,
-        default=0.999,
-        help="The beta2 parameter for the Adam optimizer.",
-    )
-    parser.add_argument(
-        "--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use."
-    )
-    parser.add_argument(
-        "--adam_epsilon",
-        type=float,
-        default=1e-08,
-        help="Epsilon value for the Adam optimizer",
-    )
-    parser.add_argument(
-        "--max_grad_norm", default=1.0, type=float, help="Max gradient norm."
-    )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_token",
-        type=str,
-        default=None,
-        help="The token to use to push to the Model Hub.",
-    )
-    parser.add_argument(
-        "--prediction_type",
-        type=str,
-        default=None,
-        help="The prediction_type that shall be used for training. Choose between 'epsilon' or 'v_prediction' or leave `None`. If left to `None` the default prediction type of the scheduler: `noise_scheduler.config.prediction_type` is chosen.",
-    )
-    parser.add_argument(
-        "--hub_model_id",
-        type=str,
-        default=None,
-        help="The name of the repository to keep in sync with the local `output_dir`.",
-    )
-    parser.add_argument(
-        "--logging_dir",
-        type=str,
-        default="logs",
-        help=(
-            "[TensorBoard](https://www.tensorflow.org/tensorboard) log directory. Will default to"
-            " *output_dir/runs/**CURRENT_DATETIME_HOSTNAME***."
-        ),
-    )
-    parser.add_argument(
-        "--mixed_precision",
-        type=str,
-        default=None,
-        choices=["no", "fp16", "bf16"],
-        help=(
-            "Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >="
-            " 1.10.and an Nvidia Ampere GPU.  Default to the value of accelerate config of the current system or the"
-            " flag passed with the `accelerate.launch` command. Use this argument to override the accelerate config."
-        ),
-    )
-    parser.add_argument(
-        "--report_to",
-        type=str,
-        default="tensorboard",
-        help=(
-            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
-            ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
-        ),
-    )
-    parser.add_argument(
-        "--local_rank",
-        type=int,
-        default=-1,
-        help="For distributed training: local_rank",
-    )
-    parser.add_argument(
-        "--checkpointing_steps",
-        type=int,
-        default=500,
-        help=(
-            "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
-            " training using `--resume_from_checkpoint`."
-        ),
-    )
-    parser.add_argument(
-        "--checkpoints_total_limit",
-        type=int,
-        default=None,
-        help=("Max number of checkpoints to store."),
-    )
-    parser.add_argument(
-        "--resume_from_checkpoint",
-        type=str,
-        default=None,
-        help=(
-            "Whether training should be resumed from a previous checkpoint. Use a path saved by"
-            ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
-        ),
-    )
-    parser.add_argument(
-        "--enable_xformers_memory_efficient_attention",
-        action="store_true",
-        help="Whether or not to use xformers.",
-    )
-    parser.add_argument(
-        "--noise_offset", type=float, default=0, help="The scale of noise offset."
-    )
-    parser.add_argument(
-        "--validation_epochs",
-        type=int,
-        default=5,
-        help="Run validation every X epochs.",
-    )
-    parser.add_argument(
-        "--tracker_project_name",
-        type=str,
-        default="text2image-fine-tune",
-        help=(
-            "The `project_name` argument passed to Accelerator.init_trackers for"
-            " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
-        ),
-    )
-    parser.add_argument(
-        "--image_interpolation_mode",
-        type=str,
-        default="lanczos",
-        choices=[
-            f.lower()
-            for f in dir(transforms.InterpolationMode)
-            if not f.startswith("__") and not f.endswith("__")
-        ],
-        help="The image interpolation method to use for resizing images.",
-    )
-
-    args = parser.parse_args()
-    env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
-    if env_local_rank != -1 and env_local_rank != args.local_rank:
-        args.local_rank = env_local_rank
-
-    # Sanity checks
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("Need either a dataset name or a training folder.")
-
-    # default to using the same revision for the non-ema model if not specified
-    if args.non_ema_revision is None:
-        args.non_ema_revision = args.revision
-
-    return args
 
 
 def make_parser():
@@ -704,15 +328,19 @@ def main():
 
     # Load scheduler, tokenizer and models.
     noise_scheduler = DDPMScheduler.from_pretrained(
-        model_args.model_name_or_path,
+        diffusion_args.noise_scheduler_type,
         subfolder="scheduler",
     )
+    noise_scheduler.set_timesteps(1, device="cuda")
+    noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.cuda()
+
     tokenizer = CLIPTokenizer.from_pretrained(
         model_args.model_name_or_path,
         subfolder="tokenizer",
         revision=diffusion_args.revision,
     )
-    weight_dtype = torch.bfloat16
+    # weight_dtype = torch.bfloat16
+    weight_dtype = torch.float32
     text_encoder = CLIPTextModel.from_pretrained(
         model_args.model_name_or_path,
         subfolder="text_encoder",
@@ -720,13 +348,12 @@ def main():
         variant=diffusion_args.variant,
         torch_dtype=weight_dtype,
     )
-    vae = AutoencoderKL.from_pretrained(
-        model_args.model_name_or_path,
-        subfolder="vae",
-        revision=diffusion_args.revision,
-        variant=diffusion_args.variant,
+    vae = AutoencoderTiny.from_pretrained(
+        "madebyollin/taesd",
+        torch_device="cuda",
         torch_dtype=weight_dtype,
     )
+    # vae.decoder.ignore_skip = False
 
     unet = UNet2DConditionModel.from_pretrained(
         model_args.model_name_or_path,
@@ -736,24 +363,41 @@ def main():
     )
     unet.set_attention_backend("flash")
 
-    # Freeze vae and text_encoder and set unet to trainable
-    vae.requires_grad_(False)
+    # vae.requires_grad_(False)
+    vae.requires_grad_(True)
+    vae.train()
     text_encoder.requires_grad_(False)
     unet.train()
 
     # `accelerate` 0.16.0 will have better support for customized saving
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+    # def save_model_hook(models, weights, output_dir):
+    #     if accelerator.is_main_process:
+    #         for i, model in enumerate(models):
+    #             model.save_pretrained(os.path.join(output_dir, "unet"))
+
+    #             # make sure to pop weight so that corresponding model is not saved again
+    #             weights.pop()
     def save_model_hook(models, weights, output_dir):
         if accelerator.is_main_process:
-
             for i, model in enumerate(models):
-                model.save_pretrained(os.path.join(output_dir, "unet"))
+                # Явно проверяем класс модели
+                if isinstance(model, type(unwrap_model(unet))):
+                    # или лучше: isinstance(model, UNet2DConditionModel)
+                    folder_name = "unet"
+                elif isinstance(model, type(unwrap_model(vae))):
+                    folder_name = "vae"
+                else:
+                    # для неизвестных моделей не сохраняем
+                    # folder_name = f"model_{i}"
+                    continue
 
-                # make sure to pop weight so that corresponding model is not saved again
-                weights.pop()
+                model.save_pretrained(os.path.join(output_dir, folder_name))
+
+                if weights:
+                    weights.pop()
 
     def load_model_hook(models, input_dir):
-
         for _ in range(len(models)):
             # pop models so that they are not loaded again
             model = models.pop()
@@ -785,14 +429,6 @@ def main():
             * accelerator.num_processes
         )
 
-    optimizer = torch.optim.AdamW(
-        unet.parameters(),
-        lr=training_args.learning_rate,
-        betas=(training_args.adam_beta1, training_args.adam_beta2),
-        weight_decay=training_args.weight_decay,
-        eps=training_args.adam_epsilon,
-    )
-
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
 
@@ -813,21 +449,16 @@ def main():
     target_column = diffusion_args.target_image_name
 
     # Preprocessing the datasets.
-    # We need to tokenize input captions and transform the images.
-    def tokenize_captions(examples, is_train=True):
-        captions = []
-        for caption in examples[caption_column]:
-            if isinstance(caption, str):
-                captions.append(caption)
-
-        inputs = tokenizer(
-            captions,
-            max_length=256,
-            padding="longest",
-            truncation=True,
-            return_tensors="pt",
-        )
-        return inputs.input_ids
+    # кодируем любой один токен чтобы поместить его в модель
+    # дело в том что готовые модели требуют на вход текст
+    dummy_text = tokenizer(
+        "0",
+        return_tensors="pt",
+    ).input_ids
+    dummy_emb = text_encoder(
+        dummy_text,
+        return_dict=False,
+    )[0]
 
     # Get the specified interpolation method from the args
     interpolation = transforms.InterpolationMode.LANCZOS
@@ -849,9 +480,12 @@ def main():
     )
 
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[source_column]]
-        examples["pixel_values"] = [train_transforms(image) for image in images]
-        examples["input_ids"] = tokenize_captions(examples)
+        source_images = [image.convert("RGB") for image in examples[source_column]]
+        target_images = [image.convert("RGB") for image in examples[target_column]]
+        # TODO: при более сложных преобразованиях трансформацию необходимо делать в паре
+        # а не независимо
+        examples["source_images"] = [train_transforms(image) for image in source_images]
+        examples["target_images"] = [train_transforms(image) for image in target_images]
         return examples
 
     with accelerator.main_process_first():
@@ -860,10 +494,21 @@ def main():
         train_dataset = dataset["train"].with_transform(preprocess_train)
 
     def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids}
+        source_images = torch.stack([example["source_images"] for example in examples])
+        source_images = source_images.to(memory_format=torch.contiguous_format).to(
+            weight_dtype
+        )
+
+        target_images = torch.stack(
+            [example["target_images"] for example in examples]
+        ).to(weight_dtype)
+        target_images = target_images.to(memory_format=torch.contiguous_format).to(
+            weight_dtype
+        )
+        return {
+            "source_images": source_images,
+            "target_images": target_images,
+        }
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -884,24 +529,88 @@ def main():
         training_args.max_steps * accelerator.num_processes
     )
 
+    net_disc = vision_aided_loss.Discriminator(
+        cv_type="clip",
+        loss_type="multilevel_sigmoid_s",
+        device="cuda",
+    )
+
+    net_disc = net_disc.cuda()
+    net_disc.requires_grad_(True)
+    net_disc.cv_ensemble.requires_grad_(False)
+    net_disc.train()
+
+    net_lpips = lpips.LPIPS(net="vgg").cuda()
+    net_clip, _ = clip.load("ViT-B/32", device="cuda")
+    net_clip.requires_grad_(False)
+    net_clip.eval()
+
+    net_lpips.requires_grad_(False)
+
+    layers_to_opt = []
+    for n, _p in unet.named_parameters():
+        layers_to_opt.append(_p)
+    layers_to_opt += list(unet.conv_in.parameters())
+    for n, _p in vae.named_parameters():
+        layers_to_opt.append(_p)
+
+    optimizer = torch.optim.AdamW(
+        layers_to_opt,
+        lr=training_args.learning_rate,
+        betas=(training_args.adam_beta1, training_args.adam_beta2),
+        weight_decay=training_args.weight_decay,
+        eps=training_args.adam_epsilon,
+    )
     lr_scheduler = get_scheduler(
         training_args.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=num_warmup_steps_for_scheduler,
         num_training_steps=num_training_steps_for_scheduler,
     )
-
-    # Prepare everything with our `accelerator`.
-    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, optimizer, train_dataloader, lr_scheduler
+    optimizer_disc = torch.optim.AdamW(
+        net_disc.parameters(),
+        lr=training_args.learning_rate,
+        betas=(training_args.adam_beta1, training_args.adam_beta2),
+        weight_decay=training_args.weight_decay,
+        eps=training_args.adam_epsilon,
+    )
+    lr_scheduler_disc = get_scheduler(
+        training_args.lr_scheduler_type,
+        optimizer=optimizer_disc,
+        num_warmup_steps=training_args.warmup_steps,
+        num_training_steps=training_args.max_steps,
     )
 
-    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
+    # Prepare everything with our `accelerator`.
+    (
+        unet,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+        vae,
+        optimizer_disc,
+        lr_scheduler_disc,
+        net_disc,
+    ) = accelerator.prepare(
+        unet,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+        vae,
+        optimizer_disc,
+        lr_scheduler_disc,
+        net_disc,
+    )
 
     # Move text_encode and vae to gpu and cast to weight_dtype
     text_encoder.to(accelerator.device, dtype=weight_dtype)
-    vae.to(accelerator.device, dtype=weight_dtype)
+    net_lpips.to(accelerator.device, dtype=weight_dtype)
+    net_clip.to(accelerator.device, dtype=weight_dtype)
+
+    # turn off eff. attn for the discriminator
+    for name, module in net_disc.named_modules():
+        if "attn" in name:
+            module.fused_attn = False
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(
@@ -948,6 +657,7 @@ def main():
         f"  Gradient Accumulation steps = {training_args.gradient_accumulation_steps}"
     )
     logger.info(f"  Total optimization steps = {training_args.max_steps}")
+
     global_step = 0
     first_epoch = 0
 
@@ -978,6 +688,7 @@ def main():
     else:
         initial_global_step = 0
 
+    dummy_emb = dummy_emb.to(accelerator.device).to(weight_dtype)
     if training_args.eval_on_start:
         # start validation
         log_validation(
@@ -985,6 +696,7 @@ def main():
             text_encoder=text_encoder,
             tokenizer=tokenizer,
             unet=unet,
+            noise_scheduler=noise_scheduler,
             accelerator=accelerator,
             weight_dtype=weight_dtype,
             global_step=global_step,
@@ -992,6 +704,8 @@ def main():
             training_args=training_args,
             model_args=model_args,
             diffusion_args=diffusion_args,
+            dataset=dataset["train"],
+            dummy_emb=dummy_emb,
         )
 
     progress_bar = tqdm(
@@ -1007,72 +721,137 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
                 # Convert images to latent space
-                latents = vae.encode(
-                    batch["pixel_values"].to(weight_dtype)
-                ).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
+                source_latents = vae.encode(batch["source_images"].to(weight_dtype))[0]
+                source_latents = source_latents * vae.config.scaling_factor
 
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
+                # одинаковый последний степ для каждого изображения
+                timesteps = timesteps = torch.tensor(
+                    [999], device=source_latents.device
+                ).long()
 
-                bsz = latents.shape[0]
-                # Sample a random timestep for each image
-                timesteps = torch.randint(
-                    0,
-                    noise_scheduler.config.num_train_timesteps,
-                    (bsz,),
-                    device=latents.device,
+                # текстовые эмбединги рудимент чтобы использовать претренированные модели
+                encoder_hidden_states = dummy_emb.expand(
+                    source_latents.shape[0],
+                    -1,
+                    -1,
                 )
-                timesteps = timesteps.long()
 
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-                # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(
-                    batch["input_ids"], return_dict=False
-                )[0].to(weight_dtype)
-
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    target = noise
-                else:
-                    pass
+                # if noise_scheduler.config.prediction_type == "epsilon":
+                #     target = target_latents
+                # else:
+                #     pass
 
                 # Predict the noise residual and compute loss
                 model_pred = unet(
-                    noisy_latents,
+                    source_latents,
                     timesteps,
                     encoder_hidden_states,
                     return_dict=False,
                 )[0]
-
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-                # Gather the losses across all processes for logging (if we use distributed training).
-                avg_loss = accelerator.gather(
-                    loss.repeat(training_args.per_device_train_batch_size)
-                ).mean()
-                train_loss += (
-                    avg_loss.item() / training_args.gradient_accumulation_steps
+                x_denoised = noise_scheduler.step(
+                    model_pred,
+                    timesteps,
+                    source_latents,
+                    return_dict=False,
+                )[0]
+                x_denoised = x_denoised.to(weight_dtype)
+                x_tgt_pred = (
+                    vae.decode(
+                        x_denoised / vae.config.scaling_factor,
+                        return_dict=False,
+                    )[0]
+                ).clamp(-1, 1)
+                x_tgt = batch["target_images"].float()
+                loss_l2 = F.mse_loss(
+                    x_tgt_pred.float(),
+                    x_tgt,
+                    reduction="mean",
                 )
 
-                # Backpropagate
-                accelerator.backward(loss)
+                loss_lpips = net_lpips(x_tgt_pred, x_tgt.to(weight_dtype)).mean() * 5
+                loss = loss_l2 + loss_lpips
+
+                accelerator.backward(loss, retain_graph=False)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
-                        unet.parameters(),
+                        layers_to_opt,
                         training_args.max_grad_norm,
                     )
                 optimizer.step()
                 lr_scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
+                """
+                Generator loss: fool the discriminator
+                """
+                source_latents = vae.encode(
+                    batch["source_images"].to(weight_dtype),
+                )[0]
+                source_latents = source_latents * vae.config.scaling_factor
+                model_pred = unet(
+                    source_latents,
+                    timesteps,
+                    encoder_hidden_states,
+                    return_dict=False,
+                )[0]
+                x_denoised = noise_scheduler.step(
+                    model_pred,
+                    timesteps,
+                    source_latents,
+                    return_dict=False,
+                )[0]
+                x_denoised = x_denoised.to(weight_dtype)
+                x_tgt_pred = (
+                    vae.decode(
+                        x_denoised / vae.config.scaling_factor,
+                        return_dict=False,
+                    )[0]
+                ).clamp(-1, 1)
+                lossG = net_disc(x_tgt_pred, for_G=True).mean() * 0.5
+                accelerator.backward(lossG)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        layers_to_opt,
+                        training_args.max_grad_norm,
+                    )
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
+                """
+                Discriminator loss: fake image vs real image
+                """
+                # real image
+                lossD_real = net_disc(x_tgt.detach(), for_real=True).mean() * 0.5
+                accelerator.backward(lossD_real.mean())
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        net_disc.parameters(), training_args.max_grad_norm
+                    )
+                optimizer_disc.step()
+                lr_scheduler_disc.step()
+                optimizer_disc.zero_grad(set_to_none=True)
+                # fake image
+                lossD_fake = net_disc(x_tgt_pred.detach(), for_real=False).mean() * 0.5
+                accelerator.backward(lossD_fake.mean())
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        net_disc.parameters(), training_args.max_grad_norm
+                    )
+                optimizer_disc.step()
+                optimizer_disc.zero_grad(set_to_none=True)
+                lossD = lossD_real + lossD_fake
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-                accelerator.log({"train_loss": train_loss}, step=global_step)
+                logs = {}
+                # log all the losses
+                logs["lossG"] = lossG.detach().item()
+                logs["lossD"] = lossD.detach().item()
+                logs["loss_l2"] = loss_l2.detach().item()
+                logs["loss_lpips"] = loss_lpips.detach().item()
+                # accelerator.log({"train_loss": train_loss}, step=global_step)
+                accelerator.log(logs, step=global_step)
                 train_loss = 0.0
 
                 if global_step % training_args.save_steps == 0:
@@ -1121,6 +900,7 @@ def main():
                             text_encoder=text_encoder,
                             tokenizer=tokenizer,
                             unet=unet,
+                            noise_scheduler=noise_scheduler,
                             accelerator=accelerator,
                             weight_dtype=weight_dtype,
                             global_step=global_step,
@@ -1128,6 +908,8 @@ def main():
                             training_args=training_args,
                             model_args=model_args,
                             diffusion_args=diffusion_args,
+                            dataset=dataset["train"],
+                            dummy_emb=dummy_emb,
                         )
 
             logs = {
