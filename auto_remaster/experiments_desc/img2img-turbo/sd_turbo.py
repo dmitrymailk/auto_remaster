@@ -1,3 +1,8 @@
+"""
+Обучение стандартного sd turbo с моей модификацией.
+модель обучается с нуля, vae тоже обучается. предсказание за 1 шаг.
+"""
+
 import argparse
 import logging
 import math
@@ -408,9 +413,9 @@ def main():
     unet.enable_xformers_memory_efficient_attention()
     # unet.set_attention_backend("flash")
 
-    vae.requires_grad_(False)
-    # vae.requires_grad_(True)
-    # vae.train()
+    # vae.requires_grad_(False)
+    vae.requires_grad_(True)
+    vae.train()
     text_encoder.requires_grad_(False)
     unet.train()
 

@@ -1,9 +1,10 @@
 ### Порядок перебора методов для image2image
+- img2img-turbo
 - DDPM
-- sd-turbo
 - LBM
 - flow matching
 - rectified flow
+- VAE(обучить его конкретно под мой датасет и игру)
 - DMD2
 - I2SB: Image-to-Image Schrödinger Bridge
 - Piecewise Rectified Flow
@@ -11,6 +12,7 @@
 - control net(обучение на синтетически сглаженных датасетах, затем перегенерация и снова сглаживание)
 - [DREAM](https://github.com/jinxinzhou/dream)
 - [Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556)
+- RMT-diffusion?
 
 ### Базовые методы которые стоит попробовать 
 - аугментация через сдвиг, поворот и кроп
