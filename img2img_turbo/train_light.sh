@@ -18,7 +18,7 @@ accelerate launch src/train_pix2pix_light.py \
     --test_image_prep="resized_crop_512" \
     --lora_rank_unet=128 \
     --lora_rank_vae=64 \
-    --gradient_accumulation_steps=1 \
+    --gradient_accumulation_steps=8 \
     --checkpointing_steps=500 \
     --eval_freq=50 \
     --max_train_steps=100000 \

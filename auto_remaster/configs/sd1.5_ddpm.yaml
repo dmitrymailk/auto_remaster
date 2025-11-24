@@ -21,11 +21,11 @@ weight_decay: 1e-2
 eval_on_start: false
 resolution: 512
 per_device_train_batch_size: 4 
-gradient_accumulation_steps: 8 
+gradient_accumulation_steps: 1 
 gradient_checkpointing: false 
 
 # save params
-save_steps: 100
+save_steps: 400
 max_steps: 15000 
 
 # diffusion params

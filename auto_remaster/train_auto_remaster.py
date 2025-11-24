@@ -236,11 +236,10 @@ def log_validation(
     images = []
     timesteps = torch.tensor([999], device="cuda:0")
     for idx in selected_ids:
-        autocast_ctx = torch.autocast(accelerator.device.type)
         item = dataset[idx]
-        source = valid_transforms(item[diffusion_args.source_image_name].convert("RGB"))
-        orig_source = item[diffusion_args.target_image_name].convert("RGB")
-        target = valid_transforms(orig_source)
+        orig_source = item[diffusion_args.source_image_name].convert("RGB")
+        source = valid_transforms(orig_source)
+        target = valid_transforms(item[diffusion_args.target_image_name].convert("RGB"))
         c_t = train_transforms(orig_source).unsqueeze(0).to(vae.dtype).to(vae.device)
         with torch.no_grad():
             encoded_control = vae.encode(c_t, False)[0] * vae.config.scaling_factor
@@ -391,7 +390,8 @@ def main():
     #     torch_dtype=weight_dtype,
     # )
     unet = UNet2DModel(**unet2d_config)
-    unet.set_attention_backend("flash")
+    unet.enable_xformers_memory_efficient_attention()
+    # unet.set_attention_backend("flash")
 
     # vae.requires_grad_(False)
     vae.requires_grad_(True)
@@ -494,7 +494,17 @@ def main():
     interpolation = transforms.InterpolationMode.LANCZOS
 
     # Data preprocessing transformations
-    train_transforms = transforms.Compose(
+    train_transforms_input = transforms.Compose(
+        [
+            transforms.Resize(
+                diffusion_args.resolution,
+                interpolation=interpolation,
+            ),
+            transforms.CenterCrop(diffusion_args.resolution),
+            transforms.ToTensor(),
+        ]
+    )
+    train_transforms_output = transforms.Compose(
         [
             transforms.Resize(
                 diffusion_args.resolution,
@@ -514,8 +524,12 @@ def main():
         target_images = [image.convert("RGB") for image in examples[target_column]]
         # TODO: при более сложных преобразованиях трансформацию необходимо делать в паре
         # а не независимо
-        examples["source_images"] = [train_transforms(image) for image in source_images]
-        examples["target_images"] = [train_transforms(image) for image in target_images]
+        examples["source_images"] = [
+            train_transforms_input(image) for image in source_images
+        ]
+        examples["target_images"] = [
+            train_transforms_output(image) for image in target_images
+        ]
         return examples
 
     with accelerator.main_process_first():
@@ -561,7 +575,7 @@ def main():
 
     net_disc = vision_aided_loss.Discriminator(
         cv_type="clip",
-        loss_type="multilevel_sigmoid_s",
+        loss_type="multilevel_sigmoid",
         device="cuda",
     )
 
@@ -919,7 +933,7 @@ def main():
                             diffusion_args=diffusion_args,
                             dataset=dataset["train"],
                             dummy_emb=dummy_emb,
-                            train_transforms=train_transforms,
+                            train_transforms=train_transforms_input,
                         )
 
             logs = {
