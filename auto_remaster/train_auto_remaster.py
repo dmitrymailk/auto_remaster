@@ -72,6 +72,8 @@ import lpips
 import vision_aided_loss
 import torchvision
 
+from auto_remaster.evaluation import ImageEvaluator
+
 
 @dataclass
 class DiffusionTrainingArguments:
@@ -90,6 +92,9 @@ class DiffusionTrainingArguments:
     input_perturbation: float = field(default=0.0)
     num_inference_steps: int = field(default=1)
     noise_scheduler_type: str = field(default="stabilityai/sd-turbo")
+    metrics_list: list[str] = field(default=None)
+    lpips_factor: float = field(default=5.0)
+    gan_factor: float = field(default=0.5)
 
 
 unet2d_config = {
@@ -202,8 +207,8 @@ More information on all the CLI arguments and the environment are available on y
 
 def log_validation(
     vae=None,
-    text_encoder=None,
-    tokenizer=None,
+    # text_encoder=None,
+    # tokenizer=None,
     unet=None,
     noise_scheduler=None,
     accelerator: Accelerator = None,
@@ -250,6 +255,9 @@ def log_validation(
     selected_ids = rng.sample(test_images_ids, amount)
     images = []
     timesteps = torch.tensor([999], device="cuda:0")
+    # сохраняем для эвалюации
+    originals = []
+    generated = []
     for idx in selected_ids:
         item = dataset[idx]
         orig_source = item[diffusion_args.source_image_name].convert("RGB")
@@ -261,7 +269,6 @@ def log_validation(
             model_pred = unet(
                 encoded_control,
                 timesteps,
-                # dummy_emb,
                 return_dict=False,
             )[0]
             x_denoised = noise_scheduler.step(
@@ -288,12 +295,29 @@ def log_validation(
                 )
             )
         )
+        originals.append(item[diffusion_args.source_image_name])
+        generated.append(pred_image)
 
         images.append(img_h)
 
+    evaluator = ImageEvaluator(
+        metrics_list=diffusion_args.metrics_list,
+        device="cuda",
+        num_workers=4,
+        prefix_key="eval",
+    )
+    metrics_result = evaluator.evaluate(
+        originals,
+        generated,
+        batch_size=16,
+    )
+
     for tracker in accelerator.trackers:
         tracker.log(
-            {"validation": [wandb.Image(image) for i, image in enumerate(images)]}
+            {
+                "validation": [wandb.Image(image) for i, image in enumerate(images)],
+                **metrics_result,
+            }
         )
 
     torch.cuda.empty_cache()
@@ -365,11 +389,6 @@ def main():
     )
     noise_scheduler.set_timesteps(1, device="cuda")
 
-    tokenizer = CLIPTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        subfolder="tokenizer",
-        revision=diffusion_args.revision,
-    )
     # weight_dtype = torch.bfloat16
     weight_dtype = torch.float32
     noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(
@@ -384,13 +403,7 @@ def main():
     noise_scheduler.alphas = noise_scheduler.alphas.to(
         device=accelerator.device, dtype=weight_dtype
     )
-    text_encoder = CLIPTextModel.from_pretrained(
-        model_args.model_name_or_path,
-        subfolder="text_encoder",
-        revision=diffusion_args.revision,
-        variant=diffusion_args.variant,
-        torch_dtype=weight_dtype,
-    )
+
     vae = AutoencoderTiny.from_pretrained(
         "madebyollin/taesd",
         torch_device="cuda",
@@ -398,71 +411,18 @@ def main():
     )
     vae.decoder.ignore_skip = False
 
-    # unet = UNet2DConditionModel.from_pretrained(
-    #     model_args.model_name_or_path,
-    #     subfolder="unet",
-    #     revision=diffusion_args.non_ema_revision,
-    #     torch_dtype=weight_dtype,
-    # )
     unet = UNet2DModel(**unet2d_config)
-    unet.enable_xformers_memory_efficient_attention()
-    # unet.set_attention_backend("flash")
+    # unet.enable_xformers_memory_efficient_attention()
+    unet.set_attention_backend("flash")
 
-    vae.requires_grad_(False)
-    # vae.requires_grad_(True)
-    # vae.train()
-    text_encoder.requires_grad_(False)
+    vae.requires_grad_(True)
+    vae.train()
+    # text_encoder.requires_grad_(False)
     unet.train()
-
-    # `accelerate` 0.16.0 will have better support for customized saving
-    # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
-    # def save_model_hook(models, weights, output_dir):
-    #     if accelerator.is_main_process:
-    #         for i, model in enumerate(models):
-    #             model.save_pretrained(os.path.join(output_dir, "unet"))
-
-    #             # make sure to pop weight so that corresponding model is not saved again
-    #             weights.pop()
-    def save_model_hook(models, weights, output_dir):
-        if accelerator.is_main_process:
-            for i, model in enumerate(models):
-                # Явно проверяем класс модели
-                if isinstance(model, type(unwrap_model(unet))):
-                    # или лучше: isinstance(model, UNet2DConditionModel)
-                    folder_name = "unet"
-                elif isinstance(model, type(unwrap_model(vae))):
-                    folder_name = "vae"
-                else:
-                    # для неизвестных моделей не сохраняем
-                    # folder_name = f"model_{i}"
-                    continue
-
-                model.save_pretrained(os.path.join(output_dir, folder_name))
-
-                if weights:
-                    weights.pop()
-
-    def load_model_hook(models, input_dir):
-        for _ in range(len(models)):
-            # pop models so that they are not loaded again
-            model = models.pop()
-
-            # load diffusers style into model
-            load_model = UNet2DConditionModel.from_pretrained(
-                input_dir, subfolder="unet"
-            )
-            model.register_to_config(**load_model.config)
-
-            model.load_state_dict(load_model.state_dict())
-            del load_model
-
-    accelerator.register_save_state_pre_hook(save_model_hook)
-    # accelerator.register_load_state_pre_hook(load_model_hook)
 
     if training_args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
 
-    # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -474,12 +434,6 @@ def main():
             * accelerator.num_processes
         )
 
-    # Get the datasets: you can either provide your own training and evaluation files (see below)
-    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
-
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
-    # Downloading and loading a dataset from the hub.
     dataset = load_dataset(
         script_args.dataset_name,
         script_args.dataset_config,
@@ -493,33 +447,12 @@ def main():
     source_column = diffusion_args.source_image_name
     target_column = diffusion_args.target_image_name
 
-    # Preprocessing the datasets.
-    # кодируем любой один токен чтобы поместить его в модель
-    # дело в том что готовые модели требуют на вход текст
-    dummy_text = tokenizer(
-        "0",
-        return_tensors="pt",
-    ).input_ids
-    dummy_emb = text_encoder(
-        dummy_text,
-        return_dict=False,
-    )[0]
-
     # Get the specified interpolation method from the args
     interpolation = transforms.InterpolationMode.LANCZOS
 
     # Data preprocessing transformations
-    train_transforms_input = transforms.Compose(
-        [
-            transforms.Resize(
-                diffusion_args.resolution,
-                interpolation=interpolation,
-            ),
-            transforms.CenterCrop(diffusion_args.resolution),
-            transforms.ToTensor(),
-        ]
-    )
-    train_transforms_output = transforms.Compose(
+
+    train_transforms = transforms.Compose(
         [
             transforms.Resize(
                 diffusion_args.resolution,
@@ -528,8 +461,8 @@ def main():
             transforms.CenterCrop(diffusion_args.resolution),
             transforms.ToTensor(),
             transforms.Normalize(
-                [0.5],
-                [0.5],
+                (0.5, 0.5, 0.5),
+                (0.5, 0.5, 0.5),
             ),
         ]
     )
@@ -539,12 +472,8 @@ def main():
         target_images = [image.convert("RGB") for image in examples[target_column]]
         # TODO: при более сложных преобразованиях трансформацию необходимо делать в паре
         # а не независимо
-        examples["source_images"] = [
-            train_transforms_input(image) for image in source_images
-        ]
-        examples["target_images"] = [
-            train_transforms_output(image) for image in target_images
-        ]
+        examples["source_images"] = [train_transforms(image) for image in source_images]
+        examples["target_images"] = [train_transforms(image) for image in target_images]
         return examples
 
     with accelerator.main_process_first():
@@ -662,7 +591,7 @@ def main():
     )
 
     # Move text_encode and vae to gpu and cast to weight_dtype
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
+    # text_encoder.to(accelerator.device, dtype=weight_dtype)
     net_lpips.to(accelerator.device, dtype=weight_dtype)
     net_clip.to(accelerator.device, dtype=weight_dtype)
 
@@ -747,7 +676,7 @@ def main():
     else:
         initial_global_step = 0
 
-    dummy_emb = dummy_emb.to(accelerator.device).to(weight_dtype)
+    # dummy_emb = dummy_emb.to(accelerator.device).to(weight_dtype)
 
     progress_bar = tqdm(
         range(0, training_args.max_steps),
@@ -798,7 +727,10 @@ def main():
                     reduction="mean",
                 )
 
-                loss_lpips = net_lpips(x_tgt_pred, x_tgt.to(weight_dtype)).mean() * 5
+                loss_lpips = (
+                    net_lpips(x_tgt_pred, x_tgt.to(weight_dtype)).mean()
+                    * diffusion_args.lpips_factor
+                )
                 loss = loss_l2 + loss_lpips
 
                 accelerator.backward(loss, retain_graph=False)
@@ -836,7 +768,9 @@ def main():
                         return_dict=False,
                     )[0]
                 ).clamp(-1, 1)
-                lossG = net_disc(x_tgt_pred, for_G=True).mean() * 0.5
+                lossG = (
+                    net_disc(x_tgt_pred, for_G=True).mean() * diffusion_args.gan_factor
+                )
                 accelerator.backward(lossG)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
@@ -850,7 +784,10 @@ def main():
                 Discriminator loss: fake image vs real image
                 """
                 # real image
-                lossD_real = net_disc(x_tgt.detach(), for_real=True).mean() * 0.5
+                lossD_real = (
+                    net_disc(x_tgt.detach(), for_real=True).mean()
+                    * diffusion_args.gan_factor
+                )
                 accelerator.backward(lossD_real.mean())
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
@@ -860,7 +797,10 @@ def main():
                 lr_scheduler_disc.step()
                 optimizer_disc.zero_grad(set_to_none=True)
                 # fake image
-                lossD_fake = net_disc(x_tgt_pred.detach(), for_real=False).mean() * 0.5
+                lossD_fake = (
+                    net_disc(x_tgt_pred.detach(), for_real=False).mean()
+                    * diffusion_args.gan_factor
+                )
                 accelerator.backward(lossD_fake.mean())
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
@@ -935,8 +875,6 @@ def main():
                         # start validation
                         log_validation(
                             vae=vae,
-                            text_encoder=text_encoder,
-                            tokenizer=tokenizer,
                             unet=unet,
                             noise_scheduler=noise_scheduler,
                             accelerator=accelerator,
@@ -947,8 +885,7 @@ def main():
                             model_args=model_args,
                             diffusion_args=diffusion_args,
                             dataset=dataset["train"],
-                            dummy_emb=dummy_emb,
-                            train_transforms=train_transforms_input,
+                            train_transforms=train_transforms,
                             checkpoint_path=save_path,
                         )
 

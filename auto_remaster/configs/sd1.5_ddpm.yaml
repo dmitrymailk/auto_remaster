@@ -26,7 +26,7 @@ gradient_accumulation_steps: 1
 gradient_checkpointing: false 
 
 # save params
-save_steps: 200
+save_steps: 400
 max_steps: 15000 
 
 # diffusion params
@@ -36,3 +36,13 @@ caption_column: edit_prompt
 num_inference_steps: 1
 cache_dir: dataset/nfs_pix2pix_1920_1080_v5
 noise_scheduler_type: stabilityai/sd-turbo
+metrics_list: [
+    "lpips",
+    "mse",
+    "ssim",
+    "dists",
+    "psnr",
+    "fid",
+]
+lpips_factor: 5.0
+gan_factor: 0.5
