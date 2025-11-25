@@ -19,6 +19,7 @@
 - EMA
 - обучение на 8 шагов, затем дистиляция
 - можно создать синтетический датасет с нужной позицией камеры при помощи qwen edit relight и гаусианов, так как мы можем свободно двигать камеру при просмотре гаусианнов. 
+- инициализация с других моделей
 
 ### Fast diffusion models
 - [Sana: Efficient High-Resolution Image Synthesis with Linear Diffusion Transformer](https://github.com/NVlabs/Sana)
