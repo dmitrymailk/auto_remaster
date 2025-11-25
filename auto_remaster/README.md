@@ -1,10 +1,10 @@
 ### Порядок перебора методов для image2image
 - img2img-turbo
-- DDPM
 - LBM
+- VAE(обучить его конкретно под мой датасет и игру)
+- DDPM
 - flow matching
 - rectified flow
-- VAE(обучить его конкретно под мой датасет и игру)
 - DMD2
 - I2SB: Image-to-Image Schrödinger Bridge
 - Piecewise Rectified Flow

@@ -79,7 +79,7 @@ from auto_remaster.evaluation import ImageEvaluator
 class DiffusionTrainingArguments:
     use_ema: bool = field(default=False)
     non_ema_revision: str = field(default=None)
-    resolution: int = field(default=320)
+    resolution: int = field(default=512)
     revision: str = field(default=None)
     variant: str = field(default=None)
     scale_lr: bool = field(default=False)
@@ -104,8 +104,10 @@ class DiffusionTrainingArguments:
 
 unet2d_config = {
     "sample_size": 64,
-    "in_channels": 4,
-    "out_channels": 4,
+    # "in_channels": 4,
+    "in_channels": 16,
+    # "out_channels": 4,
+    "out_channels": 16,
     "center_input_sample": False,
     "time_embedding_type": "positional",
     "freq_shift": 0,
@@ -151,12 +153,17 @@ def log_validation(
     noise_scheduler = FlowMatchEulerDiscreteScheduler()
 
     # 1. Загрузка VAE (Tiny Autoencoder для скорости и экономии памяти)
-    vae_val = AutoencoderTiny.from_pretrained(
-        "madebyollin/taesd",
+    # vae_val = AutoencoderTiny.from_pretrained(
+    #     "madebyollin/taesd",
+    #     torch_device="cuda",
+    #     torch_dtype=weight_dtype,
+    # ).to(accelerator.device)
+    # vae_val.decoder.ignore_skip = False
+    vae_val = AutoencoderKL.from_pretrained(
+        "black-forest-labs/FLUX.1-dev",
+        subfolder="vae",
         torch_device="cuda",
-        torch_dtype=weight_dtype,
     ).to(accelerator.device)
-    vae_val.decoder.ignore_skip = False
     vae_val.eval()
 
     # 2. Загрузка UNet из чекпоинта
@@ -237,7 +244,8 @@ def log_validation(
         with torch.no_grad():
             # Encode source image
             z_source = (
-                vae_val.encode(c_t, return_dict=False)[0]
+                # vae_val.encode(c_t, return_dict=False)[0]
+                vae_val.encode(c_t, return_dict=False)[0].sample()
                 * vae_val.config.scaling_factor
             )
 
@@ -398,6 +406,7 @@ def main():
         log_with=training_args.report_to,
         project_config=accelerator_project_config,
         mixed_precision="no",
+        # mixed_precision="fp16",
     )
 
     # Make one log on every process with the configuration for debugging.
@@ -429,12 +438,17 @@ def main():
     # weight_dtype = torch.float16
     weight_dtype = torch.float32
 
-    vae = AutoencoderTiny.from_pretrained(
-        "madebyollin/taesd",
-        torch_device="cuda",
+    # vae = AutoencoderTiny.from_pretrained(
+    #     "madebyollin/taesd",
+    #     torch_device="cuda",
+    #     torch_dtype=weight_dtype,
+    # )
+    # vae.decoder.ignore_skip = False
+    vae = AutoencoderKL.from_pretrained(
+        "black-forest-labs/FLUX.1-dev",
+        subfolder="vae",
         torch_dtype=weight_dtype,
     )
-    vae.decoder.ignore_skip = False
 
     unet = UNet2DModel(**unet2d_config)
     # unet.enable_xformers_memory_efficient_attention()
@@ -721,13 +735,17 @@ def main():
                 # Convert images to latent space (Bridge Matching approach)
                 with torch.no_grad():
                     z_source = vae.encode(
-                        batch["source_images"].to(weight_dtype), return_dict=False
-                    )[0]
+                        batch["source_images"].to(weight_dtype),
+                        return_dict=False,
+                        # )[0]
+                    )[0].sample()
                     z_source = z_source * vae.config.scaling_factor
 
                     z_target = vae.encode(
-                        batch["target_images"].to(weight_dtype), return_dict=False
-                    )[0]
+                        batch["target_images"].to(weight_dtype),
+                        return_dict=False,
+                        # )[0]
+                    )[0].sample()
                     z_target = z_target * vae.config.scaling_factor
 
                 # Sample timesteps (Bridge Matching)

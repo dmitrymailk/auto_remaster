@@ -19,10 +19,10 @@ gradient_checkpointing: false
 dataloader_num_workers: 4
 
 # Training duration
-# max_steps: 15000
-max_steps: 30000
-# save_steps: 800
-save_steps: 1600
+max_steps: 15000
+# max_steps: 30000
+save_steps: 800
+# save_steps: 1600
 save_total_limit: 3
 resume_from_checkpoint: false
 eval_on_start: false
@@ -31,7 +31,7 @@ eval_on_start: false
 report_to: wandb
 
 # Diffusion/LBM specific parameters
-resolution: 512
+resolution: 320
 use_ema: false
 scale_lr: false
 
