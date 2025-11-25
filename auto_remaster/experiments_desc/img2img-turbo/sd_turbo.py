@@ -287,7 +287,7 @@ def main():
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         log_with=training_args.report_to,
         project_config=accelerator_project_config,
-        # mixed_precision="no",
+        mixed_precision="no",
     )
 
     # Make one log on every process with the configuration for debugging.
@@ -316,7 +316,6 @@ def main():
     )
     noise_scheduler.set_timesteps(1, device="cuda")
 
-    # weight_dtype = torch.float16
     weight_dtype = torch.float32
     noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(
         device=accelerator.device, dtype=weight_dtype

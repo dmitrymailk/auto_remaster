@@ -44,3 +44,64 @@ In this work, we address two limitations of existing conditional diffusion model
 1.  Входное изображение $x_{in}$ кодируется VAE: $z_{in} = \mathcal{E}(x_{in})$.
 2.  UNet принимает $z_{in}$ и $t=999$, генерируя латентное представление целевого изображения $z_{out}$ за **один вызов** (без итеративного денойзинга).
 3.  VAE декодирует результат: $x_{out} = \mathcal{D}(z_{out})$.
+
+```yaml
+# Model configuration
+# model_name_or_path: stablediffusionapi/juggernaut-reborn 
+model_name_or_path: stabilityai/sd-turbo
+# dataset_name: lambdalabs/naruto-blip-captions
+dataset_name: dim/nfs_pix2pix_1920_1080_v5
+seed: 2025
+
+# Output configuration
+output_dir: checkpoints/auto_remaster/sd1.5_ddpm
+
+# Training optimization parameters
+learning_rate: 5e-6
+lr_scheduler_type: "constant"
+warmup_steps: 500
+weight_decay: 1e-2
+max_grad_norm: 1.0
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 1
+gradient_checkpointing: false
+
+# Training duration
+max_steps: 15000
+save_steps: 400
+resume_from_checkpoint: false
+eval_on_start: false
+
+# Reporting
+report_to: wandb
+
+# Diffusion specific parameters
+resolution: 512
+use_ema: false
+noise_scheduler_type: stabilityai/sd-turbo
+
+# Dataset column names
+source_image_name: input_image
+target_image_name: edited_image
+caption_column: edit_prompt
+
+# Cache directory
+cache_dir: dataset/nfs_pix2pix_1920_1080_v5
+
+# Inference parameters
+num_inference_steps: 1
+
+# Metrics for evaluation
+metrics_list: [
+    "lpips",
+    "mse",
+    "ssim",
+    "dists",
+    "psnr",
+    "fid",
+]
+
+# Loss weights
+lpips_factor: 5.0
+gan_factor: 0.5
+```
