@@ -73,6 +73,7 @@ import lpips
 import torchvision
 
 from auto_remaster.evaluation import ImageEvaluator
+import bitsandbytes as bnb
 
 
 @dataclass
@@ -336,29 +337,29 @@ def log_validation(
         images.append(img_h)
 
     # 5. Расчет метрик
-    metrics_result = {}
-    if diffusion_args.metrics_list:
-        try:
-            evaluator = ImageEvaluator(
-                metrics_list=diffusion_args.metrics_list,
-                device="cuda",
-                num_workers=4,
-                prefix_key="eval",
-            )
-            metrics_result = evaluator.evaluate(
-                originals,
-                generated,
-                batch_size=16,
-            )
-        except Exception as e:
-            logger.warning(f"Evaluation failed with error: {e}")
+    # metrics_result = {}
+    # if diffusion_args.metrics_list:
+    #     try:
+    #         evaluator = ImageEvaluator(
+    #             metrics_list=diffusion_args.metrics_list,
+    #             device="cuda",
+    #             num_workers=4,
+    #             prefix_key="eval",
+    #         )
+    #         metrics_result = evaluator.evaluate(
+    #             originals,
+    #             generated,
+    #             batch_size=16,
+    #         )
+    #     except Exception as e:
+    #         logger.warning(f"Evaluation failed with error: {e}")
 
     # 6. Логирование в WandB / Accelerator
     for tracker in accelerator.trackers:
         tracker.log(
             {
                 "validation": [wandb.Image(image) for image in images],
-                **metrics_result,
+                # **metrics_result,
             }
         )
 
@@ -567,7 +568,8 @@ def main():
     for n, _p in unet.named_parameters():
         layers_to_opt.append(_p)
 
-    optimizer = torch.optim.AdamW(
+    # optimizer = torch.optim.AdamW(
+    optimizer = bnb.optim.AdamW8bit(
         layers_to_opt,
         lr=training_args.learning_rate,
         betas=(training_args.adam_beta1, training_args.adam_beta2),
@@ -730,7 +732,8 @@ def main():
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
-            l_acc = [unet, vae]
+            # l_acc = [unet, vae]
+            l_acc = [unet]
             with accelerator.accumulate(*l_acc):
                 # Convert images to latent space (Bridge Matching approach)
                 with torch.no_grad():

@@ -1,5 +1,9 @@
 # Dataset configuration
-dataset_name: dim/nfs_pix2pix_1920_1080_v5
+# dataset_name: dim/nfs_pix2pix_1920_1080_v5
+dataset_name: dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+# Cache directory
+# cache_dir: dataset/nfs_pix2pix_1920_1080_v5
+cache_dir: dataset/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
 dataset_config: null
 seed: 2025
 
@@ -31,7 +35,8 @@ eval_on_start: false
 report_to: wandb
 
 # Diffusion/LBM specific parameters
-resolution: 320
+# resolution: 320
+resolution: 512
 use_ema: false
 scale_lr: false
 
@@ -40,8 +45,7 @@ source_image_name: input_image
 target_image_name: edited_image
 caption_column: edit_prompt
 
-# Cache directory
-cache_dir: dataset/nfs_pix2pix_1920_1080_v5
+
 
 # Inference parameters
 num_inference_steps: 1
