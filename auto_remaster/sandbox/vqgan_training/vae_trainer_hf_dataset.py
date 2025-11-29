@@ -473,7 +473,7 @@ def train_ddp(
         decoder_also_perform_hr,
         use_wavelet,
     )
-    exit()
+    # exit()
 
     discriminator = PatchDiscriminator().cuda()
     discriminator.requires_grad_(True)

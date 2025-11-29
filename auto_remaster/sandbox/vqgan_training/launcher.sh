@@ -22,7 +22,8 @@ torchrun --nproc_per_node=1 vae_trainer_hf_dataset.py \
 --do_ganloss \
 --use_lecam True \
 --project_name "HrDecoderAE" \
---decoder_also_perform_hr True
+--decoder_also_perform_hr True \
+--vae_z_channels 4
 #--load_path "/home/ubuntu/auravasa/ckpt/stage_3_msepool-cont-512-1.0-1.0-batch-gradnorm/vae_epoch_1_step_23501.pt"
 #--load_path "/home/ubuntu/auravasa/ckpt/stage2_msepool-cont-512-1.0-1.0-batch-gradnorm/vae_epoch_0_step_28501.pt"
 # --load_path "/home/ubuntu/auravasa/ckpt/exp_vae_ch_256_lr_0.0078125_weighted_percep+f8areapool_l2_0.0/vae_epoch_1_step_27001.pt"  
