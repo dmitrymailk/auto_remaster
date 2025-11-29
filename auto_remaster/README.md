@@ -21,9 +21,17 @@
 - можно создать синтетический датасет с нужной позицией камеры при помощи qwen edit relight и гаусианов, так как мы можем свободно двигать камеру при просмотре гаусианнов. 
 - инициализация с других моделей
 
+### Идеи (которые не сработают)
+- Так как задача супер узкая, можно попробовать сделать так чтобы латенты пар картинок лежали на одной прямой+- шум.
+
 ### Best models
+- [SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis](https://arxiv.org/pdf/2307.01952)
 - [Qwen-Image Technical Report](https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/Qwen_Image.pdf)
-- [FLUX2]()
+- [FLUX.1](https://cdn.sanity.io/files/2gpum2i6/production/880b072208997108f87e5d2729d8a8be481310b5.pdf)
+- [FLUX.2: Analyzing and Enhancing the Latent Space of FLUX – Representation Comparison](https://bfl.ai/research/representation-comparison)
+- [Z-Image-Turbo](https://github.com/Tongyi-MAI/Z-Image)
+- [High-Resolution Image Synthesis with Latent Diffusion Models](https://arxiv.org/pdf/2112.10752)
+- [Stable Diffusion 3](https://arxiv.org/pdf/2403.03206) https://github.com/Stability-AI/sd3.5
 
 ### Fast diffusion models
 - [Sana: Efficient High-Resolution Image Synthesis with Linear Diffusion Transformer](https://github.com/NVlabs/Sana)
@@ -31,16 +39,23 @@
 - [One-step image-to-image with Stable Diffusion turbo: sketch2image, day2night, and more](https://github.com/GaParmar/img2img-turbo)
 - [SeedVR2: One-Step Video Restoration via Diffusion Adversarial Post-Training](https://github.com/ByteDance-Seed/SeedVR)
 - [DiffO: Single-step Diffusion for Image Compression at Ultra-Low Bitrates](https://arxiv.org/pdf/2506.16572v1)
+- [fast-DiT Scalable Diffusion Models with Transformers (DiT)](https://github.com/chuanyangjin/fast-DiT)
+
+### GANs
+- [The GAN is dead; long live the GAN! A Modern Baseline GAN](https://arxiv.org/pdf/2501.05441)
 
 ### Fast vae
 - [Tiny AutoEncoder for Stable Diffusion](https://github.com/madebyollin/taesd)
 - [DC-Gen: Post-Training Diffusion Acceleration with Deeply Compressed Latent Space](https://github.com/dc-ai-projects/DC-Gen)
-
+- [Notes / Links about Stable Diffusion VAE](https://gist.github.com/madebyollin/ff6aeadf27b2edbc51d05d5f97a595d9)
+- [LiteVAE: Lightweight and Efficient Variational Autoencoder](https://arxiv.org/pdf/2405.14477)
 
 ### Quality vae
 - [[ICCV 2025] Official implementation of the paper: REPA-E: Unlocking VAE for End-to-End Tuning of Latent Diffusion Transformers](https://github.com/End2End-Diffusion/REPA-E)
 - [[CVPR 2025 Oral] Reconstruction vs. Generation: Taming Optimization Dilemma in Latent Diffusion Models](https://github.com/hustvl/LightningDiT)
 - [Representation Alignment for Generation: Training Diffusion Transformers Is Easier Than You Think](https://sihyun.me/REPA/)
+- [[CVPR 2021 Oral] Soft-IntroVAE: Analyzing and Improving Introspective Variational Autoencoders](https://github.com/taldatech/soft-intro-vae-pytorch)
+- [DIFFUSION TRANSFORMERS WITH REPRESENTATION AUTOENCODERS](https://arxiv.org/pdf/2510.11690)
 
 ### Diffusion Distillation
 - [Knowledge-distilled, smaller versions of Stable Diffusion Segmind Distilled diffusion](https://github.com/segmind/distill-sd)
@@ -57,9 +72,28 @@
 - [Analyzing and Improving the Training Dynamics of Diffusion Models](https://arxiv.org/pdf/2312.02696)
 
 ### Vae train repos
-- https://github.com/cloneofsimo/vqgan-training?tab=readme-ov-file#details
-- https://github.com/SonyResearch/micro_diffusion
+- https://github.com/cloneofsimo/vqgan-training https://huggingface.co/fal/AuraEquiVAE
+- https://github.com/KohakuBlueleaf/HakuLatent
+- https://github.com/zelaki/eqvae
+- https://huggingface.co/AiArtLab/sdxl_vae/blob/main/src/train_sdxl_vae.py
+- https://github.com/hustvl/Turbo-VAED
 - https://github.com/microsoft/Reducio-VAE
+- https://github.com/VideoVerses/VideoVAEPlus
+- https://github.com/bytetriper/RAE
+- https://github.com/snap-research/alphaflow
+
+### Losses
+- https://github.com/richzhang/PerceptualSimilarity
+- https://github.com/sypsyp97/convnext_perceptual_loss
 
 ### Theory
+- [Generative modelling in latent space](https://sander.ai/2025/04/15/latents.html)
 - [Tutorial on Diffusion Models for Imaging and Vision](https://arxiv.org/pdf/2403.18103)
+- https://www.practical-diffusion.org/schedule/
+- https://diffusion.csail.mit.edu/
+- https://mbernste.github.io/posts/vae/
+- https://d2l.ai/chapter_generative-adversarial-networks/gan.html
+
+## TAESD reimlementation deconstruction
+https://github.com/madebyollin/taesd/issues/16
+- TAESD is entirely deterministic and doesn't use any KL loss.

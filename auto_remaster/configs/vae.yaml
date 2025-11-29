@@ -1,0 +1,56 @@
+# Dataset configuration
+dataset_name: dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+cache_dir: dataset/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+dataset_config_name: null
+seed: 42
+
+# Output configuration
+output_dir: checkpoints/auto_remaster/vae_r3gan
+logging_dir: logs
+
+# Training optimization parameters
+learning_rate: 1e-4
+lr_scheduler_type: "constant"
+warmup_steps: 500
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+num_train_epochs: 200
+save_images_steps: 200
+save_steps: 5000
+
+# Reporting
+report_to: wandb
+tracker_project_name: auto_remaster_vae
+
+# VAE specific parameters
+resolution: 512
+use_ema: true
+ema_decay: 0.9999
+train_mode: "r3gan"
+
+# Loss weights
+lambda_l1: 1.0
+lambda_lpips: 5
+lambda_gan: 0.5
+lambda_kl: 0.000001
+
+# R3GAN specific
+r1_gamma: 10.0
+r2_gamma: 10.0
+discriminator_type: "patch"
+
+# Advanced Losses
+use_lecam: true
+lecam_loss_weight: 0.1
+
+use_blurriness_loss: true
+blurriness_loss_weight: 1.0
+
+# Soft-Intro VAE specific
+beta_rec: 1.0
+beta_kl: 1.0
+beta_neg: 256.0
+gamma_r: 1e-8
+
+# Dataset column names
+image_column: input_image
