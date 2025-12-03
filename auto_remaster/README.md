@@ -96,6 +96,7 @@
 ### Theory
 - [Generative modelling in latent space](https://sander.ai/2025/04/15/latents.html)
 - [Tutorial on Diffusion Models for Imaging and Vision](https://arxiv.org/pdf/2403.18103)
+- https://lilianweng.github.io/posts/2018-08-12-vae/
 - https://www.practical-diffusion.org/schedule/
 - https://diffusion.csail.mit.edu/
 - https://mbernste.github.io/posts/vae/

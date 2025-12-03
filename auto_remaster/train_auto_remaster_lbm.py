@@ -106,9 +106,11 @@ class DiffusionTrainingArguments:
 unet2d_config = {
     "sample_size": 64,
     # "in_channels": 4,
-    "in_channels": 16,
+    # "in_channels": 16,
+    "in_channels": 32,
     # "out_channels": 4,
-    "out_channels": 16,
+    # "out_channels": 16,
+    "out_channels": 32,
     "center_input_sample": False,
     "time_embedding_type": "positional",
     "freq_shift": 0,
@@ -161,7 +163,8 @@ def log_validation(
     # ).to(accelerator.device)
     # vae_val.decoder.ignore_skip = False
     vae_val = AutoencoderKL.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
+        # "black-forest-labs/FLUX.1-dev",
+        "black-forest-labs/FLUX.2-dev",
         subfolder="vae",
         torch_device="cuda",
     ).to(accelerator.device)
@@ -446,12 +449,14 @@ def main():
     # )
     # vae.decoder.ignore_skip = False
     vae = AutoencoderKL.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
+        # "black-forest-labs/FLUX.1-dev",
+        "black-forest-labs/FLUX.2-dev",
         subfolder="vae",
         torch_dtype=weight_dtype,
     )
 
     unet = UNet2DModel(**unet2d_config)
+    # unet = UNet2DModel.from_pretrained('checkpoints/auto_remaster/lbm/checkpoint-28800')
     # unet.enable_xformers_memory_efficient_attention()
     unet.set_attention_backend("flash")
 
