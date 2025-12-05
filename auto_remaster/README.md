@@ -27,6 +27,14 @@
 - увеличения лосса для центра ослабление для краев
 - Так как задача супер узкая, можно попробовать сделать так чтобы латенты пар картинок лежали на одной прямой+- шум.
 
+### Самые близкие работы к моей
+- https://github.com/nvidia-cosmos/cosmos-transfer2.5
+- [Enhancing Photorealism Enhancement](https://arxiv.org/pdf/2105.04619)
+- [Vista: A Generalizable Driving World Model with High Fidelity and Versatile Controllability](https://opendrivelab.com/Vista/)
+- [DriveDreamer: Towards Real-world-driven World Models for Autonomous Driving](https://drivedreamer.github.io/)
+- [DriveGAN](https://github.com/nv-tlabs/DriveGAN_code)
+- [Genie 2: A large-scale foundation world model](https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/)
+
 ### Best models
 - [SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis](https://arxiv.org/pdf/2307.01952)
 - [Qwen-Image Technical Report](https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/Qwen_Image.pdf)
@@ -102,3 +110,5 @@
 - https://mbernste.github.io/posts/vae/
 - https://d2l.ai/chapter_generative-adversarial-networks/gan.html
 
+### Ссылки на датасеты
+- [GenAD: OpenDV Dataset The largest driving video dataset to date, containing more than 1700 hours of real-world driving videos.](https://opendrivelab.com/datasets)
