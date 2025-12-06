@@ -60,5 +60,8 @@
 		"__nullptr": "cpp",
 		"__locale": "cpp"
 	},
-	"python.analysis.typeCheckingMode": "off"
+	"python.analysis.typeCheckingMode": "off",
+	"python-envs.defaultEnvManager": "ms-python.python:venv",
+	"python-envs.defaultPackageManager": "ms-python.python:pip",
+	"python-envs.pythonProjects": []
 }

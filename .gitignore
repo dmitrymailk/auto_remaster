@@ -215,3 +215,4 @@ checkpoints
 nfs_pix2pix_1920_1080_v6
 !.vscode/*
 vqgan-output
+.venv*
