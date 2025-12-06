@@ -193,8 +193,9 @@ class ComfyUIImageAPIUpscaleV2:
 
 
 # port = 8188
-port = 1337
-part_num = 1
+# port = 1337
+port = 1338
+part_num = 2
 comfy_images_process = ComfyUIImageAPIUpscaleV2(
     server_address=f"127.0.0.1:{port}",
     workflow_path="/code/showcases/showcase_10/workflow_ultimate_upscale_simple_nfs_mix_api_v3.json",
