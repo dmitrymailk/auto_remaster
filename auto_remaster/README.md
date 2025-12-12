@@ -22,18 +22,31 @@
 - инициализация с других моделей
 
 ### Идеи (которые не сработают)
+- HRM модель, упор не на 1 шаг, а на множество, но очень легкой моделью
 - шеринг параметров и повторяющихся блоков или MOE из более малых частей(должно сработать лучше чем шеринг).
 - для сохранения структуры сделать canny loss
 - увеличения лосса для центра ослабление для краев
 - Так как задача супер узкая, можно попробовать сделать так чтобы латенты пар картинок лежали на одной прямой+- шум.
 
 ### Самые близкие работы к моей
+
 - https://github.com/nvidia-cosmos/cosmos-transfer2.5
 - [Enhancing Photorealism Enhancement](https://arxiv.org/pdf/2105.04619)
 - [Vista: A Generalizable Driving World Model with High Fidelity and Versatile Controllability](https://opendrivelab.com/Vista/)
 - [DriveDreamer: Towards Real-world-driven World Models for Autonomous Driving](https://drivedreamer.github.io/)
 - [DriveGAN](https://github.com/nv-tlabs/DriveGAN_code)
 - [Genie 2: A large-scale foundation world model](https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/)
+- https://research.google/blog/mobilediffusion-rapid-text-to-image-generation-on-device/
+
+
+### Neural rendering
+- [DIFFUSIONRENDERER: Neural Inverse and Forward Rendering with Video Diffusion Models](https://arxiv.org/pdf/2501.18590)
+- [StableIntrinsic: Detail-preserving One-step Diffusion Model for Multi-view Material Estimation](https://arxiv.org/pdf/2508.19789)
+- [Materialist: Physically Based Editing Using Single-Image Inverse Rendering](https://arxiv.org/pdf/2501.03717)
+- [MegaDepth: Learning Single-View Depth Prediction from Internet Photos](https://openaccess.thecvf.com/content_cvpr_2018/papers/Li_MegaDepth_Learning_Single-View_CVPR_2018_paper.pdf)
+- [NeAR: Coupled Neural Asset–Renderer Stack](https://arxiv.org/pdf/2511.18600)
+- [WHAT MATTERS WHEN REPURPOSING DIFFUSIONMODELS FOR GENERAL DENSE PERCEPTION TASKS?](https://arxiv.org/pdf/2403.06090)
+- []
 
 ### Best models
 - [SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis](https://arxiv.org/pdf/2307.01952)

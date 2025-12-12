@@ -126,6 +126,7 @@ class ComfyUIImageAPIUpscaleV2:
         images_to_process = [
             item for item in original_images_part if not item in target_images_names
         ][:batch_size]
+        print(images_to_process)
         if len(images_to_process) == 0:
             return "END"
 
@@ -194,7 +195,8 @@ class ComfyUIImageAPIUpscaleV2:
 
 # port = 8188
 port = 1337
-part_num = 1
+part_num = 0
+# part_num = 1
 comfy_images_process = ComfyUIImageAPIUpscaleV2(
     server_address=f"127.0.0.1:{port}",
     workflow_path="/code/showcases/showcase_10/workflow_ultimate_upscale_simple_nfs_mix_api_v3.json",
