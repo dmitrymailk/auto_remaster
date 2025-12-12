@@ -29,8 +29,7 @@
 - Так как задача супер узкая, можно попробовать сделать так чтобы латенты пар картинок лежали на одной прямой+- шум.
 
 ### Самые близкие работы к моей
-
-- https://github.com/nvidia-cosmos/cosmos-transfer2.5
+- [Cosmos Transfer 2.5 Sim2Real for Simulator Videos](https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/inference/transfer2_5/inference-carla-sdg-augmentation/inference.html)
 - [Enhancing Photorealism Enhancement](https://arxiv.org/pdf/2105.04619)
 - [Vista: A Generalizable Driving World Model with High Fidelity and Versatile Controllability](https://opendrivelab.com/Vista/)
 - [DriveDreamer: Towards Real-world-driven World Models for Autonomous Driving](https://drivedreamer.github.io/)
