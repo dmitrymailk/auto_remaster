@@ -34,6 +34,7 @@
 - [DriveDreamer: Towards Real-world-driven World Models for Autonomous Driving](https://drivedreamer.github.io/)
 - [DriveGAN](https://github.com/nv-tlabs/DriveGAN_code)
 - [Genie 2: A large-scale foundation world model](https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/)
+- [Genie 3: A new frontier for world models](https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/)
 
 ### Best models
 - [SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis](https://arxiv.org/pdf/2307.01952)
