@@ -36,6 +36,7 @@
 - [DriveDreamer: Towards Real-world-driven World Models for Autonomous Driving](https://drivedreamer.github.io/)
 - [DriveGAN](https://github.com/nv-tlabs/DriveGAN_code)
 - [Genie 2: A large-scale foundation world model](https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/)
+- [Genie 3: A new frontier for world models](https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/)
 - https://research.google/blog/mobilediffusion-rapid-text-to-image-generation-on-device/
 
 
