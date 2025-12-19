@@ -6,6 +6,7 @@
 - flow matching
 - rectified flow
 - DMD2
+- [TwinFlow](https://github.com/inclusionAI/TwinFlow)
 - I2SB: Image-to-Image Schrödinger Bridge
 - Piecewise Rectified Flow
 - LCM
@@ -64,6 +65,7 @@
 - [DiffO: Single-step Diffusion for Image Compression at Ultra-Low Bitrates](https://arxiv.org/pdf/2506.16572v1)
 - [fast-DiT Scalable Diffusion Models with Transformers (DiT)](https://github.com/chuanyangjin/fast-DiT)
 - [Reconstruct Anything Model (RAM)](https://github.com/matthieutrs/ram)
+- [pi-Flow: Policy-Based Few-Step Generation via Imitation Distillation](https://github.com/Lakonik/piFlow)
 
 ### GANs
 - [The GAN is dead; long live the GAN! A Modern Baseline GAN](https://arxiv.org/pdf/2501.05441)
