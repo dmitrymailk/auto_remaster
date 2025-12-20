@@ -1,0 +1,617 @@
+{
+  "31": {
+    "inputs": {
+      "mode": "single_image",
+      "seed": 163669774931352,
+      "index": [
+        "79",
+        0
+      ],
+      "label": "Batch 001",
+      "path": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6_sdxl_1_part_1",
+      "pattern": "*.png",
+      "allow_RGBA_output": "false",
+      "filename_text_extension": "true"
+    },
+    "class_type": "Load Image Batch",
+    "_meta": {
+      "title": "Load Image Batch"
+    }
+  },
+  "32": {
+    "inputs": {
+      "shape": "square",
+      "frames": 1,
+      "location_x": 416,
+      "location_y": 499,
+      "grow": 0,
+      "frame_width": 832,
+      "frame_height": 480,
+      "shape_width": 832,
+      "shape_height": 480
+    },
+    "class_type": "CreateShapeMask",
+    "_meta": {
+      "title": "Create Shape Mask"
+    }
+  },
+  "33": {
+    "inputs": {
+      "mask_opacity": 0.51,
+      "mask_color": "0, 0, 0",
+      "pass_through": false,
+      "image": [
+        "62",
+        0
+      ],
+      "mask": [
+        "32",
+        0
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "35": {
+    "inputs": {
+      "blend_percentage": 1,
+      "image_a": [
+        "109",
+        0
+      ],
+      "image_b": [
+        "62",
+        0
+      ],
+      "mask": [
+        "36",
+        0
+      ]
+    },
+    "class_type": "Image Blend by Mask",
+    "_meta": {
+      "title": "Image Blend by Mask"
+    }
+  },
+  "36": {
+    "inputs": {
+      "mask": [
+        "85",
+        0
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "Convert Mask to Image"
+    }
+  },
+  "46": {
+    "inputs": {
+      "int": 85
+    },
+    "class_type": "ttN int",
+    "_meta": {
+      "title": "int"
+    }
+  },
+  "56": {
+    "inputs": {
+      "int": 171
+    },
+    "class_type": "ttN int",
+    "_meta": {
+      "title": "int"
+    }
+  },
+  "62": {
+    "inputs": {
+      "width": 832,
+      "height": 480,
+      "upscale_method": "nearest-exact",
+      "keep_proportion": false,
+      "divisible_by": 2,
+      "crop": 0,
+      "image": [
+        "126",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJ",
+    "_meta": {
+      "title": "Resize Image (deprecated)"
+    }
+  },
+  "64": {
+    "inputs": {
+      "text_input": "road",
+      "task": "caption_to_phrase_grounding",
+      "fill_mask": true,
+      "keep_model_loaded": true,
+      "max_new_tokens": 1024,
+      "num_beams": 1,
+      "do_sample": false,
+      "output_mask_select": "",
+      "seed": 459905402791142,
+      "image": [
+        "62",
+        0
+      ],
+      "florence2_model": [
+        "69",
+        0
+      ]
+    },
+    "class_type": "Florence2Run",
+    "_meta": {
+      "title": "Florence2Run"
+    }
+  },
+  "65": {
+    "inputs": {
+      "index": "",
+      "batch": false,
+      "data": [
+        "64",
+        3
+      ]
+    },
+    "class_type": "Florence2toCoordinates",
+    "_meta": {
+      "title": "Florence2 Coordinates"
+    }
+  },
+  "66": {
+    "inputs": {
+      "keep_model_loaded": true,
+      "individual_objects": true,
+      "sam2_model": [
+        "68",
+        0
+      ],
+      "image": [
+        "62",
+        0
+      ],
+      "bboxes": [
+        "65",
+        1
+      ]
+    },
+    "class_type": "Sam2Segmentation",
+    "_meta": {
+      "title": "Sam2Segmentation"
+    }
+  },
+  "67": {
+    "inputs": {
+      "mask_opacity": 0.58,
+      "mask_color": "255, 0, 0",
+      "pass_through": false,
+      "image": [
+        "62",
+        0
+      ],
+      "mask": [
+        "66",
+        0
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "68": {
+    "inputs": {
+      "model": "sam2.1_hiera_base_plus.safetensors",
+      "segmentor": "single_image",
+      "device": "cuda",
+      "precision": "fp16"
+    },
+    "class_type": "DownloadAndLoadSAM2Model",
+    "_meta": {
+      "title": "(Down)Load SAM2Model"
+    }
+  },
+  "69": {
+    "inputs": {
+      "model": "microsoft/Florence-2-large",
+      "precision": "bf16",
+      "attention": "sdpa",
+      "convert_to_safetensors": false
+    },
+    "class_type": "DownloadAndLoadFlorence2Model",
+    "_meta": {
+      "title": "DownloadAndLoadFlorence2Model"
+    }
+  },
+  "70": {
+    "inputs": {
+      "x": 0,
+      "y": 0,
+      "operation": "and",
+      "destination": [
+        "66",
+        0
+      ],
+      "source": [
+        "32",
+        0
+      ]
+    },
+    "class_type": "MaskComposite",
+    "_meta": {
+      "title": "MaskComposite"
+    }
+  },
+  "71": {
+    "inputs": {
+      "mask_opacity": 0.51,
+      "mask_color": "0, 0, 0",
+      "pass_through": false,
+      "image": [
+        "62",
+        0
+      ],
+      "mask": [
+        "115",
+        0
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "78": {
+    "inputs": {
+      "Value_A": [
+        "46",
+        1
+      ],
+      "Value_B": 0
+    },
+    "class_type": "DF_Sum",
+    "_meta": {
+      "title": "Sum"
+    }
+  },
+  "79": {
+    "inputs": {
+      "_float": [
+        "78",
+        0
+      ]
+    },
+    "class_type": "CR Float To Integer",
+    "_meta": {
+      "title": "🔧 CR Float To Integer"
+    }
+  },
+  "82": {
+    "inputs": {
+      "_float": [
+        "46",
+        1
+      ]
+    },
+    "class_type": "CR Float To Integer",
+    "_meta": {
+      "title": "🔧 CR Float To Integer"
+    }
+  },
+  "85": {
+    "inputs": {
+      "radius": 25.3,
+      "masks": [
+        "115",
+        0
+      ]
+    },
+    "class_type": "Mask Gaussian Region",
+    "_meta": {
+      "title": "Mask Gaussian Region"
+    }
+  },
+  "86": {
+    "inputs": {
+      "mask_opacity": 0.51,
+      "mask_color": "255, 0, 0",
+      "pass_through": false,
+      "image": [
+        "62",
+        0
+      ],
+      "mask": [
+        "85",
+        0
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "90": {
+    "inputs": {
+      "video": "/code/ComfyUI/output/AnimateDiff_00003.mp4",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "format": "AnimateDiff"
+    },
+    "class_type": "VHS_LoadVideoPath",
+    "_meta": {
+      "title": "Load Video (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "91": {
+    "inputs": {
+      "start_index": [
+        "82",
+        0
+      ],
+      "num_frames": 1,
+      "images": [
+        "90",
+        0
+      ]
+    },
+    "class_type": "GetImageRangeFromBatch",
+    "_meta": {
+      "title": "Get Image or Mask Range From Batch"
+    }
+  },
+  "93": {
+    "inputs": {
+      "mask": [
+        "66",
+        0
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "Convert Mask to Image"
+    }
+  },
+  "94": {
+    "inputs": {
+      "images": [
+        "93",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "107": {
+    "inputs": {
+      "images": [
+        "91",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "109": {
+    "inputs": {
+      "width": 832,
+      "height": 480,
+      "upscale_method": "nearest-exact",
+      "keep_proportion": false,
+      "divisible_by": 2,
+      "crop": 0,
+      "image": [
+        "125",
+        0
+      ]
+    },
+    "class_type": "ImageResizeKJ",
+    "_meta": {
+      "title": "Resize Image (deprecated)"
+    }
+  },
+  "110": {
+    "inputs": {
+      "shape": "square",
+      "frames": 1,
+      "location_x": 72,
+      "location_y": 378,
+      "grow": 0,
+      "frame_width": 832,
+      "frame_height": 480,
+      "shape_width": 200,
+      "shape_height": 150
+    },
+    "class_type": "CreateShapeMask",
+    "_meta": {
+      "title": "Create Shape Mask"
+    }
+  },
+  "111": {
+    "inputs": {
+      "mask_opacity": 0.51,
+      "mask_color": "0, 0, 0",
+      "pass_through": false,
+      "image": [
+        "62",
+        0
+      ],
+      "mask": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "112": {
+    "inputs": {
+      "x": 0,
+      "y": 0,
+      "operation": "subtract",
+      "destination": [
+        "70",
+        0
+      ],
+      "source": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "MaskComposite",
+    "_meta": {
+      "title": "MaskComposite"
+    }
+  },
+  "113": {
+    "inputs": {
+      "shape": "square",
+      "frames": 1,
+      "location_x": 750,
+      "location_y": 380,
+      "grow": 0,
+      "frame_width": 832,
+      "frame_height": 480,
+      "shape_width": 205,
+      "shape_height": 182
+    },
+    "class_type": "CreateShapeMask",
+    "_meta": {
+      "title": "Create Shape Mask"
+    }
+  },
+  "114": {
+    "inputs": {
+      "mask_opacity": 0.51,
+      "mask_color": "0, 0, 0",
+      "pass_through": false,
+      "image": [
+        "62",
+        0
+      ],
+      "mask": [
+        "113",
+        0
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "115": {
+    "inputs": {
+      "x": 0,
+      "y": 0,
+      "operation": "subtract",
+      "destination": [
+        "112",
+        0
+      ],
+      "source": [
+        "113",
+        0
+      ]
+    },
+    "class_type": "MaskComposite",
+    "_meta": {
+      "title": "MaskComposite"
+    }
+  },
+  "117": {
+    "inputs": {
+      "mode": "single_image",
+      "seed": 250029703686808,
+      "index": [
+        "79",
+        0
+      ],
+      "label": "Batch 001",
+      "path": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6_sdxl_1_upscale_1x",
+      "pattern": "*.png",
+      "allow_RGBA_output": "false",
+      "filename_text_extension": "true"
+    },
+    "class_type": "Load Image Batch",
+    "_meta": {
+      "title": "Load Image Batch"
+    }
+  },
+  "122": {
+    "inputs": {
+      "mode": "single_image",
+      "seed": 590753536462671,
+      "index": [
+        "82",
+        0
+      ],
+      "label": "Batch 001",
+      "path": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6_sdxl_1_wan",
+      "pattern": "*.png",
+      "allow_RGBA_output": "false",
+      "filename_text_extension": "true"
+    },
+    "class_type": "Load Image Batch",
+    "_meta": {
+      "title": "Load Image Batch"
+    }
+  },
+  "123": {
+    "inputs": {
+      "number_type": "integer",
+      "mode": "increment",
+      "start": 0,
+      "stop": 49353,
+      "step": 1
+    },
+    "class_type": "Number Counter",
+    "_meta": {
+      "title": "Number Counter"
+    }
+  },
+  "125": {
+    "inputs": {
+      "image": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6_sdxl_1_part_1/000000001.png"
+    },
+    "class_type": "LoadImageFromPath",
+    "_meta": {
+      "title": "Load wan image"
+    }
+  },
+  "126": {
+    "inputs": {
+      "image": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6_sdxl_1_part_1/000000001.png"
+    },
+    "class_type": "LoadImageFromPath",
+    "_meta": {
+      "title": "Load sdxl image"
+    }
+  },
+  "131": {
+    "inputs": {
+      "filename_prefix": "/code/comfyui_sandbox/video_renders/render_nfs_4screens_6_sdxl_1_wan_mix/",
+      "current_frame": 0,
+      "images": [
+        "35",
+        0
+      ]
+    },
+    "class_type": "Save Image Sequence (mtb)",
+    "_meta": {
+      "title": "Save Image Sequence (mtb)"
+    }
+  }
+}
