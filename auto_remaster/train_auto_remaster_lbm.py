@@ -437,7 +437,8 @@ def main():
     # One scheduler is enough - set_timesteps() in validation doesn't affect training
     noise_scheduler = FlowMatchEulerDiscreteScheduler()
     selected_timesteps_tensor = torch.tensor(
-        [250, 500, 750, 1000], device=accelerator.device
+        # [250, 500, 750, 1000], device=accelerator.device
+        [1000], device=accelerator.device
     ).long()
     # weight_dtype = torch.float16
     weight_dtype = torch.float32

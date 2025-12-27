@@ -2,11 +2,11 @@
 - img2img-turbo
 - LBM
 - VAE(обучить его конкретно под мой датасет)
+- [TwinFlow](https://github.com/inclusionAI/TwinFlow)
 - DDPM
 - flow matching
 - rectified flow
 - DMD2
-- [TwinFlow](https://github.com/inclusionAI/TwinFlow)
 - I2SB: Image-to-Image Schrödinger Bridge
 - Piecewise Rectified Flow
 - LCM
@@ -47,7 +47,7 @@
 - [MegaDepth: Learning Single-View Depth Prediction from Internet Photos](https://openaccess.thecvf.com/content_cvpr_2018/papers/Li_MegaDepth_Learning_Single-View_CVPR_2018_paper.pdf)
 - [NeAR: Coupled Neural Asset–Renderer Stack](https://arxiv.org/pdf/2511.18600)
 - [WHAT MATTERS WHEN REPURPOSING DIFFUSIONMODELS FOR GENERAL DENSE PERCEPTION TASKS?](https://arxiv.org/pdf/2403.06090)
-- []
+- [Diffusion Knows Transparency: Repurposing Video Diffusion for Transparent Object Depth and Normal Estimation](https://github.com/Daniellli/DKT)
 
 ### Best models
 - [SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis](https://arxiv.org/pdf/2307.01952)
@@ -127,3 +127,4 @@
 
 ### Ссылки на датасеты
 - [GenAD: OpenDV Dataset The largest driving video dataset to date, containing more than 1700 hours of real-world driving videos.](https://opendrivelab.com/datasets)
+
