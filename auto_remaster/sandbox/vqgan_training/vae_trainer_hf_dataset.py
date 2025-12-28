@@ -35,9 +35,6 @@ class GradNormFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         weight = ctx.saved_tensors[0]
 
-        # grad_output_norm = torch.linalg.vector_norm(
-        #     grad_output, dim=list(range(1, len(grad_output.shape))), keepdim=True
-        # ).mean()
         grad_output_norm = torch.norm(grad_output).mean().item()
         # nccl over all nodes
         grad_output_norm = avg_scalar_over_nodes(
@@ -142,7 +139,11 @@ def create_dataloader(
     dataset_name, batch_size, num_workers, do_shuffle=True, just_resize=False
 ):
     # Load the dataset from HuggingFace
-    dataset = load_dataset(dataset_name, split="train")
+    dataset = load_dataset(
+        dataset_name,
+        split="train",
+        cache_dir="/code/dataset/" + dataset_name.split("/")[1],
+    )
 
     # Use the custom wrapper to flatten input_image and edited_image
     transform_func = (
@@ -204,8 +205,9 @@ def blurriness_heatmap(input_image):
     return blurriness_map.repeat(1, 3, 1, 1)
 
 
-def vae_loss_function(x, x_reconstructed, z, do_pool=True, do_recon=False):
+def vae_loss_function(x, x_reconstructed, encoder_latent, do_pool=True, do_recon=False):
     # downsample images by factor of 8
+    # всегда False, значит эта ветка не работает
     if do_recon:
         if do_pool:
             x_reconstructed_down = F.interpolate(
@@ -227,19 +229,21 @@ def vae_loss_function(x, x_reconstructed, z, do_pool=True, do_recon=False):
         recon_loss = 0
         recon_loss_item = 0
 
-    elewise_mean_loss = z.pow(2)
+    elewise_mean_loss = encoder_latent.pow(2)
     zloss = elewise_mean_loss.mean()
 
     with torch.no_grad():
         actual_mean_loss = elewise_mean_loss.mean()
         actual_ks_loss = actual_mean_loss.mean()
-
+    # такой трюк когда мы возводим латенты в степень, а затем придаем им большой вес
+    # лишь говорят о том чтобы латенты держались близко около 0, по абсолютному значению мы не
+    # хотим чтобы они улетали слишком далеко
     vae_loss = recon_loss * 0.0 + zloss * 0.1
     return vae_loss, {
         "recon_loss": recon_loss_item,
         "kl_loss": actual_ks_loss.item(),
-        "average_of_abs_z": z.abs().mean().item(),
-        "std_of_abs_z": z.abs().std().item(),
+        "average_of_abs_z": encoder_latent.abs().mean().item(),
+        "std_of_abs_z": encoder_latent.abs().std().item(),
         "average_of_logvar": 0.0,
         "std_of_logvar": 0.0,
     }
@@ -430,7 +434,6 @@ def train_ddp(
     if master_process:
         wandb.init(
             project=project_name,
-            # entity="simo",
             name=run_name,
             config={
                 "learning_rate_vae": learning_rate_vae,
@@ -521,20 +524,28 @@ def train_ddp(
     lpips = LPIPS().cuda()
 
     dataloader = create_dataloader(
-        dataset_name, batch_size, num_workers=4, do_shuffle=True
+        dataset_name,
+        batch_size,
+        num_workers=4,
+        do_shuffle=True,
     )
 
     # Create test dataloader with 30 random images from train
     # We load the dataset again (it's cached) and select 30 random samples
     # Since FlattenedDataset yields 2 images per sample, we select 15 samples to get 30 images
-    test_dataset_full = load_dataset(dataset_name, split="train")
+    test_dataset_full = load_dataset(
+        dataset_name,
+        split="train",
+        cache_dir="/code/dataset/" + dataset_name.split("/")[1],
+    )
     test_dataset_subset = (
         test_dataset_full.shuffle(seed=42)
         .select(range(0, len(test_dataset_full), 20))
         .select(range(32))
     )
     test_flattened_dataset = FlattenedDataset(
-        test_dataset_subset, transform=this_transform
+        test_dataset_subset,
+        transform=this_transform,
     )
 
     test_dataloader = DataLoader(
@@ -544,7 +555,7 @@ def train_ddp(
         num_workers=4,
         pin_memory=True,
     )
-
+    # 100000
     num_training_steps = max_steps
     num_warmup_steps = 200
     lr_scheduler = get_cosine_schedule_with_warmup(
@@ -591,17 +602,24 @@ def train_ddp(
             # resize real image to 256
             real_images_hr = real_images_hr.to(device)
             real_images_for_enc = F.interpolate(
-                real_images_hr, size=(256, 256), mode="area"
+                real_images_hr,
+                size=(256, 256),
+                mode="area",
             )
+            # С вероятностью 50% мы зеркалим картинку по горизонтали.
+            # Делаем это для измененных и оригинальных картинок
             if random.random() < 0.5:
                 real_images_for_enc = torch.flip(real_images_for_enc, [-1])
                 real_images_hr = torch.flip(real_images_hr, [-1])
 
-            z = vae.module.encoder(real_images_for_enc)
+            encoder_latent = vae.module.encoder(real_images_for_enc)
 
             # z distribution
             with ctx:
-                z_dist_value: torch.Tensor = z.detach().cpu().reshape(-1)
+                # сохраняем латент энкодера для дебага
+                # чтобы отслеживать Posterior Collapse
+                # подробнее что это тут https://youtu.be/oHtqlRIsXcQ?si=3t9SGw1kbmxo5HFV Michał Jamroż: Posterior Collapse in Deep Generative models
+                z_dist_value: torch.Tensor = encoder_latent.detach().cpu().reshape(-1)
 
             def kurtosis(x):
                 return ((x - x.mean()) ** 4).mean() / (x.std() ** 4)
@@ -609,6 +627,9 @@ def train_ddp(
             def skew(x):
                 return ((x - x.mean()) ** 3).mean() / (x.std() ** 3)
 
+            # Автор считает квантили (0%, 20%... 100%), асимметрию (skew) и эксцесс (kurtosis).
+            # Если std (стандартное отклонение) падает в 0 — модель умерла. Если max улетает в небеса —
+            # модель взрывается. Это нужно для красивых графиков в WandB, чтобы вовремя заметить проблему.
             z_quantiles = {
                 "0.0": z_dist_value.quantile(0.0),
                 "0.2": z_dist_value.quantile(0.2),
@@ -621,31 +642,43 @@ def train_ddp(
             }
 
             if do_clamp:
-                z = z.clamp(-clamp_th, clamp_th)
-            z_s = vae.module.reg(z)
+                # default=8.0, help="Clamp threshold for the latent codes"
+                # режем коды, чтобы они не улетали в бесконечность, на этапе моделирования диффузионной моделью
+                # такое будет сложно моделировать
+                encoder_latent = encoder_latent.clamp(-clamp_th, clamp_th)
+            # в данном коде ничего не делает, это тот же самый латент,
+            # reg детерминирован
+            encoder_latent_s = vae.module.reg(encoder_latent)
 
             #### do aug
 
+            # не очень понятно почему мы флипаем именно так данные латенты
+            # к латентам от vae стоит относится как к сильно сжатым оригинальным картнкам
+            # так что возможно мы реверсим какие-то специальные каналы
+            # по умолчанию False
             if random.random() < 0.5 and flip_invariance:
-                z_s = torch.flip(z_s, [-1])
-                z_s[:, -4:-2] = -z_s[:, -4:-2]
+                encoder_latent_s = torch.flip(encoder_latent_s, [-1])
+                encoder_latent_s[:, -4:-2] = -encoder_latent_s[:, -4:-2]
                 real_images_hr = torch.flip(real_images_hr, [-1])
 
             if random.random() < 0.5 and flip_invariance:
-                z_s = torch.flip(z_s, [-2])
-                z_s[:, -2:] = -z_s[:, -2:]
+                encoder_latent_s = torch.flip(encoder_latent_s, [-2])
+                encoder_latent_s[:, -2:] = -encoder_latent_s[:, -2:]
                 real_images_hr = torch.flip(real_images_hr, [-2])
 
+            # по умолчанию False
             if random.random() < 0.5 and crop_invariance:
                 # crop image and latent.'
 
                 # new_z_h, new_z_w, offset_z_h, offset_z_w
-                z_h, z_w = z.shape[-2:]
+                z_h, z_w = encoder_latent.shape[-2:]
                 new_z_h = random.randint(12, z_h - 1)
                 new_z_w = random.randint(12, z_w - 1)
                 offset_z_h = random.randint(0, z_h - new_z_h - 1)
                 offset_z_w = random.randint(0, z_w - new_z_w - 1)
 
+                # default downscale_factor=16
+                # decoder_also_perform_hr=True
                 new_h = (
                     new_z_h * downscale_factor * 2
                     if decoder_also_perform_hr
@@ -666,11 +699,11 @@ def train_ddp(
                     if decoder_also_perform_hr
                     else offset_z_w * downscale_factor
                 )
-
+                # рандомно кропаем латенты и изображения во время обучения
                 real_images_hr = real_images_hr[
                     :, :, offset_h : offset_h + new_h, offset_w : offset_w + new_w
                 ]
-                z_s = z_s[
+                encoder_latent_s = encoder_latent_s[
                     :,
                     :,
                     offset_z_h : offset_z_h + new_z_h,
@@ -679,25 +712,39 @@ def train_ddp(
 
                 assert real_images_hr.shape[-2] == new_h
                 assert real_images_hr.shape[-1] == new_w
-                assert z_s.shape[-2] == new_z_h
-                assert z_s.shape[-1] == new_z_w
+                assert encoder_latent_s.shape[-2] == new_z_h
+                assert encoder_latent_s.shape[-1] == new_z_w
 
             with ctx:
-                reconstructed = vae.module.decoder(z_s)
+                dec_reconstructed = vae.module.decoder(encoder_latent_s)
 
             if global_step >= max_steps:
                 break
 
+            # default True
             if do_ganloss:
+                # получаем предсказание для реальных
                 real_preds = discriminator(real_images_hr)
-                fake_preds = discriminator(reconstructed.detach())
+                # предсказание для декодированных
+                # открепляем, чтобы при обучении дискриминатора не обучался сам
+                # декодер
+                fake_preds = discriminator(dec_reconstructed.detach())
+                # disc_type=BCE по умолчанию
+                # Дискриминатор штрафуют, если он говорит, что реальная картинка — фейк,
+                # или фейковая — реал.
                 d_loss, avg_real_logits, avg_fake_logits, disc_acc = gan_disc_loss(
                     real_preds, fake_preds, disc_type
                 )
-
+                # усредняем предсказания среди всех нод
                 avg_real_logits = avg_scalar_over_nodes(avg_real_logits, device)
                 avg_fake_logits = avg_scalar_over_nodes(avg_fake_logits, device)
 
+                # Regularizing Generative Adversarial Networks under Limited Data https://arxiv.org/pdf/2104.03310
+                # это техника не дает дискриминатору «зазнаваться» и выдавать слишком уверенные ответы
+                # Что это: Это Экспоненциальное Скользящее Среднее (EMA).
+                # Зачем: Мы запоминаем, какое среднее значение дискриминатор обычно выдает для реальных и фейковых
+                # картинок на протяжении всего обучения. Это создает стабильные «якоря» или ориентиры.
+                # тоже самое для фейков
                 lecam_anchor_real_logits = (
                     lecam_beta * lecam_anchor_real_logits
                     + (1 - lecam_beta) * avg_real_logits
@@ -708,21 +755,26 @@ def train_ddp(
                 )
                 total_d_loss = d_loss.mean()
                 d_loss_item = total_d_loss.item()
+                # по умолчанию True
                 if use_lecam:
                     # penalize the real logits to fake and fake logits to real.
                     lecam_loss = (real_preds - lecam_anchor_fake_logits).pow(
                         2
                     ).mean() + (fake_preds - lecam_anchor_real_logits).pow(2).mean()
                     lecam_loss_item = lecam_loss.item()
+                    # lecam_loss_weight=0.1
                     total_d_loss = total_d_loss + lecam_loss * lecam_loss_weight
 
                 optimizer_D.zero_grad()
+                # сохраняем градиенты, если real_preds будут использоваться дальше
+                # так как после вызова backward весь граф уничтожается
                 total_d_loss.backward(retain_graph=True)
                 optimizer_D.step()
 
             # unnormalize the images, and perceptual loss
-            _recon_for_perceptual = gradnorm(reconstructed)
+            _recon_for_perceptual = gradnorm(dec_reconstructed)
 
+            # по умолчанию False
             if augment_before_perceptual_loss:
                 real_images_hr_aug = real_images_hr.clone()
                 if random.random() < 0.5:
@@ -735,25 +787,35 @@ def train_ddp(
             else:
                 real_images_hr_aug = real_images_hr
 
+            # Мы не хотим попиксельного совпадения (это дает мыло). Мы хотим, чтобы нейросеть VGG (внутри LPIPS)
+            # "видела" на обеих картинках одинаковые объекты и текстуры.
             percep_rec_loss = lpips(_recon_for_perceptual, real_images_hr_aug).mean()
 
             # mse, vae loss.
-            recon_for_mse = gradnorm(reconstructed, weight=0.001)
-            vae_loss, loss_data = vae_loss_function(real_images_hr, recon_for_mse, z)
+            recon_for_mse = gradnorm(dec_reconstructed, weight=0.001)
+            # ничего не делаем, кроме того что заставляем латенты быть близко к 0 по абслютному значению
+            vae_loss, loss_data = vae_loss_function(
+                real_images_hr, recon_for_mse, encoder_latent
+            )
             # gan loss
             if do_ganloss and global_step >= 0:
-                recon_for_gan = gradnorm(reconstructed, weight=1.0)
+                # нормализуем реконструкцию с обучаемого декодера
+                recon_for_gan = gradnorm(dec_reconstructed, weight=1.0)
+                # пропускаем нормализованную через дискриминатор
                 fake_preds = discriminator(recon_for_gan)
                 real_preds_const = real_preds.clone().detach()
                 # loss where (real > fake + 0.01)
                 # g_gan_loss = (real_preds_const - fake_preds - 0.1).relu().mean()
+                # по умолчанию данная ветка
                 if disc_type == "bce":
+                    # заставляем предсказывать только для фейковых
                     g_gan_loss = nn.functional.binary_cross_entropy_with_logits(
                         fake_preds, torch.ones_like(fake_preds)
                     )
-                elif disc_type == "hinge":
-                    g_gan_loss = -fake_preds.mean()
-
+                # elif disc_type == "hinge":
+                #     g_gan_loss = -fake_preds.mean()
+                # соединяем лосс с LPIPS, с дискриминатора и просто возведение в степень латентов
+                # для регуляризации
                 overall_vae_loss = percep_rec_loss + g_gan_loss + vae_loss
                 g_gan_loss = g_gan_loss.item()
             else:
@@ -765,6 +827,7 @@ def train_ddp(
             optimizer_G.zero_grad()
             lr_scheduler.step()
 
+            # по умолчанию True
             if do_ganloss:
 
                 optimizer_D.zero_grad()
@@ -882,12 +945,12 @@ def train_ddp(
                             test_images_ori, size=(256, 256), mode="area"
                         )
                         with ctx:
-                            z = vae.module.encoder(test_images)
+                            encoder_latent = vae.module.encoder(test_images)
 
                         if do_clamp:
-                            z = z.clamp(-clamp_th, clamp_th)
+                            encoder_latent = encoder_latent.clamp(-clamp_th, clamp_th)
 
-                        z_s = vae.module.reg(z)
+                        encoder_latent_s = vae.module.reg(encoder_latent)
 
                         # [1, 2]
                         # [3, 4]
@@ -898,11 +961,11 @@ def train_ddp(
                         # [4, 3]
                         # [2, 1]
                         if flip_invariance:
-                            z_s = torch.flip(z_s, [-1, -2])
-                            z_s[:, -4:] = -z_s[:, -4:]
+                            encoder_latent_s = torch.flip(encoder_latent_s, [-1, -2])
+                            encoder_latent_s[:, -4:] = -encoder_latent_s[:, -4:]
 
                         with ctx:
-                            reconstructed_test = vae.module.decoder(z_s)
+                            reconstructed_test = vae.module.decoder(encoder_latent_s)
 
                         # unnormalize the images
                         test_images_ori = test_images_ori * 0.5 + 0.5

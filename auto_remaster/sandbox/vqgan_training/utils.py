@@ -5,6 +5,7 @@ import torch.nn as nn
 from torchvision import models
 import os
 
+
 class LPIPS(nn.Module):
     # Learned perceptual metric
     def __init__(self, use_dropout=True):
