@@ -148,7 +148,11 @@ class Seraena(nn.Module):
             # они встанут в нужное место
             in_ims = fake_mask * fake_shuf + ~fake_mask * real
             in_ctxs = fake_mask * fake_shuf_ctx + ~fake_mask * pretrained_latents
+            # получаем фичи и предсказание с дискриминатора
             scores = self.disc(in_ims, in_ctxs)
+            # переводим таргеты в диапазон от -1 до 1
+            # так как у нас нет сигмоиды, которая вызывает нестабильность при обучении, тут мы используем 
+            # MSE loss, который как показано в работе работает более стабильно https://arxiv.org/pdf/1611.04076
             targets = fake_mask.float().mul(2).sub(1).expand(scores.shape)
             loss = F.mse_loss(scores, targets)
         self.opt.zero_grad()
