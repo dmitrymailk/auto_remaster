@@ -1,7 +1,7 @@
 """This file contains code for LPIPS.
 
 This file may have been modified by Bytedance Ltd. and/or its affiliates (“Bytedance's Modifications”).
-All Bytedance's Modifications are Copyright (year) Bytedance Ltd. and/or its affiliates. 
+All Bytedance's Modifications are Copyright (year) Bytedance Ltd. and/or its affiliates.
 
 Reference:
     https://github.com/richzhang/PerceptualSimilarity/
@@ -23,17 +23,11 @@ from tqdm import tqdm
 _LPIPS_MEAN = [-0.030, -0.088, -0.188]
 _LPIPS_STD = [0.458, 0.448, 0.450]
 
-URL_MAP = {
-    "vgg_lpips": "https://heibox.uni-heidelberg.de/f/607503859c864bc1b30b/?dl=1"
-}
+URL_MAP = {"vgg_lpips": "https://heibox.uni-heidelberg.de/f/607503859c864bc1b30b/?dl=1"}
 
-CKPT_MAP = {
-    "vgg_lpips": "vgg.pth"
-}
+CKPT_MAP = {"vgg_lpips": "vgg.pth"}
 
-MD5_MAP = {
-    "vgg_lpips": "d507d7349b931f0638a25a48a722f98a"
-}
+MD5_MAP = {"vgg_lpips": "d507d7349b931f0638a25a48a722f98a"}
 
 
 def download(url, local_path, chunk_size=1024):
@@ -82,9 +76,13 @@ class LPIPS(nn.Module):
             param.requires_grad = False
 
     def load_pretrained(self):
-        workspace = os.environ.get('WORKSPACE', '')
-        VGG_PATH = get_ckpt_path("vgg_lpips", os.path.join(workspace, "pretrained/lpips"), check=True)
-        self.load_state_dict(torch.load(VGG_PATH, map_location=torch.device("cpu")), strict=False)
+        workspace = os.environ.get("WORKSPACE", "")
+        VGG_PATH = get_ckpt_path(
+            "vgg_lpips", os.path.join(workspace, "pretrained/lpips"), check=True
+        )
+        self.load_state_dict(
+            torch.load(VGG_PATH, map_location=torch.device("cpu")), strict=False
+        )
 
     def forward(self, input, target):
         # Notably, the LPIPS w/ pre-trained weights expect the input in the range of [-1, 1].
@@ -96,10 +94,15 @@ class LPIPS(nn.Module):
         feats0, feats1, diffs = {}, {}, {}
         lins = [self.lin0, self.lin1, self.lin2, self.lin3, self.lin4]
         for kk in range(len(self.chns)):
-            feats0[kk], feats1[kk] = normalize_tensor(outs0[kk]), normalize_tensor(outs1[kk])
+            feats0[kk], feats1[kk] = normalize_tensor(outs0[kk]), normalize_tensor(
+                outs1[kk]
+            )
             diffs[kk] = (feats0[kk] - feats1[kk]) ** 2
 
-        res = [spatial_average(lins[kk].model(diffs[kk]), keepdim=True) for kk in range(len(self.chns))]
+        res = [
+            spatial_average(lins[kk].model(diffs[kk]), keepdim=True)
+            for kk in range(len(self.chns))
+        ]
         val = res[0]
         for l in range(1, len(self.chns)):
             val += res[l]
@@ -137,7 +140,9 @@ class NetLinLayer(nn.Module):
 class vgg16(torch.nn.Module):
     def __init__(self, requires_grad=False, pretrained=True):
         super(vgg16, self).__init__()
-        vgg_pretrained_features = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features
+        vgg_pretrained_features = models.vgg16(
+            weights=models.VGG16_Weights.IMAGENET1K_V1
+        ).features
         self.slice1 = torch.nn.Sequential()
         self.slice2 = torch.nn.Sequential()
         self.slice3 = torch.nn.Sequential()
@@ -169,7 +174,9 @@ class vgg16(torch.nn.Module):
         h_relu4_3 = h
         h = self.slice5(h)
         h_relu5_3 = h
-        vgg_outputs = namedtuple("VggOutputs", ["relu1_2", "relu2_2", "relu3_3", "relu4_3", "relu5_3"])
+        vgg_outputs = namedtuple(
+            "VggOutputs", ["relu1_2", "relu2_2", "relu3_3", "relu4_3", "relu5_3"]
+        )
         out = vgg_outputs(h_relu1_2, h_relu2_2, h_relu3_3, h_relu4_3, h_relu5_3)
         return out
 

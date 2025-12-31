@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 from omegaconf import OmegaConf
 import wandb
 
-from .dataset import CustomINH5Dataset
+from dataset import CustomINH5Dataset
 from loss.losses import ReconstructionLoss_Single_Stage
 from models.autoencoder import vae_models
 from models.sit import SiT_models, SiT
