@@ -1,21 +1,28 @@
 ### Порядок перебора методов для image2image
 - img2img-turbo
 - LBM
-- VAE(обучить его конкретно под мой датасет)
+- vqgan-training
+- seraena
+- REPA-E
 - [TwinFlow](https://github.com/inclusionAI/TwinFlow)
+- DMD2
+- [rCM](https://github.com/NVlabs/rcm)
 - DDPM
 - flow matching
 - rectified flow
-- DMD2
 - I2SB: Image-to-Image Schrödinger Bridge
 - Piecewise Rectified Flow
 - LCM
+- The GAN is dead
+- GigaGAN
 - control net(обучение на синтетически сглаженных датасетах, затем перегенерация и снова сглаживание)
 - [DREAM](https://github.com/jinxinzhou/dream)
 - [Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556)
 - RMT-diffusion?
 
 ### Базовые методы которые стоит попробовать 
+- сделать лосс для нижней половины экрана более высоким чем для остальной картинки
+- учиться на кропах в высоком разрешении, а не только на всей картинке сразу
 - аугментация через сдвиг, поворот и кроп
 - EMA
 - обучение на 8 шагов, затем дистиляция
@@ -39,6 +46,10 @@
 - [Genie 3: A new frontier for world models](https://deepmind.google/blog/genie-3-a-new-frontier-for-world-models/)
 - https://research.google/blog/mobilediffusion-rapid-text-to-image-generation-on-device/
 
+
+### Лоссы для текстуры
+- LPIPS
+- Focal Frequency Loss
 
 ### Neural rendering
 - [DIFFUSIONRENDERER: Neural Inverse and Forward Rendering with Video Diffusion Models](https://arxiv.org/pdf/2501.18590)
@@ -70,6 +81,7 @@
 
 ### GANs
 - [The GAN is dead; long live the GAN! A Modern Baseline GAN](https://arxiv.org/pdf/2501.05441)
+- [Implementation of GigaGAN, new SOTA GAN out of Adobe.](https://github.com/lucidrains/gigagan-pytorch)
 
 ### Fast vae
 - [Tiny AutoEncoder for Stable Diffusion](https://github.com/madebyollin/taesd)
