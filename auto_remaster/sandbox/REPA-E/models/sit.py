@@ -21,6 +21,7 @@ def mean_flat(x):
 
 
 def build_mlp(hidden_size, projector_dim, z_dim):
+    # hidden_size=1152, projector_dim=2048,z_dim=768
     return nn.Sequential(
         nn.Linear(hidden_size, projector_dim),
         nn.SiLU(),
@@ -243,6 +244,7 @@ class SiT(nn.Module):
             ]
         )
         self.projectors = nn.ModuleList(
+            # hidden_size=1152, projector_dim=2048,z_dim=768
             [build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims]
         )
         self.final_layer = FinalLayer(
@@ -394,6 +396,7 @@ class SiT(nn.Module):
         )
 
         model_input = alpha_t * normalized_x + sigma_t * noises
+        # по умолчанию
         if loss_kwargs["prediction"] == "v":
             model_target = d_alpha_t * normalized_x + d_sigma_t * noises
         else:
@@ -418,6 +421,8 @@ class SiT(nn.Module):
                     projector(image_latents.reshape(-1, D)).reshape(N, T, -1)
                     for projector in self.projectors
                 ]
+                # так как у нас всего один проджектор, то это просто трансляция из размерности
+                # диффузионной модели, в размерность dinov2 энкодера
                 # NOTE: add a shortcut for feature extraction
                 if loss_kwargs["align_only"]:
                     break
@@ -448,6 +453,18 @@ class SiT(nn.Module):
                 proj_loss += mean_flat(
                     -(dino_feature_j * dino_feature_projection_j).sum(dim=-1)
                 )
+        
+        """
+        не до конца уверен но кажется данный цикл можно сделать гораздо эффективнее
+        использовав встроенную функцию. у меня нет ресурсов проверить оригинальную статью, но 
+        кажется что это чудовищно неоптимально
+        
+        sim = F.cosine_similarity(dino_feature, dino_feature_projection, dim=-1)
+        # Нам нужно минимизировать ОТРИЦАТЕЛЬНОЕ сходство (чтобы максимизировать положительное).
+        # Мы просто берем среднее по всем элементам батча и всем токенам.
+        proj_loss += -sim.mean()
+        """        
+        
         proj_loss /= len(dino_features) * bsz
 
         return {

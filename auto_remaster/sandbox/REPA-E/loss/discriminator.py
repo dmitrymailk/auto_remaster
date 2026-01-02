@@ -119,6 +119,7 @@ class NLayerDiscriminator(nn.Module):
             norm_layer      -- normalization layer
         """
         super(NLayerDiscriminator, self).__init__()
+        # по умолчанию всегда используется батчнорм из торча
         if not use_actnorm:
             norm_layer = nn.BatchNorm2d
         else:

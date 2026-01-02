@@ -35,24 +35,30 @@ CLIP_DEFAULT_STD = (0.26862954, 0.26130258, 0.27577711)
 
 def preprocess_raw_image(x, enc_type):
     resolution = x.shape[-1]
-    if 'clip' in enc_type:
-        x = x / 255.
-        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+    if "clip" in enc_type:
+        x = x / 255.0
+        x = torch.nn.functional.interpolate(
+            x, 224 * (resolution // 256), mode="bicubic"
+        )
         x = Normalize(CLIP_DEFAULT_MEAN, CLIP_DEFAULT_STD)(x)
-    elif 'mocov3' in enc_type or 'mae' in enc_type:
-        x = x / 255.
+    elif "mocov3" in enc_type or "mae" in enc_type:
+        x = x / 255.0
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-    elif 'dinov2' in enc_type:
-        x = x / 255.
+    elif "dinov2" in enc_type:
+        x = x / 255.0
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
-    elif 'dinov1' in enc_type:
-        x = x / 255.
+        x = torch.nn.functional.interpolate(
+            x, 224 * (resolution // 256), mode="bicubic"
+        )
+    elif "dinov1" in enc_type:
+        x = x / 255.0
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-    elif 'jepa' in enc_type:
-        x = x / 255.
+    elif "jepa" in enc_type:
+        x = x / 255.0
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+        x = torch.nn.functional.interpolate(
+            x, 224 * (resolution // 256), mode="bicubic"
+        )
 
     return x
 
@@ -60,16 +66,23 @@ def preprocess_raw_image(x, enc_type):
 def array2grid(x):
     nrow = round(math.sqrt(x.size(0)))
     x = make_grid(x.clamp(0, 1), nrow=nrow, value_range=(0, 1))
-    x = x.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
+    x = (
+        x.mul(255)
+        .add_(0.5)
+        .clamp_(0, 255)
+        .permute(1, 2, 0)
+        .to("cpu", torch.uint8)
+        .numpy()
+    )
     return x
 
 
 @torch.no_grad()
-def sample_posterior(moments, latents_scale=1., latents_bias=0.):
+def sample_posterior(moments, latents_scale=1.0, latents_bias=0.0):
     mean, std = torch.chunk(moments, 2, dim=1)
     z = mean + std * torch.randn_like(mean)
-    z = (z - latents_bias) * latents_scale # normalize
-    return z 
+    z = (z - latents_bias) * latents_scale  # normalize
+    return z
 
 
 @torch.no_grad()
@@ -91,7 +104,10 @@ def update_ema(ema_model, model, decay=0.9999):
 
     for name, buffer in model_buffers.items():
         name = name.replace("module.", "")
-        if buffer.dtype in (torch.float32, torch.float64):  # Apply EMA only to float buffers
+        if buffer.dtype in (
+            torch.float32,
+            torch.float64,
+        ):  # Apply EMA only to float buffers
             ema_buffers[name].mul_(decay).add_(buffer.data, alpha=1 - decay)
         else:
             ema_buffers[name].copy_(buffer)  # Direct copy for non-float buffers
@@ -103,9 +119,12 @@ def create_logger(logging_dir):
     """
     logging.basicConfig(
         level=logging.INFO,
-        format='[\033[34m%(asctime)s\033[0m] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        format="[\033[34m%(asctime)s\033[0m] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(f"{logging_dir}/log.txt"),
+        ],
     )
     logger = logging.getLogger(__name__)
     return logger
@@ -123,7 +142,8 @@ def requires_grad(model, flag=True):
 #                                  Training Loop                                #
 #################################################################################
 
-def main(args):    
+
+def main(args):
     # set accelerator
     logging_dir = Path(args.output_dir, args.logging_dir)
     accelerator_project_config = ProjectConfiguration(
@@ -139,13 +159,15 @@ def main(args):
 
     # set up the logger and checkpoint dirs
     if accelerator.is_main_process:
-        os.makedirs(args.output_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
+        os.makedirs(
+            args.output_dir, exist_ok=True
+        )  # Make results folder (holds all experiment subfolders)
         save_dir = os.path.join(args.output_dir, args.exp_name)
         os.makedirs(save_dir, exist_ok=True)
         args_dict = vars(args)
         # Save to a JSON file
         json_dir = os.path.join(save_dir, "args.json")
-        with open(json_dir, 'w') as f:
+        with open(json_dir, "w") as f:
             json.dump(args_dict, f, indent=4)
         checkpoint_dir = f"{save_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -153,17 +175,21 @@ def main(args):
         logger.info(f"Experiment directory created at {save_dir}")
     device = accelerator.device
     if torch.backends.mps.is_available():
-        accelerator.native_amp = False    
+        accelerator.native_amp = False
     if args.seed is not None:
         set_seed(args.seed + accelerator.process_index)
 
     # Create model:
     if args.vae == "f8d4":
-        assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
+        assert (
+            args.resolution % 8 == 0
+        ), "Image size must be divisible by 8 (for the VAE encoder)."
         latent_size = args.resolution // 8
         in_channels = 4
     elif args.vae == "f16d32":
-        assert args.resolution % 16 == 0, "Image size must be divisible by 16 (for the VAE encoder)."
+        assert (
+            args.resolution % 16 == 0
+        ), "Image size must be divisible by 16 (for the VAE encoder)."
         latent_size = args.resolution // 16
         in_channels = 32
     else:
@@ -175,7 +201,9 @@ def main(args):
         )
     else:
         raise NotImplementedError()
-    z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
+    z_dims = (
+        [encoder.embed_dim for encoder in encoders] if args.enc_type != "None" else [0]
+    )
 
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
     model = SiT_models[args.model](
@@ -185,12 +213,14 @@ def main(args):
         class_dropout_prob=args.cfg_prob,
         z_dims=z_dims,
         encoder_depth=args.encoder_depth,
-        **block_kwargs
+        **block_kwargs,
     )
 
     # make a copy of the model for EMA
     model = model.to(device)
-    ema = copy.deepcopy(model).to(device)  # Create an EMA of the model for use after training
+    ema = copy.deepcopy(model).to(
+        device
+    )  # Create an EMA of the model for use after training
 
     # Load the VAE latents-stats, also squeeze all singleton dimensions
     latents_stats = torch.load(args.vae_ckpt.replace(".pt", "-latents-stats.pt"))
@@ -226,7 +256,9 @@ def main(args):
     )
 
     # Setup data:
-    train_dataset = CustomH5Dataset(data_dir=args.data_dir, vae_latents_name=args.vae_latents_name)
+    train_dataset = CustomH5Dataset(
+        data_dir=args.data_dir, vae_latents_name=args.vae_latents_name
+    )
     local_batch_size = int(args.batch_size // accelerator.num_processes)
     train_dataloader = DataLoader(
         train_dataset,
@@ -234,7 +266,7 @@ def main(args):
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
     )
     if accelerator.is_main_process:
         logger.info(f"Dataset contains {len(train_dataset):,} images ({args.data_dir})")
@@ -248,17 +280,17 @@ def main(args):
     # resume:
     global_step = 0
     if args.resume_step > 0:
-        ckpt_name = str(args.resume_step).zfill(7) +'.pt'
-        ckpt_path = f'{args.continue_train_exp_dir}/checkpoints/{ckpt_name}'
+        ckpt_name = str(args.resume_step).zfill(7) + ".pt"
+        ckpt_path = f"{args.continue_train_exp_dir}/checkpoints/{ckpt_name}"
         # If the checkpoint exists, we load the checkpoint and resume the training
         ckpt = torch.load(
             ckpt_path,
-            map_location='cpu',
+            map_location="cpu",
         )
-        model.load_state_dict(ckpt['model'])
-        ema.load_state_dict(ckpt['ema'])
-        optimizer.load_state_dict(ckpt['opt'])
-        global_step = ckpt['steps']
+        model.load_state_dict(ckpt["model"])
+        ema.load_state_dict(ckpt["ema"])
+        optimizer.load_state_dict(ckpt["opt"])
+        global_step = ckpt["steps"]
 
     # Allow larger cache size for DYNAMo compilation
     torch._dynamo.config.cache_size_limit = 64
@@ -277,9 +309,7 @@ def main(args):
         accelerator.init_trackers(
             project_name="gradient-pass-through",
             config=tracker_config,
-            init_kwargs={
-                "wandb": {"name": f"{args.exp_name}"}
-            },
+            init_kwargs={"wandb": {"name": f"{args.exp_name}"}},
         )
 
     progress_bar = tqdm(
@@ -308,11 +338,15 @@ def main(args):
             with torch.no_grad():
                 zs = []
                 with accelerator.autocast():
-                    for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+                    for encoder, encoder_type, arch in zip(
+                        encoders, encoder_types, architectures
+                    ):
                         raw_image_ = preprocess_raw_image(raw_image, encoder_type)
                         z = encoder.forward_features(raw_image_)
-                        if 'mocov3' in encoder_type: z = z = z[:, 1:] 
-                        if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+                        if "mocov3" in encoder_type:
+                            z = z = z[:, 1:]
+                        if "dinov2" in encoder_type:
+                            z = z["x_norm_patchtokens"]
                         zs.append(z)
 
             with accelerator.accumulate(model), accelerator.autocast():
@@ -321,7 +355,7 @@ def main(args):
                 accelerator.unwrap_model(model).bn.eval()
 
                 # 1. Sample the posterior from the latents distribution, normalization handled by BN of the model
-                sampled_posterior = sample_posterior(latents, 1., 0.)
+                sampled_posterior = sample_posterior(latents, 1.0, 0.0)
 
                 # 2. Forward pass: SiT
                 loss_kwargs = dict(
@@ -338,17 +372,25 @@ def main(args):
                 )
 
                 # 3. Compute diffusion loss and REPA alignment loss, backpropagate the SiT loss, and update the model
-                sit_loss = sit_outputs["denoising_loss"].mean() + args.proj_coeff * sit_outputs["proj_loss"].mean()
+                sit_loss = (
+                    sit_outputs["denoising_loss"].mean()
+                    + args.proj_coeff * sit_outputs["proj_loss"].mean()
+                )
                 accelerator.backward(sit_loss)
                 if accelerator.sync_gradients:
-                    grad_norm_sit = accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    grad_norm_sit = accelerator.clip_grad_norm_(
+                        model.parameters(), args.max_grad_norm
+                    )
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
                 # 4. Update EMA
                 if accelerator.sync_gradients:
                     unwrapped_model = accelerator.unwrap_model(model)
-                    update_ema(ema, unwrapped_model._orig_mod if args.compile else unwrapped_model)
+                    update_ema(
+                        ema,
+                        unwrapped_model._orig_mod if args.compile else unwrapped_model,
+                    )
 
             ### enter
             if accelerator.sync_gradients:
@@ -357,10 +399,19 @@ def main(args):
 
                 # Prepare the logs based on the current step
                 logs = {
-                    "sit_loss": accelerator.gather(sit_loss).mean().detach().item(), 
-                    "denoising_loss": accelerator.gather(sit_outputs["denoising_loss"]).mean().detach().item(),
-                    "proj_loss": accelerator.gather(sit_outputs["proj_loss"]).mean().detach().item(),
-                    "grad_norm_sit": accelerator.gather(grad_norm_sit).mean().detach().item(),
+                    "sit_loss": accelerator.gather(sit_loss).mean().detach().item(),
+                    "denoising_loss": accelerator.gather(sit_outputs["denoising_loss"])
+                    .mean()
+                    .detach()
+                    .item(),
+                    "proj_loss": accelerator.gather(sit_outputs["proj_loss"])
+                    .mean()
+                    .detach()
+                    .item(),
+                    "grad_norm_sit": accelerator.gather(grad_norm_sit)
+                    .mean()
+                    .detach()
+                    .item(),
                     "epoch": epoch,
                 }
                 progress_bar.set_postfix(**logs)
@@ -372,7 +423,9 @@ def main(args):
                     unwrapped_model = accelerator.unwrap_model(model)
 
                     # model might be compiled, we extract the original model
-                    original_model = unwrapped_model._orig_mod if args.compile else unwrapped_model
+                    original_model = (
+                        unwrapped_model._orig_mod if args.compile else unwrapped_model
+                    )
 
                     checkpoint = {
                         "model": original_model.state_dict(),
@@ -385,28 +438,36 @@ def main(args):
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
+            if global_step == 1 or (
+                global_step % args.sampling_steps == 0 and global_step > 0
+            ):
                 # NOTE: Inference should use eval mode
                 model.eval()
                 with torch.no_grad():
                     unwrapped_model = accelerator.unwrap_model(model)
                     samples = euler_sampler(
                         unwrapped_model,
-                        xT, 
+                        xT,
                         ys,
-                        num_steps=50, 
+                        num_steps=50,
                         cfg_scale=4.0,
-                        guidance_low=0.,
-                        guidance_high=1.,
+                        guidance_low=0.0,
+                        guidance_high=1.0,
                         path_type=args.path_type,
                         heun=False,
                     ).to(torch.float32)
                     latents_stats = unwrapped_model.extract_latents_stats()
                     # latents_stats should be reshaped to [1, C, 1, 1]
-                    latents_scale = latents_stats['latents_scale'].view(1, in_channels, 1, 1)
-                    latents_bias = latents_stats['latents_bias'].view(1, in_channels, 1, 1)
-                    samples = vae.decode(denormalize_latents(samples, latents_scale, latents_bias)).sample
-                    samples = (samples + 1) / 2.
+                    latents_scale = latents_stats["latents_scale"].view(
+                        1, in_channels, 1, 1
+                    )
+                    latents_bias = latents_stats["latents_bias"].view(
+                        1, in_channels, 1, 1
+                    )
+                    samples = vae.decode(
+                        denormalize_latents(samples, latents_scale, latents_bias)
+                    ).sample
+                    samples = (samples + 1) / 2.0
                 out_samples = accelerator.gather(samples.to(torch.float32))
                 accelerator.log({"samples": wandb.Image(array2grid(out_samples))})
                 logging.info("Generating EMA samples done.")
@@ -439,14 +500,27 @@ def parse_args(input_args=None):
     parser.add_argument("--wandb-history-path", type=str, default=None)
 
     # model
-    parser.add_argument("--model", type=str, default="SiT-XL/1", choices=SiT_models.keys(),
-                        help="The model to train, can be either from SiT or LightningDiT")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="SiT-XL/1",
+        choices=SiT_models.keys(),
+        help="The model to train, can be either from SiT or LightningDiT",
+    )
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--encoder-depth", type=int, default=8)
-    parser.add_argument("--qk-norm",  action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--fused-attn", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True,
-                        help="Whether to compile the model for faster training")
+    parser.add_argument(
+        "--qk-norm", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--fused-attn", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to compile the model for faster training",
+    )
 
     # dataset
     parser.add_argument("--data-dir", type=str, default="data")
@@ -454,8 +528,12 @@ def parse_args(input_args=None):
     parser.add_argument("--batch-size", type=int, default=256)
 
     # precision
-    parser.add_argument("--allow-tf32", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--mixed-precision", type=str, default="fp16", choices=["no", "fp16", "bf16"])
+    parser.add_argument(
+        "--allow-tf32", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--mixed-precision", type=str, default="fp16", choices=["no", "fp16", "bf16"]
+    )
 
     # optimization
     parser.add_argument("--epochs", type=int, default=1400)
@@ -463,11 +541,30 @@ def parse_args(input_args=None):
     parser.add_argument("--checkpointing-steps", type=int, default=50000)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--adam-beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
-    parser.add_argument("--adam-beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
-    parser.add_argument("--adam-weight-decay", type=float, default=0., help="Weight decay to use.")
-    parser.add_argument("--adam-epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
-    parser.add_argument("--max-grad-norm", default=1.0, type=float, help="Max gradient norm.")
+    parser.add_argument(
+        "--adam-beta1",
+        type=float,
+        default=0.9,
+        help="The beta1 parameter for the Adam optimizer.",
+    )
+    parser.add_argument(
+        "--adam-beta2",
+        type=float,
+        default=0.999,
+        help="The beta2 parameter for the Adam optimizer.",
+    )
+    parser.add_argument(
+        "--adam-weight-decay", type=float, default=0.0, help="Weight decay to use."
+    )
+    parser.add_argument(
+        "--adam-epsilon",
+        type=float,
+        default=1e-08,
+        help="Epsilon value for the Adam optimizer",
+    )
+    parser.add_argument(
+        "--max-grad-norm", default=1.0, type=float, help="Max gradient norm."
+    )
 
     # seed
     parser.add_argument("--seed", type=int, default=0)
@@ -476,19 +573,34 @@ def parse_args(input_args=None):
     parser.add_argument("--num-workers", type=int, default=4)
 
     # loss
-    parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
-    parser.add_argument("--prediction", type=str, default="v", choices=["v"]) # currently we only support v-prediction
+    parser.add_argument(
+        "--path-type", type=str, default="linear", choices=["linear", "cosine"]
+    )
+    parser.add_argument(
+        "--prediction", type=str, default="v", choices=["v"]
+    )  # currently we only support v-prediction
     parser.add_argument("--cfg-prob", type=float, default=0.1)
-    parser.add_argument("--enc-type", type=str, default='dinov2-vit-b')
+    parser.add_argument("--enc-type", type=str, default="dinov2-vit-b")
     parser.add_argument("--proj-coeff", type=float, default=0.5)
-    parser.add_argument("--weighting", default="uniform", type=str,
-                        choices=["uniform", "lognormal"], help="Loss weihgting, uniform or lognormal")
+    parser.add_argument(
+        "--weighting",
+        default="uniform",
+        type=str,
+        choices=["uniform", "lognormal"],
+        help="Loss weihgting, uniform or lognormal",
+    )
 
     # vae
     parser.add_argument("--vae", type=str, default="f16d32", choices=["f8d4", "f16d32"])
-    parser.add_argument("--vae-latents-name", type=str, default="e2e-vavae-400k",
-                        help="The name of the pre-extracted latents")
-    parser.add_argument("--vae-ckpt", type=str, default="pretrained/e2e-vavae-400k/e2e-vavae-400k.pt")
+    parser.add_argument(
+        "--vae-latents-name",
+        type=str,
+        default="e2e-vavae-400k",
+        help="The name of the pre-extracted latents",
+    )
+    parser.add_argument(
+        "--vae-ckpt", type=str, default="pretrained/e2e-vavae-400k/e2e-vavae-400k.pt"
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)

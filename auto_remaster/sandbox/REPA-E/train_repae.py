@@ -254,6 +254,24 @@ def main(args):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     loss_cfg = OmegaConf.load(args.loss_cfg_path)
+    """
+    model:
+    vq_model:
+        quantize_mode: vae
+
+    losses:
+        discriminator_start: 0
+        discriminator_factor: 1.0
+        discriminator_weight: 0.1
+        quantizer_weight: 1.0
+        perceptual_loss: "lpips"
+        perceptual_weight: 1.0
+        reconstruction_loss: "l1"
+        reconstruction_weight: 1.0
+        lecam_regularization_weight: 0.0
+        kl_weight: 1e-6
+        logvar_init: 0.0
+    """
     vae_loss_fn = ReconstructionLoss_Single_Stage(loss_cfg).to(device)
 
     if accelerator.is_main_process:
@@ -410,10 +428,19 @@ def main(args):
                     for encoder, encoder_type, arch in zip(
                         encoders, encoder_types, architectures
                     ):
+                        """
+                        нормализация для dinov2 выглядит вот так
+                        ---
+                        x = x / 255.0
+                        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+                        x = torch.nn.functional.interpolate(
+                            x, 224 * (resolution // 256), mode="bicubic"
+                        )
+                        """
                         raw_image_ = preprocess_raw_image(raw_image, encoder_type)
                         z = encoder.forward_features(raw_image_)
-                        if "mocov3" in encoder_type:
-                            z = z = z[:, 1:]
+                        # if "mocov3" in encoder_type:
+                        #     z = z = z[:, 1:]
                         if "dinov2" in encoder_type:
                             z = z["x_norm_patchtokens"]
                         dino_features.append(z)
@@ -428,15 +455,20 @@ def main(args):
                 # imgs.float() / 127.5 - 1.
                 processed_image = preprocess_imgs_vae(raw_image)
                 # просто прогоняем изображение через VAE, энкодим изображение и декодим его
-                posterior, vae_encoder_features, recon_image = vae(processed_image)
+                deterministic_encoder_features, vae_encoder_features, recon_image = vae(
+                    processed_image
+                )
 
                 # 2). Backward pass: VAE, compute the VAE loss, backpropagate, and update the VAE; Then, compute the
                 # discriminator loss and update the discriminator
                 #    loss_kwargs used for SiT forward function, create here and can be reused for
                 # both VAE and SiT
                 loss_kwargs = dict(
+                    # linear
                     path_type=args.path_type,
+                    # prediction="v"
                     prediction=args.prediction,
+                    # weighting="uniform"
                     weighting=args.weighting,
                 )
                 # Record the time_input and noises for the VAE alignment, so that we avoid sampling again
@@ -447,11 +479,16 @@ def main(args):
                 requires_grad(model, False)
                 # Avoid BN stats to be updated by the VAE
                 model.eval()
-
+                # в режиме "generator"
+                # в данной функции мы вычисляем l1 loss для изображения
+                # потом просто считаем lpips
+                # и на замороженном дискриминаторе делаем предсказание и
+                # берем у него лосс таким образом чтобы он для всех изображений предсказал 0,
+                # то есть настоящее изображение
                 vae_loss, vae_loss_dict = vae_loss_fn(
                     processed_image,
                     recon_image,
-                    posterior,
+                    deterministic_encoder_features,
                     global_step,
                     "generator",
                 )
@@ -459,7 +496,23 @@ def main(args):
 
                 # Compute the REPA alignment loss for VAE updates
                 loss_kwargs["align_only"] = True
-                # передаем фичи из dino, фичи из VAE, и лейблы
+                # передаем фичи из dino, фичи из VAE, и лейблы картинок
+                """
+                если не трогать архитектуру самого SiT
+                главное нововедение это выравниевание с фичами dinov2.
+                мы как обычно передаем внутрение фичи от блока к блоку, но
+                в какой-то момент, например по середине или ближе к концу вытаскиваем
+                фичи из диффузионного трансформера, по факту это просто какой-то вектор.
+                этот вектор имеет другую размерность нежели вектор картинки из dinov2.
+                мы передаем фичу из SiT в обучаемый MLP чтобы получить нужную размерность, 
+                а затем в конце применяем косинусный лосс между фичами из MLP и dinov2 и требуем
+                от них чтобы они были как можно более похожи(то есть делаем лосс отрицательным чтобы 
+                их перемножение стремилось быть положительным).
+                на этом всё, далее это обычное обучение диффузионки.
+                
+                но важно отметить что сама модель при этом заморожена, все эти взаимодействия осуществляются ради
+                выравнивания с VAE фичами
+                """
                 vae_align_outputs = model(
                     image_latents=vae_encoder_features,
                     image_labels=labels,
@@ -489,10 +542,18 @@ def main(args):
                 # discriminator loss and update
                 # тут уже считаем лосс по реконструированному изображению и оригинальному
                 # для дискриминатора
+                """
+                размораживаем дискриминатор, пропускаем через него реальные и фейковые изображения
+                получаем для них логиты.
+                далее считаем hinge_d_loss, который заставляет логиты настоящих быть положительными
+                ненастоящих отрицательными.
+                особенность данного лосса в том что он больше обращает внимание на неправильно предсказанные
+                для фейковых изображений
+                """
                 d_loss, d_loss_dict = vae_loss_fn(
                     processed_image,
                     recon_image,
-                    posterior,
+                    deterministic_encoder_features,
                     global_step,
                     "discriminator",
                 )
@@ -515,6 +576,12 @@ def main(args):
                 # **Avoid diffusion loss to backpropagate to the VAE, so we detach the `z`**
                 loss_kwargs["weighting"] = args.weighting
                 loss_kwargs["align_only"] = False
+                """
+                отключаем вычисление градиентов для VAE фич и включаем вычисление
+                уже для диффузионной модели. далее обучаем как обычно, если бы у нас
+                изначально была замороженная vae и не забываем про выравнивание с фичами с dinov2
+                но уже с градиентами по всей модели.
+                """
                 sit_outputs = model(
                     image_latents=vae_encoder_features.detach(),
                     image_labels=labels,

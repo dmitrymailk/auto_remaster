@@ -49,6 +49,8 @@ class PerceptualLoss(torch.nn.Module):
         # E.g., lpips-convnext_s-1.0-2.0 refers to compute the perceptual loss
         # using both the convnext_s and lpips, and average the final loss with
         # (1.0 * loss(lpips) + 2.0 * loss(convnext_s)) / (1.0 + 2.0).
+        
+        # lpips by defaults in repa-e
         if "lpips" in model_name:
             self.lpips = LPIPS().eval()
 
@@ -83,32 +85,34 @@ class PerceptualLoss(torch.nn.Module):
         lpips_loss = 0.
         convnext_loss = 0.
         # Computes LPIPS loss, if available.
+        # True by default
         if self.lpips is not None:
             lpips_loss = self.lpips(input, target)
+            # True by default
             if self.loss_weight_lpips is None:
                 loss += lpips_loss
                 num_losses += 1
             else:
                 num_losses += self.loss_weight_lpips
                 loss += self.loss_weight_lpips * lpips_loss
-
-        if self.convnext is not None:
-            # Computes ConvNeXt-s loss, if available.
-            input = torch.nn.functional.interpolate(input, size=224, mode="bilinear", align_corners=False, antialias=True)
-            target = torch.nn.functional.interpolate(target, size=224, mode="bilinear", align_corners=False, antialias=True)
-            pred_input = self.convnext((input - self.imagenet_mean) / self.imagenet_std)
-            pred_target = self.convnext((target - self.imagenet_mean) / self.imagenet_std)
-            convnext_loss = torch.nn.functional.mse_loss(
-                pred_input,
-                pred_target,
-                reduction="mean")
+        # False by default
+        # if self.convnext is not None:
+        #     # Computes ConvNeXt-s loss, if available.
+        #     input = torch.nn.functional.interpolate(input, size=224, mode="bilinear", align_corners=False, antialias=True)
+        #     target = torch.nn.functional.interpolate(target, size=224, mode="bilinear", align_corners=False, antialias=True)
+        #     pred_input = self.convnext((input - self.imagenet_mean) / self.imagenet_std)
+        #     pred_target = self.convnext((target - self.imagenet_mean) / self.imagenet_std)
+        #     convnext_loss = torch.nn.functional.mse_loss(
+        #         pred_input,
+        #         pred_target,
+        #         reduction="mean")
                 
-            if self.loss_weight_convnext is None:
-                num_losses += 1
-                loss += convnext_loss
-            else:
-                num_losses += self.loss_weight_convnext
-                loss += self.loss_weight_convnext * convnext_loss
+        #     if self.loss_weight_convnext is None:
+        #         num_losses += 1
+        #         loss += convnext_loss
+        #     else:
+        #         num_losses += self.loss_weight_convnext
+        #         loss += self.loss_weight_convnext * convnext_loss
         
         # weighted avg.
         loss = loss / num_losses

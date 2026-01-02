@@ -41,6 +41,41 @@ def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.
 
     This function is borrowed from
     https://github.com/CompVis/taming-transformers/blob/master/taming/modules/losses/vqperceptual.py#L20
+    
+    Нет, не совсем так. Это более тонкий момент, который часто вызывает путаницу, особенно когда речь идет о логитах, а не о вероятностях.
+
+    В данной реализации `hinge_d_loss`:
+
+    *   **Позитивное число (например, > 1.0) для `logits_real`:** Дискриминатор считает картинку **настоящей**.
+    *   **Негативное число (например, < -1.0) для `logits_fake`:** Дискриминатор считает картинку **фейковой**.
+
+    **Почему так?**
+
+    `logits` - это необработанные выходные значения нейронной сети, *до* применения какой-либо функции активации, которая бы их сжала в диапазон [0, 1] (как Sigmoid) или [0, N] (как Softmax).
+
+    *   В традиционной бинарной классификации (например, с Sigmoid и BCE Loss), если бы мы хотели получить вероятности, мы бы пропустили логиты через Sigmoid: `P = sigmoid(logit)`. Тогда:
+        *   `logit = 0` -> `P = 0.5`
+        *   `logit = большое_положительное` -> `P = ~1`
+        *   `logit = большое_отрицательное` -> `P = ~0`
+
+    *   **Но в Hinge Loss для дискриминатора, мы работаем непосредственно с логитами и устанавливаем "маржу" или "запас":**
+
+        *   **Для `logits_real` (реальные картинки):** Мы хотим, чтобы дискриминатор выдавал значения, **большие 1.0**.
+            *   Если `logits_real > 1.0`, то `1.0 - logits_real` будет отрицательным, и `F.relu` вернет 0 (нет штрафа).
+            *   Если `logits_real <= 1.0`, то `1.0 - logits_real` будет положительным, и `F.relu` вернет это положительное значение (есть штраф).
+
+        *   **Для `logits_fake` (фейковые картинки):** Мы хотим, чтобы дискриминатор выдавал значения, **меньшие -1.0**.
+            *   Если `logits_fake < -1.0`, то `1.0 + logits_fake` будет отрицательным, и `F.relu` вернет 0 (нет штрафа).
+            *   Если `logits_fake >= -1.0`, то `1.0 + logits_fake` будет положительным, и `F.relu` вернет это положительное значение (есть штраф).
+
+    **Таким образом, пороги для Hinge Loss составляют:**
+
+    *   **`> 1.0`** для **реальных** (True)
+    *   **`< -1.0`** для **фейковых** (False)
+
+    Все, что находится между `-1.0` и `1.0`, а также значения, которые "не дотягивают" до этих порогов, будут приводить к штрафу.
+
+    Это не `0` и `1` как метки классов, а скорее целевые диапазоны для выходных значений сети.
     """
     loss_real = torch.mean(F.relu(1.0 - logits_real))
     loss_fake = torch.mean(F.relu(1.0 + logits_fake))
@@ -149,12 +184,16 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         super().__init__()
         loss_config = config.losses
         self.discriminator = NLayerDiscriminator(
-            input_nc=3, n_layers=3, use_actnorm=False
+            input_nc=3,
+            n_layers=3,
+            use_actnorm=False,
         ).apply(weights_init)
 
         self.reconstruction_loss = loss_config.reconstruction_loss
         self.reconstruction_weight = loss_config.reconstruction_weight
         self.quantizer_weight = loss_config.quantizer_weight
+        # просто переусложненное вычисление LPIPS с VGG,
+        # который обычно пишется в одну строчку
         self.perceptual_loss = PerceptualLoss(loss_config.perceptual_loss).eval()
         self.perceptual_weight = loss_config.perceptual_weight
         self.discriminator_iter_start = loss_config.discriminator_start
@@ -281,7 +320,11 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         reconstructions: torch.Tensor,
         global_step: int,
     ) -> Tuple[torch.Tensor, Mapping[Text, torch.Tensor]]:
-        """Discrminator training step."""
+        """Discrminator training step.
+        inputs - оригинальные изображения
+        reconstructions - реконструированные изображения с прошлого шага
+        """
+        # дискриминатор стартует с нуля, значит фактор тоже применяется сразу
         discriminator_factor = (
             self.discriminator_factor
             if self.should_discriminator_be_trained(global_step)
@@ -291,36 +334,39 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         # Turn the gradients on.
         for param in self.discriminator.parameters():
             param.requires_grad = True
-
+        # открепляем инпуты и реконструиванные изображения
         real_images = inputs.detach().requires_grad_(True)
+        # предсказываем для реальных
         logits_real = self.discriminator(real_images)
+        # предсказываем для сгенерированных
         logits_fake = self.discriminator(reconstructions.detach())
-
+        # вычисляем hinge_d_loss, который заставляет быть логиты настоящих картинок положительными
+        # ненастоящих отрицательными
         discriminator_loss = discriminator_factor * hinge_d_loss(
             logits_real=logits_real, logits_fake=logits_fake
         )
 
         # optional lecam regularization
         lecam_loss = torch.zeros((), device=inputs.device)
-        if self.lecam_regularization_weight > 0.0:
-            lecam_loss = (
-                compute_lecam_loss(
-                    torch.mean(logits_real),
-                    torch.mean(logits_fake),
-                    self.ema_real_logits_mean,
-                    self.ema_fake_logits_mean,
-                )
-                * self.lecam_regularization_weight
-            )
+        # if self.lecam_regularization_weight > 0.0:
+        #     lecam_loss = (
+        #         compute_lecam_loss(
+        #             torch.mean(logits_real),
+        #             torch.mean(logits_fake),
+        #             self.ema_real_logits_mean,
+        #             self.ema_fake_logits_mean,
+        #         )
+        #         * self.lecam_regularization_weight
+        #     )
 
-            self.ema_real_logits_mean = (
-                self.ema_real_logits_mean * self.lecam_ema_decay
-                + torch.mean(logits_real).detach() * (1 - self.lecam_ema_decay)
-            )
-            self.ema_fake_logits_mean = (
-                self.ema_fake_logits_mean * self.lecam_ema_decay
-                + torch.mean(logits_fake).detach() * (1 - self.lecam_ema_decay)
-            )
+        #     self.ema_real_logits_mean = (
+        #         self.ema_real_logits_mean * self.lecam_ema_decay
+        #         + torch.mean(logits_real).detach() * (1 - self.lecam_ema_decay)
+        #     )
+        #     self.ema_fake_logits_mean = (
+        #         self.ema_fake_logits_mean * self.lecam_ema_decay
+        #         + torch.mean(logits_fake).detach() * (1 - self.lecam_ema_decay)
+        #     )
 
         discriminator_loss += lecam_loss
 
@@ -359,6 +405,7 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         # quantize_mode=vae
         self.quantize_mode = config.model.vq_model.get("quantize_mode", "vq")
 
+        # by default True
         if self.quantize_mode == "vae":
             self.kl_weight = loss_config.get("kl_weight", 1e-6)
             logvar_init = loss_config.get("logvar_init", 0.0)
@@ -379,14 +426,15 @@ class ReconstructionLoss_Single_Stage(ReconstructionLoss_Stage2):
         """Generator training step."""
         inputs = inputs.contiguous()
         reconstructions = reconstructions.contiguous()
+        # by default
         if self.reconstruction_loss == "l1":
             reconstruction_loss = F.l1_loss(inputs, reconstructions, reduction="mean")
-        elif self.reconstruction_loss == "l2":
-            reconstruction_loss = F.mse_loss(inputs, reconstructions, reduction="mean")
-        else:
-            raise ValueError(
-                f"Unsuppored reconstruction_loss {self.reconstruction_loss}"
-            )
+        # elif self.reconstruction_loss == "l2":
+        #     reconstruction_loss = F.mse_loss(inputs, reconstructions, reduction="mean")
+        # else:
+        #     raise ValueError(
+        #         f"Unsuppored reconstruction_loss {self.reconstruction_loss}"
+        #     )
         reconstruction_loss *= self.reconstruction_weight
 
         # Compute perceptual loss.
