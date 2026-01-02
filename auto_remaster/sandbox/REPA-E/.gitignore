@@ -181,7 +181,7 @@ samples/
 samples2/
 wandb/
 evals/
-*.sh
+!*.sh
 *.err
 *.out
 *.log
