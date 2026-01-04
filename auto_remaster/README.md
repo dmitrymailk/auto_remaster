@@ -5,16 +5,17 @@
 - seraena
 - REPA-E
 - [TwinFlow](https://github.com/inclusionAI/TwinFlow)
-- DMD2
-- [rCM](https://github.com/NVlabs/rcm)
-- DDPM
 - flow matching
 - rectified flow
-- I2SB: Image-to-Image Schrödinger Bridge
-- Piecewise Rectified Flow
+- [rCM](https://github.com/NVlabs/rcm)
 - LCM
 - The GAN is dead
+- I2SB: Image-to-Image Schrödinger Bridge
 - GigaGAN
+- shortcut-models
+- DMD2 
+- DDPM
+- Piecewise Rectified Flow
 - control net(обучение на синтетически сглаженных датасетах, затем перегенерация и снова сглаживание)
 - [DREAM](https://github.com/jinxinzhou/dream)
 - [Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556)
@@ -103,6 +104,8 @@
 - [\[ICCV2025\] "Di\[M\]O: Distilling Masked Diffusion Models into One-step Generator](https://github.com/yuanzhi-zhu/DiMO)
 - [One-Step Diffusion via Shortcut Models](https://github.com/kvfrans/shortcut-models)
 - [rCM: Score-Regularized Continuous-Time Consistency Model](https://github.com/NVlabs/rcm)
+- [Phased Consistency Models](https://github.com/G-U-N/Phased-Consistency-Model)
+- [Latent Consistency Distillation Example](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
 
 ### Diffusion Distillation (no code)
 - [Diffusion Adversarial Post-Training for One-Step Video Generation](https://arxiv.org/pdf/2501.08316)
@@ -114,6 +117,7 @@
 ### Vae train repos
 - https://github.com/cloneofsimo/vqgan-training https://huggingface.co/fal/AuraEquiVAE
 - https://github.com/madebyollin/seraena (official taesd like vae distillation)
+- https://github.com/LINs-lab/UCGM
 - https://github.com/KohakuBlueleaf/HakuLatent
 - https://github.com/zelaki/eqvae
 - https://huggingface.co/AiArtLab/sdxl_vae/blob/main/src/train_sdxl_vae.py

@@ -208,7 +208,7 @@ comfyui_sandbox/video_renders/render_*
 wireguard_docker
 img2img-turbo/data
 img2img-turbo/output
-mnist
+!mnist
 Ditto*
 vpn
 checkpoints
@@ -218,3 +218,5 @@ vqgan-output
 .venv*
 *_taesdxl_example_training_*
 *.pth
+*.gz
+buffers
