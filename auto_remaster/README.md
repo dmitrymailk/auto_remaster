@@ -133,13 +133,23 @@
 - https://github.com/sypsyp97/convnext_perceptual_loss
 
 ### Theory
+
+- [A Visual Dive into Conditional Flow Matching](https://dl.heeere.com/conditional-flow-matching/blog/conditional-flow-matching/)
+- [An Introduction to Flow Matching and Diffusion Models](https://arxiv.org/pdf/2506.02070)
+- [Step-by-Step Diffusion: An Elementary Tutorial](https://arxiv.org/abs/2406.08929)
 - [Generative modelling in latent space](https://sander.ai/2025/04/15/latents.html)
 - [Tutorial on Diffusion Models for Imaging and Vision](https://arxiv.org/pdf/2403.18103)
+- [Diffusion models from scratch, from a new theoretical perspective](https://www.chenyang.co/diffusion.html)
+- [Diffusion Meets Flow Matching: Two Sides of the Same Coin](https://diffusionflow.github.io/)
+- [Interpreting and Improving Diffusion Models from an Optimization Perspective](https://arxiv.org/pdf/2306.04848)
+- [Flow Matching Guide and Code](https://arxiv.org/pdf/2412.06264)
 - https://lilianweng.github.io/posts/2018-08-12-vae/
 - https://www.practical-diffusion.org/schedule/
 - https://diffusion.csail.mit.edu/
 - https://mbernste.github.io/posts/vae/
 - https://d2l.ai/chapter_generative-adversarial-networks/gan.html
+- https://www.physicsbaseddeeplearning.org/probmodels-intro.html
+
 
 ### Ссылки на датасеты
 - [GenAD: OpenDV Dataset The largest driving video dataset to date, containing more than 1700 hours of real-world driving videos.](https://opendrivelab.com/datasets)
