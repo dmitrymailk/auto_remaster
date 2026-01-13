@@ -19,6 +19,7 @@
 - control net(обучение на синтетически сглаженных датасетах, затем перегенерация и снова сглаживание)
 - [DREAM](https://github.com/jinxinzhou/dream)
 - [Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556)
+- https://github.com/zhuyu-cs/MeanFlow
 - RMT-diffusion?
 
 ### Базовые методы которые стоит попробовать 
@@ -134,8 +135,8 @@
 
 ### Theory
 
-- [A Visual Dive into Conditional Flow Matching](https://dl.heeere.com/conditional-flow-matching/blog/conditional-flow-matching/)
 - [An Introduction to Flow Matching and Diffusion Models](https://arxiv.org/pdf/2506.02070)
+- [A Visual Dive into Conditional Flow Matching](https://dl.heeere.com/conditional-flow-matching/blog/conditional-flow-matching/)
 - [Step-by-Step Diffusion: An Elementary Tutorial](https://arxiv.org/abs/2406.08929)
 - [Generative modelling in latent space](https://sander.ai/2025/04/15/latents.html)
 - [Tutorial on Diffusion Models for Imaging and Vision](https://arxiv.org/pdf/2403.18103)

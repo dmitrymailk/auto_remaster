@@ -144,8 +144,11 @@ class DiffusionUNet(nn.Module):
         up2 = self.dec2(torch.cat([up1, skip1], dim=1))
 
         output = self.output_conv(up2)
-
+        # более глобальный skip connection, чтобы в этом примере работал лучше
+        # но это не меняет задачу на денойзинг, просто меняется линейная комбинация,
+        # потому что таргет по преждему моделирование производной
         return x_flat - output.view(-1, self.data_dim)
+        # return output.view(-1, self.data_dim)
 
 
 class MLP(nn.Module):
