@@ -6,9 +6,9 @@
 - REPA-E
 - [TwinFlow](https://github.com/inclusionAI/TwinFlow)
 - flow matching
+- LCM https://github.com/huggingface/diffusers/blob/main/docs/source/en/training/lcm_distill.md
 - rectified flow
 - [rCM](https://github.com/NVlabs/rcm)
-- LCM
 - The GAN is dead
 - I2SB: Image-to-Image Schrödinger Bridge
 - GigaGAN
@@ -79,7 +79,7 @@
 - [DiffO: Single-step Diffusion for Image Compression at Ultra-Low Bitrates](https://arxiv.org/pdf/2506.16572v1)
 - [fast-DiT Scalable Diffusion Models with Transformers (DiT)](https://github.com/chuanyangjin/fast-DiT)
 - [Reconstruct Anything Model (RAM)](https://github.com/matthieutrs/ram)
-- [pi-Flow: Policy-Based Few-Step Generation via Imitation Distillation](https://github.com/Lakonik/piFlow)
+
 
 ### GANs
 - [The GAN is dead; long live the GAN! A Modern Baseline GAN](https://arxiv.org/pdf/2501.05441)
@@ -104,9 +104,21 @@
 - [LATENT CONSISTENCY MODELS: SYNTHESIZING HIGH-RESOLUTION IMAGES WITH FEW-STEP INFERENCE](https://arxiv.org/pdf/2310.04378)
 - [\[ICCV2025\] "Di\[M\]O: Distilling Masked Diffusion Models into One-step Generator](https://github.com/yuanzhi-zhu/DiMO)
 - [One-Step Diffusion via Shortcut Models](https://github.com/kvfrans/shortcut-models)
-- [rCM: Score-Regularized Continuous-Time Consistency Model](https://github.com/NVlabs/rcm)
+
 - [Phased Consistency Models](https://github.com/G-U-N/Phased-Consistency-Model)
 - [Latent Consistency Distillation Example](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
+
+## Flow matching distillation  
+- [InstaFlow! One-Step Stable Diffusion with Rectified Flow](https://github.com/gnobitab/InstaFlow)
+- [Improved Distribution Matching Distillation for Fast Image Synthesis](https://github.com/tianweiy/DMD2.git)
+- [This repo provides a working re-implementation of Latent Adversarial Diffusion Distillation by AMD](https://github.com/AMD-AGI/Nitro-1)
+- [SiD-DiT Score Distillation of Flow Matching Models](https://yigu1008.github.io/SiD-DiT/)
+- [pi-Flow: Policy-Based Few-Step Generation via Imitation Distillation](https://github.com/Lakonik/piFlow)
+- [Official codebase for "Efficient Distillation of Classifier-Free Guidance using Adapters."](https://github.com/cristianpjensen/agd)
+- [Consistency Distillation with Target Timestep Selection and Decoupled Guidance](https://github.com/FireRedTeam/Target-Driven-Distillation)
+- [rCM: Score-Regularized Continuous-Time Consistency Model](https://github.com/NVlabs/rcm)
+- [Official Implementation for "Consistency Flow Matching: Defining Straight Flows with Velocity Consistency"](https://github.com/YangLing0818/consistency_flow_matching) 
+- [Official PyTorch Implementation of "Flow Map Distillation Without Data"](https://github.com/ShangyuanTong/FreeFlow)
 
 ### Diffusion Distillation (no code)
 - [Diffusion Adversarial Post-Training for One-Step Video Generation](https://arxiv.org/pdf/2501.08316)
@@ -150,7 +162,9 @@
 - https://mbernste.github.io/posts/vae/
 - https://d2l.ai/chapter_generative-adversarial-networks/gan.html
 - https://www.physicsbaseddeeplearning.org/probmodels-intro.html
-
+- [Flowing Through Continuous-Time Generative Models: A Clear and Systematic Tour](https://icml.cc/virtual/2025/40011)
+- [Let us Flow Together](https://www.cs.utexas.edu/~lqiang/PDF/flow_book.pdf)
+- https://rectifiedflow.github.io/
 
 ### Ссылки на датасеты
 - [GenAD: OpenDV Dataset The largest driving video dataset to date, containing more than 1700 hours of real-world driving videos.](https://opendrivelab.com/datasets)

@@ -220,3 +220,4 @@ vqgan-output
 *.pth
 *.gz
 buffers
+model_lcm
