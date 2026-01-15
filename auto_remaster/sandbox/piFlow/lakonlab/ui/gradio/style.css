@@ -1,0 +1,73 @@
+.force-hide-container {
+    margin: 0;
+    box-shadow: none;
+    --block-border-width: 0;
+    background: transparent;
+    padding: 0;
+    overflow: visible;
+}
+
+.svelte-1vd8eap {
+    display: flex;
+    flex-direction: inherit;
+    flex-wrap: wrap;
+    gap: 0;
+    box-shadow: none;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow-y: hidden;
+}
+
+.custom-spacing {
+    padding: 10px;
+    gap: 20px;
+    flex-grow: 0 !important;
+}
+
+.generate-bar {
+    align-items: flex-end;
+}
+
+.tool{
+    max-width: 40px;
+    min-width: 40px !important;
+}
+
+/* Center the component and allow it to use the full row width */
+.vh-img {
+  display: grid;
+  justify-items: center;
+}
+
+/* Container should size to the image, but never exceed the row width */
+.vh-img .image-container {
+  inline-size: fit-content !important;   /* prefers image’s natural width */
+  max-inline-size: 100% !important;      /* ...but clamps to available width */
+  margin-inline: auto;
+  overflow: hidden;                       /* avoid odd overflow on iOS */
+}
+
+/* Image scales by BOTH constraints: height cap and row width */
+.vh-img-700 .image-container img {
+  max-block-size: 700px !important;      /* fixed max height cap */
+  max-inline-size: 100%;                  /* never wider than container */
+  inline-size: auto;                      /* keep aspect ratio */
+  block-size: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.vh-img-1000 .image-container img {
+  max-block-size: 1000px !important;      /* fixed max height cap */
+  max-inline-size: 100%;                  /* never wider than container */
+  inline-size: auto;                      /* keep aspect ratio */
+  block-size: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.gradio-container .seed-input input {   /* remove the border and use box-shadow instead for height alignment */
+    border: none !important;
+    box-shadow: inset 0 0 0 var(--input-border-width) var(--input-border-color) !important;
+}

@@ -6,23 +6,28 @@
 - REPA-E
 - [TwinFlow](https://github.com/inclusionAI/TwinFlow)
 - flow matching
-- LCM https://github.com/huggingface/diffusers/blob/main/docs/source/en/training/lcm_distill.md
 - rectified flow
+- InstaFlow https://github.com/gnobitab/InstaFlow https://github.com/isamu-isozaki/diffusers/blob/rectified_flow/examples/rectified_insta_flow/train_rectified_instaflow.py https://colab.research.google.com/drive/13GmggtFLnVj55i2XnVp-E_-tLgv2ThSm#scrollTo=9QpxgPmqXZQd (нет никакого смысла воспроизводить его, это просто rectified flow)
+- alphaflow https://github.com/snap-research/alphaflow
+- LCM https://github.com/huggingface/diffusers/blob/main/docs/source/en/training/lcm_distill.md
+- DMD2 
 - [rCM](https://github.com/NVlabs/rcm)
+- LightningDiT
 - The GAN is dead
 - I2SB: Image-to-Image Schrödinger Bridge
 - GigaGAN
 - shortcut-models
-- DMD2 
 - DDPM
 - Piecewise Rectified Flow
 - control net(обучение на синтетически сглаженных датасетах, затем перегенерация и снова сглаживание)
 - [DREAM](https://github.com/jinxinzhou/dream)
 - [Min-SNR Weighting Strategy](https://huggingface.co/papers/2303.09556)
 - https://github.com/zhuyu-cs/MeanFlow
+- https://github.com/gnobitab/FlowGrad
 - RMT-diffusion?
 
 ### Базовые методы которые стоит попробовать 
+- для создания крутой базовой модели можно попробовать просто сделать lora на qwen image, из нее уже потом пытаться что-то дистиллировать
 - сделать лосс для нижней половины экрана более высоким чем для остальной картинки
 - учиться на кропах в высоком разрешении, а не только на всей картинке сразу
 - аугментация через сдвиг, поворот и кроп
@@ -109,11 +114,12 @@
 - [Latent Consistency Distillation Example](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
 
 ## Flow matching distillation  
-- [InstaFlow! One-Step Stable Diffusion with Rectified Flow](https://github.com/gnobitab/InstaFlow)
+- [InstaFlow! One-Step Stable Diffusion with Rectified Flow](https://github.com/gnobitab/InstaFlow) (это обычный rectified flow с дистиляцией на втором шаге, оригинального кода нет, лучше просто рассмотреть стандартный rectified flow)
+- [pi-Flow: Policy-Based Few-Step Generation via Imitation Distillation](https://github.com/Lakonik/piFlow)
+- [SiD-DiT Score Distillation of Flow Matching Models](https://yigu1008.github.io/SiD-DiT/)
+- [SenseFlow: Scaling Distribution Matching for Flow-based Text-to-Image Distillation](https://github.com/XingtongGe/SenseFlow)
 - [Improved Distribution Matching Distillation for Fast Image Synthesis](https://github.com/tianweiy/DMD2.git)
 - [This repo provides a working re-implementation of Latent Adversarial Diffusion Distillation by AMD](https://github.com/AMD-AGI/Nitro-1)
-- [SiD-DiT Score Distillation of Flow Matching Models](https://yigu1008.github.io/SiD-DiT/)
-- [pi-Flow: Policy-Based Few-Step Generation via Imitation Distillation](https://github.com/Lakonik/piFlow)
 - [Official codebase for "Efficient Distillation of Classifier-Free Guidance using Adapters."](https://github.com/cristianpjensen/agd)
 - [Consistency Distillation with Target Timestep Selection and Decoupled Guidance](https://github.com/FireRedTeam/Target-Driven-Distillation)
 - [rCM: Score-Regularized Continuous-Time Consistency Model](https://github.com/NVlabs/rcm)
