@@ -13,38 +13,60 @@ from mmgen.models.builder import MODULES, build_module
 
 from . import GaussianFlow, schedulers
 from lakonlab.ops.gmflow_ops.gmflow_ops import (
-    gm_to_sample, gm_to_mean, gaussian_samples_to_gm_samples, gm_samples_to_gaussian_samples,
-    iso_gaussian_mul_iso_gaussian, gm_mul_iso_gaussian, gm_to_iso_gaussian, gm_transpose_t_first)
+    gm_to_sample,
+    gm_to_mean,
+    gaussian_samples_to_gm_samples,
+    gm_samples_to_gaussian_samples,
+    iso_gaussian_mul_iso_gaussian,
+    gm_mul_iso_gaussian,
+    gm_to_iso_gaussian,
+    gm_transpose_t_first,
+)
 
 
 @torch.jit.script
 def probabilistic_guidance_jit(
-        cond_mean, total_var, uncond_mean, guidance_scale: float,
-        orthogonal: float = 1.0, orthogonal_axis: Optional[torch.Tensor] = None):
+    cond_mean,
+    total_var,
+    uncond_mean,
+    guidance_scale: float,
+    orthogonal: float = 1.0,
+    orthogonal_axis: Optional[torch.Tensor] = None,
+):
     dim = list(range(1, cond_mean.dim()))
     bias = cond_mean - uncond_mean
     if orthogonal > 0.0:
         if orthogonal_axis is None:
             orthogonal_axis = cond_mean
-        bias = bias - ((bias * orthogonal_axis).mean(
-            dim=dim, keepdim=True
-        ) / (orthogonal_axis * orthogonal_axis).mean(
-            dim=dim, keepdim=True
-        ).clamp(min=1e-6) * orthogonal_axis).mul(orthogonal)
+        bias = bias - (
+            (bias * orthogonal_axis).mean(dim=dim, keepdim=True)
+            / (orthogonal_axis * orthogonal_axis)
+            .mean(dim=dim, keepdim=True)
+            .clamp(min=1e-6)
+            * orthogonal_axis
+        ).mul(orthogonal)
     bias_power = (bias * bias).mean(dim=dim, keepdim=True)
     avg_var = total_var.mean(dim=dim, keepdim=True)
     bias = bias * ((avg_var / bias_power.clamp(min=1e-6)).sqrt() * guidance_scale)
     gaussian_output = dict(
-        mean=cond_mean + bias,
-        var=total_var * (1 - (guidance_scale * guidance_scale)))
+        mean=cond_mean + bias, var=total_var * (1 - (guidance_scale * guidance_scale))
+    )
     return gaussian_output, bias, avg_var
 
 
 @torch.jit.script
 def gmflow_posterior_mean_jit(
-        sigma_t_src, sigma_t, x_t_src, x_t,
-        gm_means, gm_vars, gm_logweights,
-        eps: float, gm_dim: int = -4, channel_dim: int = -3):
+    sigma_t_src,
+    sigma_t,
+    x_t_src,
+    x_t,
+    gm_means,
+    gm_vars,
+    gm_logweights,
+    eps: float,
+    gm_dim: int = -4,
+    channel_dim: int = -3,
+):
     sigma_t_src = sigma_t_src.clamp(min=eps)
     sigma_t = sigma_t.clamp(min=eps)
 
@@ -55,7 +77,10 @@ def gmflow_posterior_mean_jit(
     alpha_over_sigma_t = alpha_t / sigma_t
 
     zeta = alpha_over_sigma_t.square() - alpha_over_sigma_t_src.square()
-    nu = alpha_over_sigma_t * x_t / sigma_t - alpha_over_sigma_t_src * x_t_src / sigma_t_src
+    nu = (
+        alpha_over_sigma_t * x_t / sigma_t
+        - alpha_over_sigma_t_src * x_t_src / sigma_t_src
+    )
 
     nu = nu.unsqueeze(gm_dim)  # (bs, *, 1, out_channels, h, w)
     zeta = zeta.unsqueeze(gm_dim)  # (bs, *, 1, 1, 1, 1)
@@ -64,7 +89,8 @@ def gmflow_posterior_mean_jit(
     out_means = (gm_vars * nu + gm_means) / denom
     # (bs, *, num_gaussians, 1, h, w)
     logweights_delta = (gm_means * (nu - 0.5 * zeta * gm_means)).sum(
-        dim=channel_dim, keepdim=True) / denom
+        dim=channel_dim, keepdim=True
+    ) / denom
     out_weights = (gm_logweights + logweights_delta).softmax(dim=gm_dim)
 
     out_mean = (out_means * out_weights).sum(dim=gm_dim)
@@ -76,15 +102,15 @@ class GMFlowMixin:
 
     @property
     def time_scaling(self):
-        if hasattr(self, 'scheduler'):  # for diffusers pipelines
+        if hasattr(self, "scheduler"):  # for diffusers pipelines
             return self.scheduler.config.num_train_timesteps
-        elif hasattr(self, 'num_timesteps'):
+        elif hasattr(self, "num_timesteps"):
             return self.num_timesteps
         else:
-            raise ValueError('num_timesteps or scheduler is not defined.')
+            raise ValueError("num_timesteps or scheduler is not defined.")
 
     def u_to_x_0(self, denoising_output, x_t, t=None, sigma=None, eps=1e-6):
-        if isinstance(denoising_output, dict) and 'logweights' in denoising_output:
+        if isinstance(denoising_output, dict) and "logweights" in denoising_output:
             x_t = x_t.unsqueeze(-4)
 
         if sigma is None:
@@ -97,28 +123,40 @@ class GMFlowMixin:
             sigma = sigma.unsqueeze(-4)
 
         if isinstance(denoising_output, dict):
-            if 'logweights' in denoising_output:
-                means_x_0 = x_t - sigma * denoising_output['means']
-                logstds_x_0 = denoising_output['logstds'] + torch.log(sigma.clamp(min=eps))
+            if "logweights" in denoising_output:
+                means_x_0 = x_t - sigma * denoising_output["means"]
+                logstds_x_0 = denoising_output["logstds"] + torch.log(
+                    sigma.clamp(min=eps)
+                )
                 return dict(
                     means=means_x_0,
                     logstds=logstds_x_0,
-                    logweights=denoising_output['logweights'])
-            elif 'var' in denoising_output:
-                mean = x_t - sigma * denoising_output['mean']
-                var = denoising_output['var'] * sigma.square()
+                    logweights=denoising_output["logweights"],
+                )
+            elif "var" in denoising_output:
+                mean = x_t - sigma * denoising_output["mean"]
+                var = denoising_output["var"] * sigma.square()
                 return dict(mean=mean, var=var)
             else:
-                raise ValueError('Invalid denoising_output.')
+                raise ValueError("Invalid denoising_output.")
 
         else:  # sample mode
             x_0 = x_t - sigma * denoising_output
             return x_0
 
     def gmflow_posterior_mean(
-            self, gm, x_t, x_t_src, t=None, t_src=None,
-            sigma_t_src=None, sigma_t=None, eps=1e-6, prediction_type='x0',
-            checkpointing=False):
+        self,
+        gm,
+        x_t,
+        x_t_src,
+        t=None,
+        t_src=None,
+        sigma_t_src=None,
+        sigma_t=None,
+        eps=1e-6,
+        prediction_type="x0",
+        checkpointing=False,
+    ):
         """
         Fuse gmflow_posterior and gm_to_mean to avoid redundant computation.
         """
@@ -136,31 +174,47 @@ class GMFlowMixin:
             t = t.reshape(*t.size(), *((x_t_src.dim() - t.dim()) * [1]))
             sigma_t = t / self.time_scaling
 
-        if prediction_type == 'u':
+        if prediction_type == "u":
             gm = self.u_to_x_0(gm, x_t_src, sigma=sigma_t_src)
         else:
-            assert prediction_type == 'x0'
+            assert prediction_type == "x0"
 
-        gm_means = gm['means']  # (bs, *, num_gaussians, out_channels, h, w)
-        gm_logweights = gm['logweights']  # (bs, *, num_gaussians, 1, h, w)
-        if 'gm_vars' in gm:
-            gm_vars = gm['gm_vars']
+        gm_means = gm["means"]  # (bs, *, num_gaussians, out_channels, h, w)
+        gm_logweights = gm["logweights"]  # (bs, *, num_gaussians, 1, h, w)
+        if "gm_vars" in gm:
+            gm_vars = gm["gm_vars"]
         else:
-            gm_vars = (gm['logstds'] * 2).exp()  # (bs, *, 1, 1, 1, 1)
-            gm['gm_vars'] = gm_vars
+            gm_vars = (gm["logstds"] * 2).exp()  # (bs, *, 1, 1, 1, 1)
+            gm["gm_vars"] = gm_vars
 
         if checkpointing and torch.is_grad_enabled():
             return torch.utils.checkpoint.checkpoint(
                 gmflow_posterior_mean_jit,
-                sigma_t_src, sigma_t, x_t_src, x_t,
-                gm_means, gm_vars, gm_logweights, eps,
-                use_reentrant=True)  # use_reentrant=False does not work with jit
+                sigma_t_src,
+                sigma_t,
+                x_t_src,
+                x_t,
+                gm_means,
+                gm_vars,
+                gm_logweights,
+                eps,
+                use_reentrant=True,
+            )  # use_reentrant=False does not work with jit
         else:
             return gmflow_posterior_mean_jit(
-                sigma_t_src, sigma_t, x_t_src, x_t,
-                gm_means, gm_vars, gm_logweights, eps)
+                sigma_t_src,
+                sigma_t,
+                x_t_src,
+                x_t,
+                gm_means,
+                gm_vars,
+                gm_logweights,
+                eps,
+            )
 
-    def reverse_transition(self, denoising_output, x_t_high, t_low, t_high, eps=1e-6, prediction_type='u'):
+    def reverse_transition(
+        self, denoising_output, x_t_high, t_low, t_high, eps=1e-6, prediction_type="u"
+    ):
         if isinstance(denoising_output, dict):
             x_t_high = x_t_high.unsqueeze(-4)
 
@@ -174,7 +228,9 @@ class GMFlowMixin:
         if t_high.dim() == 0:
             t_high = t_high.expand(bs)
         t_low = t_low.reshape(*t_low.size(), *((x_t_high.dim() - t_low.dim()) * [1]))
-        t_high = t_high.reshape(*t_high.size(), *((x_t_high.dim() - t_high.dim()) * [1]))
+        t_high = t_high.reshape(
+            *t_high.size(), *((x_t_high.dim() - t_high.dim()) * [1])
+        )
 
         sigma = t_high / self.time_scaling
         sigma_to = t_low / self.time_scaling
@@ -185,75 +241,109 @@ class GMFlowMixin:
         alpha_over_alpha_to = alpha / alpha_to.clamp(min=eps)
         beta_over_sigma_sq = 1 - (sigma_to_over_sigma * alpha_over_alpha_to) ** 2
 
-        c1 = sigma_to_over_sigma ** 2 * alpha_over_alpha_to
+        c1 = sigma_to_over_sigma**2 * alpha_over_alpha_to
         c2 = beta_over_sigma_sq * alpha_to
 
         if isinstance(denoising_output, dict):
-            c3 = beta_over_sigma_sq * sigma_to ** 2
-            if prediction_type == 'u':
-                means_x_0 = x_t_high - sigma * denoising_output['means']
-                logstds_x_t_low = torch.logaddexp(
-                    (denoising_output['logstds'] + torch.log((sigma * c2).clamp(min=eps))) * 2,
-                    torch.log(c3.clamp(min=eps))
-                ) / 2
-            elif prediction_type == 'x0':
-                means_x_0 = denoising_output['means']
-                logstds_x_t_low = torch.logaddexp(
-                    (denoising_output['logstds'] + torch.log(c2.clamp(min=eps))) * 2,
-                    torch.log(c3.clamp(min=eps))
-                ) / 2
+            c3 = beta_over_sigma_sq * sigma_to**2
+            if prediction_type == "u":
+                means_x_0 = x_t_high - sigma * denoising_output["means"]
+                logstds_x_t_low = (
+                    torch.logaddexp(
+                        (
+                            denoising_output["logstds"]
+                            + torch.log((sigma * c2).clamp(min=eps))
+                        )
+                        * 2,
+                        torch.log(c3.clamp(min=eps)),
+                    )
+                    / 2
+                )
+            elif prediction_type == "x0":
+                means_x_0 = denoising_output["means"]
+                logstds_x_t_low = (
+                    torch.logaddexp(
+                        (denoising_output["logstds"] + torch.log(c2.clamp(min=eps)))
+                        * 2,
+                        torch.log(c3.clamp(min=eps)),
+                    )
+                    / 2
+                )
             else:
-                raise ValueError('Invalid prediction_type.')
+                raise ValueError("Invalid prediction_type.")
             means_x_t_low = c1 * x_t_high + c2 * means_x_0
             return dict(
                 means=means_x_t_low,
                 logstds=logstds_x_t_low,
-                logweights=denoising_output['logweights'])
+                logweights=denoising_output["logweights"],
+            )
 
         else:  # sample mode
-            c3_sqrt = beta_over_sigma_sq ** 0.5 * sigma_to
+            c3_sqrt = beta_over_sigma_sq**0.5 * sigma_to
             noise = torch.randn_like(denoising_output)
-            if prediction_type == 'u':
+            if prediction_type == "u":
                 x_0 = x_t_high - sigma * denoising_output
-            elif prediction_type == 'x0':
+            elif prediction_type == "x0":
                 x_0 = denoising_output
             else:
-                raise ValueError('Invalid prediction_type.')
+                raise ValueError("Invalid prediction_type.")
             x_t_low = c1 * x_t_high + c2 * x_0 + c3_sqrt * noise
             return x_t_low
 
     @staticmethod
     def gm_sample(gm, power_spectrum=None, n_samples=1, generator=None):
-        device = gm['means'].device
+        device = gm["means"].device
         if power_spectrum is not None:
             power_spectrum = power_spectrum.to(dtype=torch.float32).unsqueeze(-4)
-            shape = list(gm['means'].size())
+            shape = list(gm["means"].size())
             shape[-4] = n_samples
             half_size = shape[-1] // 2 + 1
-            spectral_samples = torch.randn(
-                shape, dtype=torch.float32, device=device, generator=generator) * (power_spectrum / 2).exp()
-            z_1 = spectral_samples.roll((-1, -1), dims=(-2, -1)).flip((-2, -1))[..., :half_size]
+            spectral_samples = (
+                torch.randn(
+                    shape, dtype=torch.float32, device=device, generator=generator
+                )
+                * (power_spectrum / 2).exp()
+            )
+            z_1 = spectral_samples.roll((-1, -1), dims=(-2, -1)).flip((-2, -1))[
+                ..., :half_size
+            ]
             z_0 = spectral_samples[..., :half_size]
             z_kr = torch.complex(z_0 + z_1, z_0 - z_1) / 2
-            gaussian_samples = torch.fft.irfft2(z_kr, norm='ortho')
-            samples = gaussian_samples_to_gm_samples(gm, gaussian_samples, axis_aligned=True)
+            gaussian_samples = torch.fft.irfft2(z_kr, norm="ortho")
+            samples = gaussian_samples_to_gm_samples(
+                gm, gaussian_samples, axis_aligned=True
+            )
         else:
             samples = gm_to_sample(gm, n_samples=n_samples)
             spectral_samples = None
         return samples, spectral_samples
 
     def gm_to_model_output(self, gm, output_mode, power_spectrum=None, generator=None):
-        assert output_mode in ['mean', 'sample']
-        if output_mode == 'mean':
+        assert output_mode in ["mean", "sample"]
+        if output_mode == "mean":
             output = gm_to_mean(gm)
         else:  # sample
-            output = self.gm_sample(gm, power_spectrum, generator=generator)[0].squeeze(-4)
+            output = self.gm_sample(gm, power_spectrum, generator=generator)[0].squeeze(
+                -4
+            )
         return output
 
     def gm_2nd_order(
-            self, gm_output, gaussian_output, x_t, t, h,
-            guidance_scale=0.0, gm_cond=None, gaussian_cond=None, avg_var=None, cfg_bias=None, ca=0.005, cb=1.0,
-            gm2_correction_steps=0):
+        self,
+        gm_output,
+        gaussian_output,
+        x_t,
+        t,
+        h,
+        guidance_scale=0.0,
+        gm_cond=None,
+        gaussian_cond=None,
+        avg_var=None,
+        cfg_bias=None,
+        ca=0.005,
+        cb=1.0,
+        gm2_correction_steps=0,
+    ):
         if self.prev_gm is not None:
             dim = list(range(1, x_t.dim()))
 
@@ -262,14 +352,17 @@ class GMFlowMixin:
                 base_gaussian = gaussian_cond
                 base_gm = gm_cond
             else:
-                gm_mean = gaussian_output['mean']
+                gm_mean = gaussian_output["mean"]
                 base_gaussian = gaussian_output
-                base_gaussian['var'] = base_gaussian['var'].mean(dim=dim[:-3] + dim[-2:], keepdim=True)  # exclude channel dim
-                avg_var = base_gaussian['var'].mean(dim=dim, keepdim=True)
+                base_gaussian["var"] = base_gaussian["var"].mean(
+                    dim=dim[:-3] + dim[-2:], keepdim=True
+                )  # exclude channel dim
+                avg_var = base_gaussian["var"].mean(dim=dim, keepdim=True)
                 base_gm = gm_output
 
             mean_from_prev = self.gmflow_posterior_mean(
-                self.prev_gm, x_t, self.prev_x_t, t, self.prev_t, prediction_type='x0')
+                self.prev_gm, x_t, self.prev_x_t, t, self.prev_t, prediction_type="x0"
+            )
             self.prev_gm = gm_output
 
             # Compute rescaled 2nd-order mean difference
@@ -278,7 +371,8 @@ class GMFlowMixin:
             _guidance_scale = guidance_scale * cb
             err_power = avg_var * (_guidance_scale * _guidance_scale + ca)
             mean_diff = (gm_mean - mean_from_prev) * (
-                (1 - err_power / (prev_h_norm * prev_h_norm)).clamp(min=0).sqrt() * k)
+                (1 - err_power / (prev_h_norm * prev_h_norm)).clamp(min=0).sqrt() * k
+            )
 
             bias = mean_diff
             # Here we fuse probabilistic guidance bias and 2nd-order mean difference to perform one single
@@ -289,30 +383,52 @@ class GMFlowMixin:
             bias = bias * (avg_var / bias_power.clamp(min=1e-6)).clamp(max=1).sqrt()
 
             gaussian_output = dict(
-                mean=base_gaussian['mean'] + bias,
-                var=base_gaussian['var'] * (1 - bias_power / avg_var.clamp(min=1e-6)).clamp(min=1e-6))
+                mean=base_gaussian["mean"] + bias,
+                var=base_gaussian["var"]
+                * (1 - bias_power / avg_var.clamp(min=1e-6)).clamp(min=1e-6),
+            )
             gm_output = gm_mul_iso_gaussian(
-                base_gm, iso_gaussian_mul_iso_gaussian(gaussian_output, base_gaussian, 1, -1),
-                1, 1)[0]
+                base_gm,
+                iso_gaussian_mul_iso_gaussian(gaussian_output, base_gaussian, 1, -1),
+                1,
+                1,
+            )[0]
 
             # Additional correction steps for strictly matching the 2nd order mean difference
             if gm2_correction_steps > 0:
                 adjusted_bias = bias
-                tgt_bias = mean_diff + gm_mean - base_gaussian['mean']
+                tgt_bias = mean_diff + gm_mean - base_gaussian["mean"]
                 for _ in range(gm2_correction_steps):
-                    out_bias = gm_to_mean(gm_output) - base_gaussian['mean']
+                    out_bias = gm_to_mean(gm_output) - base_gaussian["mean"]
                     err = out_bias - tgt_bias
                     adjusted_bias = adjusted_bias - err * (
-                        adjusted_bias.norm(dim=-3, keepdim=True) / out_bias.norm(dim=-3, keepdim=True).clamp(min=1e-6)
+                        adjusted_bias.norm(dim=-3, keepdim=True)
+                        / out_bias.norm(dim=-3, keepdim=True).clamp(min=1e-6)
                     ).clamp(max=1)
-                    adjusted_bias_power = adjusted_bias.square().mean(dim=dim, keepdim=True)
-                    adjusted_bias = adjusted_bias * (avg_var / adjusted_bias_power.clamp(min=1e-6)).clamp(max=1).sqrt()
+                    adjusted_bias_power = adjusted_bias.square().mean(
+                        dim=dim, keepdim=True
+                    )
+                    adjusted_bias = (
+                        adjusted_bias
+                        * (avg_var / adjusted_bias_power.clamp(min=1e-6))
+                        .clamp(max=1)
+                        .sqrt()
+                    )
                     adjusted_gaussian_output = dict(
-                        mean=base_gaussian['mean'] + adjusted_bias,
-                        var=base_gaussian['var'] * (1 - adjusted_bias_power / avg_var.clamp(min=1e-6)).clamp(min=1e-6))
+                        mean=base_gaussian["mean"] + adjusted_bias,
+                        var=base_gaussian["var"]
+                        * (1 - adjusted_bias_power / avg_var.clamp(min=1e-6)).clamp(
+                            min=1e-6
+                        ),
+                    )
                     gm_output = gm_mul_iso_gaussian(
-                        base_gm, iso_gaussian_mul_iso_gaussian(adjusted_gaussian_output, base_gaussian, 1, -1),
-                        1, 1)[0]
+                        base_gm,
+                        iso_gaussian_mul_iso_gaussian(
+                            adjusted_gaussian_output, base_gaussian, 1, -1
+                        ),
+                        1,
+                        1,
+                    )[0]
 
         else:
             self.prev_gm = gm_output
@@ -333,14 +449,11 @@ class GMFlowMixin:
 @MODULES.register_module()
 class GMFlow(GaussianFlow, GMFlowMixin):
 
-    def __init__(
-            self,
-            *args,
-            spectrum_net=None,
-            spectral_loss_weight=1.0,
-            **kwargs):
+    def __init__(self, *args, spectrum_net=None, spectral_loss_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
-        self.spectrum_net = build_module(spectrum_net) if spectrum_net is not None else None
+        self.spectrum_net = (
+            build_module(spectrum_net) if spectrum_net is not None else None
+        )
         self.spectral_loss_weight = spectral_loss_weight
         self.intermediate_x_t = []
         self.intermediate_x_0 = []
@@ -372,8 +485,9 @@ class GMFlow(GaussianFlow, GMFlowMixin):
             output_g = self.u_to_x_0(gm_to_iso_gaussian(denoising_output)[0], x_t, t)
             u = (x_t - x_0) * inv_sigma
             z_kr = gm_samples_to_gaussian_samples(
-                denoising_output, u.unsqueeze(-4), axis_aligned=True).squeeze(-4)
-            z_kr_fft = torch.fft.fft2(z_kr, norm='ortho')
+                denoising_output, u.unsqueeze(-4), axis_aligned=True
+            ).squeeze(-4)
+            z_kr_fft = torch.fft.fft2(z_kr, norm="ortho")
             z_kr_fft = z_kr_fft.real + z_kr_fft.imag
 
         log_var = self.spectrum_net(output_g)
@@ -384,7 +498,10 @@ class GMFlow(GaussianFlow, GMFlowMixin):
 
     def pred(self, x_t=None, t=None, **kwargs):
         ndim = x_t.dim()
-        assert ndim in [4, 5], f'Invalid x_t shape: {x_t.shape}. Expected 4D or 5D tensor.'
+        assert ndim in [
+            4,
+            5,
+        ], f"Invalid x_t shape: {x_t.shape}. Expected 4D or 5D tensor."
         if ndim == 5:  # (bs, t, c, h, w)
             x_t = x_t.permute(0, 2, 1, 3, 4)  # (bs, c, t, h, w)
         output = super().pred(x_t=x_t, t=t, **kwargs)
@@ -398,23 +515,33 @@ class GMFlow(GaussianFlow, GMFlowMixin):
         num_batches = x_0.size(0)
         seq_len = x_0.shape[2:].numel()  # h * w or t * h * w
         ndim = x_0.dim()
-        assert ndim in [4, 5], f'Invalid x_0 shape: {x_0.shape}. Expected 4D or 5D tensor.'
+        assert ndim in [
+            4,
+            5,
+        ], f"Invalid x_0 shape: {x_0.shape}. Expected 4D or 5D tensor."
         if ndim == 5:  # (bs, c, t, h, w)
             x_0 = x_0.permute(0, 2, 1, 3, 4)  # (bs, t, c, h, w)
 
-        trans_ratio = self.train_cfg.get('trans_ratio', 1.0)
-        eps = self.train_cfg.get('eps', 1e-4)
+        trans_ratio = self.train_cfg.get("trans_ratio", 1.0)
+        eps = self.train_cfg.get("eps", 1e-4)
 
-        t_high = self.timestep_sampler(
-            num_batches, seq_len=seq_len).to(device).clamp(min=eps, max=self.num_timesteps)
+        t_high = (
+            self.timestep_sampler(num_batches, seq_len=seq_len)
+            .to(device)
+            .clamp(min=eps, max=self.num_timesteps)
+        )
         t_low = t_high * (1 - trans_ratio)
         t_low = torch.minimum(t_low, t_high - eps).clamp(min=0)
 
-        noise = torch.randn((num_batches * 2, *x_0.shape[1:]), device=device, dtype=x_0.dtype)
+        noise = torch.randn(
+            (num_batches * 2, *x_0.shape[1:]), device=device, dtype=x_0.dtype
+        )
         noise_0, noise_1 = torch.chunk(noise, 2, dim=0)
 
         x_t_low, _, _ = self.sample_forward_diffusion(x_0, t_low, noise_0)
-        x_t_high = self.sample_forward_transition(x_t_low, noise_1, t_src=t_low, t_tgt=t_high)
+        x_t_high = self.sample_forward_transition(
+            x_t_low, noise_1, t_src=t_low, t_tgt=t_high
+        )
 
         denoising_output = self.pred(x_t_high, t_high, **kwargs)
         loss = self.loss(denoising_output, x_t_low, x_t_high, t_low, t_high)
@@ -430,50 +557,70 @@ class GMFlow(GaussianFlow, GMFlowMixin):
         return loss, log_vars
 
     def forward_test(
-            self, x_0=None, noise=None, guidance_scale=0.0,
-            test_cfg_override=dict(), show_pbar=False, **kwargs):
+        self,
+        x_0=None,
+        noise=None,
+        guidance_scale=0.0,
+        test_cfg_override=dict(),
+        show_pbar=False,
+        **kwargs,
+    ):
         x_t = torch.randn_like(x_0) if noise is None else noise
         num_batches = x_t.size(0)
         seq_len = x_t.shape[2:].numel()  # h * w or t * h * w
         ori_dtype = x_t.dtype
         x_t = x_t.float()
         ndim = x_t.dim()
-        assert ndim in [4, 5], f'Invalid x_t shape: {x_t.shape}. Expected 4D or 5D tensor.'
+        assert ndim in [
+            4,
+            5,
+        ], f"Invalid x_t shape: {x_t.shape}. Expected 4D or 5D tensor."
         if ndim == 5:  # (bs, c, t, h, w)
             x_t = x_t.permute(0, 2, 1, 3, 4)  # (bs, t, c, h, w)
 
         cfg = deepcopy(self.test_cfg)
         cfg.update(test_cfg_override)
 
-        output_mode = cfg.get('output_mode', 'mean')
-        assert output_mode in ['mean', 'sample']
+        output_mode = cfg.get("output_mode", "mean")
+        assert output_mode in ["mean", "sample"]
 
-        sampler = cfg['sampler']
-        sampler_class = getattr(diffusers.schedulers, sampler + 'Scheduler', None)
+        sampler = cfg["sampler"]
+        sampler_class = getattr(diffusers.schedulers, sampler + "Scheduler", None)
         if sampler_class is None:
-            sampler_class = getattr(schedulers, sampler + 'Scheduler', None)
+            sampler_class = getattr(schedulers, sampler + "Scheduler", None)
         if sampler_class is None:
-            raise AttributeError(f'Cannot find sampler [{sampler}].')
+            raise AttributeError(f"Cannot find sampler [{sampler}].")
 
-        sampler_kwargs = cfg.get('sampler_kwargs', {})
+        sampler_kwargs = cfg.get("sampler_kwargs", {})
         signatures = inspect.signature(sampler_class).parameters.keys()
-        for key in ['shift', 'use_dynamic_shifting', 'base_seq_len', 'max_seq_len', 'base_logshift', 'max_logshift']:
+        for key in [
+            "shift",
+            "use_dynamic_shifting",
+            "base_seq_len",
+            "max_seq_len",
+            "base_logshift",
+            "max_logshift",
+        ]:
             if key in signatures and key not in sampler_kwargs:
                 sampler_kwargs[key] = cfg.get(key, getattr(self.timestep_sampler, key))
         sampler = sampler_class(self.num_timesteps, **sampler_kwargs)
 
-        num_timesteps = cfg.get('num_timesteps', self.num_timesteps)
-        num_substeps = cfg.get('num_substeps', 1)
-        guidance_interval = cfg.get('guidance_interval', [0, self.num_timesteps])
-        orthogonal_guidance = cfg.get('orthogonal_guidance', 1.0)
-        save_intermediate = cfg.get('save_intermediate', False)
-        order = cfg.get('order', 1)
-        gm2_coefs = cfg.get('gm2_coefs', [0.005, 1.0])
-        gm2_correction_steps = cfg.get('gm2_correction_steps', 0)
+        num_timesteps = cfg.get("num_timesteps", self.num_timesteps)
+        num_substeps = cfg.get("num_substeps", 1)
+        guidance_interval = cfg.get("guidance_interval", [0, self.num_timesteps])
+        orthogonal_guidance = cfg.get("orthogonal_guidance", 1.0)
+        save_intermediate = cfg.get("save_intermediate", False)
+        order = cfg.get("order", 1)
+        gm2_coefs = cfg.get("gm2_coefs", [0.005, 1.0])
+        gm2_correction_steps = cfg.get("gm2_correction_steps", 0)
 
-        set_timesteps_signatures = inspect.signature(sampler.set_timesteps).parameters.keys()
-        if 'seq_len' in set_timesteps_signatures:
-            sampler.set_timesteps(num_timesteps * num_substeps, seq_len=seq_len, device=x_t.device)
+        set_timesteps_signatures = inspect.signature(
+            sampler.set_timesteps
+        ).parameters.keys()
+        if "seq_len" in set_timesteps_signatures:
+            sampler.set_timesteps(
+                num_timesteps * num_substeps, seq_len=seq_len, device=x_t.device
+            )
         else:
             sampler.set_timesteps(num_timesteps * num_substeps, device=x_t.device)
 
@@ -507,8 +654,14 @@ class GMFlow(GaussianFlow, GMFlowMixin):
                     x_t_input = torch.cat([x_t_input, x_t_input], dim=0)
                 else:
                     _kwargs = {
-                        k: v[num_batches:] if isinstance(v, torch.Tensor) and v.size(0) == 2 * num_batches else v
-                        for k, v in kwargs.items()}
+                        k: (
+                            v[num_batches:]
+                            if isinstance(v, torch.Tensor)
+                            and v.size(0) == 2 * num_batches
+                            else v
+                        )
+                        for k, v in kwargs.items()
+                    }
 
             gm_output = self.pred(x_t_input, t, **_kwargs)
             assert isinstance(gm_output, dict)
@@ -521,15 +674,28 @@ class GMFlow(GaussianFlow, GMFlowMixin):
                 uncond_mean = gm_to_mean(gm_uncond)
                 gaussian_cond = gm_to_iso_gaussian(gm_cond)[0]
                 if ndim == 5:
-                    gaussian_cond['var'] = gaussian_cond['var'].mean(dim=(-4, -2, -1), keepdim=True)  # exclude channel dim
+                    gaussian_cond["var"] = gaussian_cond["var"].mean(
+                        dim=(-4, -2, -1), keepdim=True
+                    )  # exclude channel dim
                 else:
-                    gaussian_cond['var'] = gaussian_cond['var'].mean(dim=(-2, -1), keepdim=True)  # exclude channel dim
+                    gaussian_cond["var"] = gaussian_cond["var"].mean(
+                        dim=(-2, -1), keepdim=True
+                    )  # exclude channel dim
                 gaussian_output, cfg_bias, avg_var = probabilistic_guidance_jit(
-                    gaussian_cond['mean'], gaussian_cond['var'], uncond_mean, guidance_scale,
-                    orthogonal=orthogonal_guidance)
+                    gaussian_cond["mean"],
+                    gaussian_cond["var"],
+                    uncond_mean,
+                    guidance_scale,
+                    orthogonal=orthogonal_guidance,
+                )
                 gm_output = gm_mul_iso_gaussian(
-                    gm_cond, iso_gaussian_mul_iso_gaussian(gaussian_output, gaussian_cond, 1, -1),
-                    1, 1)[0]
+                    gm_cond,
+                    iso_gaussian_mul_iso_gaussian(
+                        gaussian_output, gaussian_cond, 1, -1
+                    ),
+                    1,
+                    1,
+                )[0]
             else:
                 gaussian_output = gm_to_iso_gaussian(gm_output)[0]
                 gm_cond = gaussian_cond = avg_var = cfg_bias = None
@@ -541,9 +707,20 @@ class GMFlow(GaussianFlow, GMFlowMixin):
                 else:
                     h = t
                 gm_output, gaussian_output = self.gm_2nd_order(
-                    gm_output, gaussian_output, x_t, t, h,
-                    guidance_scale if guidance_active else 0.0, gm_cond, gaussian_cond, avg_var, cfg_bias,
-                    ca=gm2_coefs[0], cb=gm2_coefs[1], gm2_correction_steps=gm2_correction_steps)
+                    gm_output,
+                    gaussian_output,
+                    x_t,
+                    t,
+                    h,
+                    guidance_scale if guidance_active else 0.0,
+                    gm_cond,
+                    gaussian_cond,
+                    avg_var,
+                    cfg_bias,
+                    ca=gm2_coefs[0],
+                    cb=gm2_coefs[1],
+                    gm2_correction_steps=gm2_correction_steps,
+                )
 
             if save_intermediate:
                 self.intermediate_gm_x_0.append(gm_output)
@@ -551,7 +728,9 @@ class GMFlow(GaussianFlow, GMFlowMixin):
                     t_next = timesteps[(timestep_id + 1) * num_substeps]
                 else:
                     t_next = 0
-                gm_trans = self.reverse_transition(gm_output, x_t, t_next, t, prediction_type='x0')
+                gm_trans = self.reverse_transition(
+                    gm_output, x_t, t_next, t, prediction_type="x0"
+                )
                 self.intermediate_gm_trans.append(gm_trans)
 
             # ========== GM SDE step or GM ODE substeps ==========
@@ -559,18 +738,23 @@ class GMFlow(GaussianFlow, GMFlowMixin):
             t_base = t
             for substep_id in range(num_substeps):
                 if substep_id == 0:
-                    if self.spectrum_net is not None and output_mode == 'sample':
+                    if self.spectrum_net is not None and output_mode == "sample":
                         # Note: only support 2D power spectrum for now.
                         power_spectrum = self.spectrum_net(gaussian_output)
                     else:
                         power_spectrum = None
-                    model_output = self.gm_to_model_output(gm_output, output_mode, power_spectrum=power_spectrum)
+                    model_output = self.gm_to_model_output(
+                        gm_output, output_mode, power_spectrum=power_spectrum
+                    )
                 else:
-                    assert output_mode == 'mean'
+                    assert output_mode == "mean"
                     t = timesteps[timestep_id * num_substeps + substep_id]
                     model_output = self.gmflow_posterior_mean(
-                        gm_output, x_t, x_t_base, t, t_base, prediction_type='x0')
-                x_t = sampler.step(model_output, t, x_t, return_dict=False, prediction_type='x0')[0]
+                        gm_output, x_t, x_t_base, t, t_base, prediction_type="x0"
+                    )
+                x_t = sampler.step(
+                    model_output, t, x_t, return_dict=False, prediction_type="x0"
+                )[0]
 
             if save_intermediate:
                 self.intermediate_x_0.append(model_output)
@@ -579,7 +763,7 @@ class GMFlow(GaussianFlow, GMFlowMixin):
                 pbar.update()
 
         if show_pbar:
-            sys.stdout.write('\n')
+            sys.stdout.write("\n")
 
         if ndim == 5:  # (bs, t, c, h, w)
             x_t = x_t.permute(0, 2, 1, 3, 4)  # (bs, c, t, h, w)
@@ -590,15 +774,18 @@ class GMFlow(GaussianFlow, GMFlowMixin):
         ori_dtype = x_t.dtype
         x_t = x_t.float()
         ndim = x_t.dim()
-        assert ndim in [4, 5], f'Invalid x_t shape: {x_t.shape}. Expected 4D or 5D tensor.'
+        assert ndim in [
+            4,
+            5,
+        ], f"Invalid x_t shape: {x_t.shape}. Expected 4D or 5D tensor."
         if ndim == 5:  # (bs, c, t, h, w)
             x_t = x_t.permute(0, 2, 1, 3, 4)  # (bs, t, c, h, w)
 
         cfg = deepcopy(self.test_cfg)
         cfg.update(test_cfg_override)
 
-        orthogonal_guidance = cfg.get('orthogonal_guidance', 1.0)
-        guidance_interval = cfg.get('guidance_interval', [0, self.num_timesteps])
+        orthogonal_guidance = cfg.get("orthogonal_guidance", 1.0)
+        guidance_interval = cfg.get("guidance_interval", [0, self.num_timesteps])
 
         use_guidance = 0.0 < guidance_scale < 1.0
 
@@ -619,20 +806,35 @@ class GMFlow(GaussianFlow, GMFlowMixin):
             uncond_mean = gm_to_mean(gm_uncond)
             gaussian_cond = gm_to_iso_gaussian(gm_cond)[0]
             if ndim == 5:
-                gaussian_cond['var'] = gaussian_cond['var'].mean(dim=(-4, -2, -1), keepdim=True)  # exclude channel dim
+                gaussian_cond["var"] = gaussian_cond["var"].mean(
+                    dim=(-4, -2, -1), keepdim=True
+                )  # exclude channel dim
             else:
-                gaussian_cond['var'] = gaussian_cond['var'].mean(dim=(-2, -1), keepdim=True)
+                gaussian_cond["var"] = gaussian_cond["var"].mean(
+                    dim=(-2, -1), keepdim=True
+                )
             gaussian_output = probabilistic_guidance_jit(
-                gaussian_cond['mean'], gaussian_cond['var'], uncond_mean, guidance_scale,
+                gaussian_cond["mean"],
+                gaussian_cond["var"],
+                uncond_mean,
+                guidance_scale,
                 orthogonal=orthogonal_guidance,
-                orthogonal_axis=self.u_to_x_0(gaussian_cond['mean'], x_t, t))[0]
+                orthogonal_axis=self.u_to_x_0(gaussian_cond["mean"], x_t, t),
+            )[0]
             gm_output = gm_mul_iso_gaussian(
-                gm_cond, iso_gaussian_mul_iso_gaussian(gaussian_output, gaussian_cond, 1, -1),
-                1, 1)[0]
+                gm_cond,
+                iso_gaussian_mul_iso_gaussian(gaussian_output, gaussian_cond, 1, -1),
+                1,
+                1,
+            )[0]
             if guidance_interval[0] > 0 or guidance_interval[1] < self.num_timesteps:
-                guidance_active = ((t >= guidance_interval[0]) & (t <= guidance_interval[1])).reshape(
-                    [num_batches] + [1] * ndim)
-                gm_output = {k: torch.where(guidance_active, v, gm_cond[k]) for k, v in gm_output.items()}
+                guidance_active = (
+                    (t >= guidance_interval[0]) & (t <= guidance_interval[1])
+                ).reshape([num_batches] + [1] * ndim)
+                gm_output = {
+                    k: torch.where(guidance_active, v, gm_cond[k])
+                    for k, v in gm_output.items()
+                }
 
         u = gm_to_mean(gm_output)
 

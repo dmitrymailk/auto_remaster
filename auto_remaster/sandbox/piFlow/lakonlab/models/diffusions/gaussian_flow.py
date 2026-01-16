@@ -261,7 +261,12 @@ class GaussianFlow(nn.Module):
         return x_t.to(ori_dtype)
 
     def forward_u(
-        self, x_t=None, t=None, guidance_scale=1.0, test_cfg_override=dict(), **kwargs
+        self,
+        x_t=None,
+        t=None,
+        guidance_scale=1.0,
+        test_cfg_override=dict(),
+        **kwargs,
     ):
         ori_dtype = x_t.dtype
         x_t = x_t.float()

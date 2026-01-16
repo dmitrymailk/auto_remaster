@@ -130,12 +130,18 @@ def policy_rollout(
 
 def main():
     args = parse_args()
+    # jay
     class_name = args.name
+    # 32
     num_gaussians = args.k
+    # 5000
     num_iters = args.num_iters
+    # 5e-3
     lr = args.lr
     out_path = args.out
+    # 4.0
     guidance_scale = args.cfg
+    # 2
     num_intermediates = args.num_intermediates
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -160,6 +166,8 @@ def main():
     assert (
         class_name in name2label
     ), f"Class name {class_name} not found in ImageNet labels."
+
+    # находим класс принадлежащий imagenet и сохраняем его как тензор
     class_labels = torch.tensor(
         [name2label[class_name]], device=device, dtype=torch.long
     )
@@ -173,6 +181,7 @@ def main():
     vae_scale_factor = 8
     vae_latent_size = (4, 256 // vae_scale_factor, 256 // vae_scale_factor)
 
+    # создаем учителя
     teacher = (
         GaussianFlow(
             denoising=DiTTransformer2DModelMod(
@@ -197,10 +206,23 @@ def main():
 
     # get initial noise
     torch.manual_seed(args.seed)
+    """
+    суть в том что мы пытаемся выучить направление только для одного примера из нормального распределения.
+    это очень странно показывать в виде примера.
+    я это выяснил лишь после того как изучил код, но в репозитории написано следующее.
+    
+    To aid understanding, we provide minimal toy model training scripts that overfit 
+    the teacher behavior on a fixed initial noise using a static GMFlow policy 
+    (without student network).
+    """
+    # семплируем из нормального распределения.
     x_t_src = torch.randn((1, *vae_latent_size), device=device)
+    # говорим что t сразу равен 1.0
     t_src = torch.ones(1, device=device)
 
     # initialize student using the u of teacher
+    # пока не уверен что это, скорее всего это общее начальное направление
+    # предсказанное из шума.
     u = teacher.forward(
         return_u=True,
         x_t=x_t_src,
@@ -208,6 +230,8 @@ def main():
         guidance_scale=guidance_scale,
         class_labels=class_labels,
     )
+    # модель результат которой не зависит от входа
+    # которая возвращает сразу множество u, вместо одной как это делает изначальный учитель
     student = StaticGMM(init_u=u, num_gaussians=num_gaussians).to(device)
 
     # start training
@@ -217,8 +241,14 @@ def main():
     for i in range(1, num_iters + 1):
         optimizer.zero_grad()
 
-        denoising_output = student(x_t_src, t_src)
+        # предсказываем независимо от входа
+        denoising_output = student(
+            x_t_src,
+            t_src,
+        )
+        # создаем policy
         policy = GMFlowPolicy(denoising_output, x_t_src, t_src)
+        # сразу же создаем копию
         detached_policy = policy.detach()
 
         loss = 0
