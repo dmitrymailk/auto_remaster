@@ -96,7 +96,7 @@ class DiffusionTrainingArguments:
     lpips_factor: float = field(default=5.0)
     gan_factor: float = field(default=0.5)
     bridge_noise_sigma: float = field(default=0.001)
-    timestep_sampling: str = field(default="uniform")  # "uniform", "log_normal"
+    timestep_sampling: str = field(default="custom_timesteps")  # "uniform", "custom_timesteps"
     logit_mean: float = field(default=0.0)
     logit_std: float = field(default=1.0)
     latent_loss_weight: float = field(default=1.0)
@@ -436,9 +436,15 @@ def main():
     # Create scheduler from scratch (no need for SDXL)
     # One scheduler is enough - set_timesteps() in validation doesn't affect training
     noise_scheduler = FlowMatchEulerDiscreteScheduler()
+    num_steps = diffusion_args.num_inference_steps
+
+    sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
+
+    noise_scheduler.set_timesteps(sigmas=sigmas, device=accelerator.device)
     selected_timesteps_tensor = torch.tensor(
-        # [250, 500, 750, 1000], device=accelerator.device
-        [1000], device=accelerator.device
+        [250, 500, 750, 1000],
+        # [1000],
+        device=accelerator.device,
     ).long()
     # weight_dtype = torch.float16
     weight_dtype = torch.float32
@@ -707,12 +713,6 @@ def main():
     # Helper function for timestep sampling (similar to LBM)
     def _timestep_sampling(n_samples=1, device="cpu"):
         if diffusion_args.timestep_sampling == "uniform":
-            # idx = torch.randint(
-            #     0,
-            #     noise_scheduler.config.num_train_timesteps,
-            #     (n_samples,),
-            #     device="cpu",
-            # )
             idx = torch.randint(
                 0,
                 noise_scheduler.config.num_train_timesteps,
@@ -720,20 +720,10 @@ def main():
                 device="cpu",
             )
             return noise_scheduler.timesteps[idx].to(device=device)
-        elif diffusion_args.timestep_sampling == "log_normal":
-            u = torch.normal(
-                mean=diffusion_args.logit_mean,
-                std=diffusion_args.logit_std,
-                size=(n_samples,),
-                device="cpu",
-            )
-            u = torch.nn.functional.sigmoid(u)
-            indices = (u * noise_scheduler.config.num_train_timesteps).long()
-            return noise_scheduler.timesteps[indices].to(device=device)
-        else:
-            raise ValueError(
-                f"Unknown timestep_sampling: {diffusion_args.timestep_sampling}"
-            )
+        elif diffusion_args.timestep_sampling == "custom_timesteps":
+            idx = np.random.choice(len(selected_timesteps_tensor), n_samples)
+
+            return selected_timesteps_tensor[idx]
 
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
@@ -758,30 +748,17 @@ def main():
                     z_target = z_target * vae.config.scaling_factor
 
                 # Sample timesteps (Bridge Matching)
-                # timesteps = _timestep_sampling(
-                #     n_samples=z_source.shape[0], device=z_source.device
-                # )
-                idx = torch.randint(
-                    0,
-                    len(selected_timesteps_tensor),
-                    (z_source.shape[0],),
-                    device=z_source.device,
-                )
-                timesteps = selected_timesteps_tensor[idx]
-                sigmas = timesteps.float() / noise_scheduler.config.num_train_timesteps
-                while len(sigmas.shape) < 4:
-                    sigmas = sigmas.unsqueeze(-1)
-                sigmas = sigmas.to(weight_dtype)
+                timesteps = _timestep_sampling()
 
                 # Get sigmas for the timesteps
-                # sigmas = _get_sigmas(
-                #     noise_scheduler,
-                #     timesteps,
-                #     n_dim=4,
-                #     dtype=weight_dtype,
-                #     device=z_source.device,
-                # )
-
+                sigmas = _get_sigmas(
+                    noise_scheduler,
+                    timesteps,
+                    n_dim=4,
+                    dtype=weight_dtype,
+                    device=z_source.device,
+                )
+                # print(sigmas)
                 # Create interpolant (Bridge between z_source and z_target)
                 noisy_sample = (
                     sigmas * z_source
@@ -790,11 +767,12 @@ def main():
                     * (sigmas * (1.0 - sigmas)) ** 0.5
                     * torch.randn_like(z_source)
                 )
+                # noisy_sample = z_source
 
                 # Ensure first timestep uses z_source
-                # for i, t in enumerate(timesteps):
-                #     if t.item() == noise_scheduler.timesteps[0]:
-                #         noisy_sample[i] = z_source[i]
+                for i, t in enumerate(timesteps):
+                    if t.item() == noise_scheduler.timesteps[0]:
+                        noisy_sample[i] = z_source[i]
 
                 # Predict direction of transport (target = z_source - z_target)
                 model_pred = unet(

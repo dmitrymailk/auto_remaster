@@ -31,5 +31,25 @@
                 "CUDA_VISIBLE_DEVICES": "0"
             }
         },
+        {
+            "name": "auto_remaster/train_auto_remaster_lbm.py",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "accelerate.commands.launch",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--config_file=/code/auto_remaster/single_gpu.yaml",
+                "--module",
+                "auto_remaster.train_auto_remaster_lbm",
+                "--config",
+                "/code/auto_remaster/configs/lbm.yaml",
+            ],
+            "justMyCode": false,
+            "env": {
+                "http_proxy": "127.0.0.1:2334",
+                "https_proxy": "127.0.0.1:2334",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
     ]
 }
