@@ -29,8 +29,8 @@ dataloader_num_workers: 4
 # Training duration
 # max_steps: 15000
 max_steps: 30000
-# save_steps: 50
-save_steps: 1600
+# save_steps: 100
+save_steps: 2000
 save_total_limit: 3
 resume_from_checkpoint: false
 eval_on_start: false
