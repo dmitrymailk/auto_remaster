@@ -135,6 +135,10 @@
 - [Diffusion Adversarial Post-Training for One-Step Video Generation](https://arxiv.org/pdf/2501.08316)
 - [OSV: One Step is Enough for High-Quality Image to Video Generation](https://openaccess.thecvf.com/content/CVPR2025/papers/Mao_OSV_One_Step_is_Enough_for_High-Quality_Image_to_Video_CVPR_2025_paper.pdf)
 
+### stochastic interpolants
+- [Building Normalizing Flows with Stochastic Interpolants](https://arxiv.org/abs/2209.15571)
+- [Flow map matching with stochastic interpolants: A mathematical framework for consistency models](https://arxiv.org/pdf/2406.07507v2)
+
 ### hyperparameter tuning
 - [Analyzing and Improving the Training Dynamics of Diffusion Models](https://arxiv.org/pdf/2312.02696)
 
