@@ -88,13 +88,254 @@ from collections import OrderedDict, defaultdict
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms, utils
+
+# from torchvision import datasets, transforms, utils
 import numpy as np
 import random
 import os
 import argparse
 import json
 from torch.backends import cudnn
+from diffusers.models.embeddings import Timesteps, TimestepEmbedding
+from typing import Optional, Tuple, Union
+from diffusers.models.unets.unet_2d import UNet2DOutput
+
+
+class TwinFlowUNet2DModel(UNet2DModel):
+    def __init__(
+        self,
+        sample_size: Optional[Union[int, Tuple[int, int]]] = None,
+        in_channels: int = 3,
+        out_channels: int = 3,
+        center_input_sample: bool = False,
+        time_embedding_type: str = "positional",
+        time_embedding_dim: Optional[int] = None,
+        freq_shift: int = 0,
+        flip_sin_to_cos: bool = True,
+        down_block_types: Tuple[str, ...] = (
+            "DownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+        ),
+        mid_block_type: Optional[str] = "UNetMidBlock2D",
+        up_block_types: Tuple[str, ...] = (
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "UpBlock2D",
+        ),
+        block_out_channels: Tuple[int, ...] = (224, 448, 672, 896),
+        layers_per_block: int = 2,
+        mid_block_scale_factor: float = 1,
+        downsample_padding: int = 1,
+        downsample_type: str = "conv",
+        upsample_type: str = "conv",
+        dropout: float = 0.0,
+        act_fn: str = "silu",
+        attention_head_dim: Optional[int] = 8,
+        norm_num_groups: int = 32,
+        attn_norm_num_groups: Optional[int] = None,
+        norm_eps: float = 1e-5,
+        resnet_time_scale_shift: str = "default",
+        add_attention: bool = True,
+        class_embed_type: Optional[str] = None,
+        num_class_embeds: Optional[int] = None,
+        num_train_timesteps: Optional[int] = None,
+    ):
+        super().__init__(
+            sample_size=sample_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            center_input_sample=center_input_sample,
+            time_embedding_type=time_embedding_type,
+            time_embedding_dim=time_embedding_dim,
+            freq_shift=freq_shift,
+            flip_sin_to_cos=flip_sin_to_cos,
+            down_block_types=down_block_types,
+            mid_block_type=mid_block_type,
+            up_block_types=up_block_types,
+            block_out_channels=block_out_channels,
+            layers_per_block=layers_per_block,
+            mid_block_scale_factor=mid_block_scale_factor,
+            downsample_padding=downsample_padding,
+            downsample_type=downsample_type,
+            upsample_type=upsample_type,
+            dropout=dropout,
+            act_fn=act_fn,
+            attention_head_dim=attention_head_dim,
+            norm_num_groups=norm_num_groups,
+            attn_norm_num_groups=attn_norm_num_groups,
+            norm_eps=norm_eps,
+            resnet_time_scale_shift=resnet_time_scale_shift,
+            add_attention=add_attention,
+            class_embed_type=class_embed_type,
+            num_class_embeds=num_class_embeds,
+            num_train_timesteps=num_train_timesteps,
+        )
+
+        self.time_proj_2 = Timesteps(
+            block_out_channels[0],
+            flip_sin_to_cos,
+            freq_shift,
+        )
+        time_embed_dim = time_embedding_dim or block_out_channels[0] * 4
+        timestep_input_dim = block_out_channels[0]
+        self.time_embedding_2 = TimestepEmbedding(timestep_input_dim, time_embed_dim)
+
+    def init_time_proj_2_weights(self):
+        missing, unexpected = self.time_proj_2.load_state_dict(
+            self.time_proj.state_dict()
+        )
+        if len(missing) > 0:
+            logger.warning(f"Missing keys in time_text_embed state dict: {missing}")
+        if len(unexpected) > 0:
+            logger.warning(
+                f"Unexpected keys in time_text_embed state dict: {unexpected}"
+            )
+
+    def forward(
+        self,
+        sample: torch.Tensor,
+        timestep: Union[torch.Tensor, float, int],
+        timestep2: Union[torch.Tensor, float, int],
+        class_labels: Optional[torch.Tensor] = None,
+        return_dict: bool = True,
+    ) -> Union[UNet2DOutput, Tuple]:
+        r"""
+        The [`UNet2DModel`] forward method.
+
+        Args:
+            sample (`torch.Tensor`):
+                The noisy input tensor with the following shape `(batch, channel, height, width)`.
+            timestep (`torch.Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+            class_labels (`torch.Tensor`, *optional*, defaults to `None`):
+                Optional class labels for conditioning. Their embeddings will be summed with the timestep embeddings.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~models.unets.unet_2d.UNet2DOutput`] instead of a plain tuple.
+
+        Returns:
+            [`~models.unets.unet_2d.UNet2DOutput`] or `tuple`:
+                If `return_dict` is True, an [`~models.unets.unet_2d.UNet2DOutput`] is returned, otherwise a `tuple` is
+                returned where the first element is the sample tensor.
+        """
+        # 0. center input if necessary
+        if self.config.center_input_sample:
+            sample = 2 * sample - 1.0
+
+        # 1. time
+        timesteps = timestep
+        if not torch.is_tensor(timesteps):
+            timesteps = torch.tensor(
+                [timesteps], dtype=torch.long, device=sample.device
+            )
+        elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
+            timesteps = timesteps[None].to(sample.device)
+
+        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+        timesteps = timesteps * torch.ones(
+            sample.shape[0], dtype=timesteps.dtype, device=timesteps.device
+        )
+        # reverse time
+        # --- new content
+        timesteps2 = timestep2
+        if not torch.is_tensor(timesteps2):
+            timesteps2 = torch.tensor(
+                [timesteps2], dtype=torch.long, device=sample.device
+            )
+        elif torch.is_tensor(timesteps2) and len(timesteps2.shape) == 0:
+            timesteps2 = timesteps2[None].to(sample.device)
+
+        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+        timesteps2 = timesteps2 * torch.ones(
+            sample.shape[0], dtype=timesteps2.dtype, device=timesteps2.device
+        )
+        # --- new content
+
+        t_emb = self.time_proj(timesteps)
+        # ---
+        t_emb_2 = self.time_proj_2(timesteps2)
+        # ---
+
+        # timesteps does not contain any weights and will always return f32 tensors
+        # but time_embedding might actually be running in fp16. so we need to cast here.
+        # there might be better ways to encapsulate this.
+        t_emb = t_emb.to(dtype=self.dtype)
+        emb = self.time_embedding(t_emb)
+        # ---
+        emb_2 = self.time_embedding_2(t_emb_2)
+        emb = emb + emb_2 * timestep.unsqueeze(1)
+        # ---
+
+        if self.class_embedding is not None:
+            if class_labels is None:
+                raise ValueError(
+                    "class_labels should be provided when doing class conditioning"
+                )
+
+            if self.config.class_embed_type == "timestep":
+                class_labels = self.time_proj(class_labels)
+
+            class_emb = self.class_embedding(class_labels).to(dtype=self.dtype)
+            emb = emb + class_emb
+        elif self.class_embedding is None and class_labels is not None:
+            raise ValueError(
+                "class_embedding needs to be initialized in order to use class conditioning"
+            )
+
+        # 2. pre-process
+        skip_sample = sample
+        sample = self.conv_in(sample)
+
+        # 3. down
+        down_block_res_samples = (sample,)
+        for downsample_block in self.down_blocks:
+            if hasattr(downsample_block, "skip_conv"):
+                sample, res_samples, skip_sample = downsample_block(
+                    hidden_states=sample, temb=emb, skip_sample=skip_sample
+                )
+            else:
+                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+
+            down_block_res_samples += res_samples
+
+        # 4. mid
+        if self.mid_block is not None:
+            sample = self.mid_block(sample, emb)
+
+        # 5. up
+        skip_sample = None
+        for upsample_block in self.up_blocks:
+            res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
+            down_block_res_samples = down_block_res_samples[
+                : -len(upsample_block.resnets)
+            ]
+
+            if hasattr(upsample_block, "skip_conv"):
+                sample, skip_sample = upsample_block(
+                    sample, res_samples, emb, skip_sample
+                )
+            else:
+                sample = upsample_block(sample, res_samples, emb)
+
+        # 6. post-process
+        sample = self.conv_norm_out(sample)
+        sample = self.conv_act(sample)
+        sample = self.conv_out(sample)
+
+        if skip_sample is not None:
+            sample += skip_sample
+
+        if self.config.time_embedding_type == "fourier":
+            timesteps = timesteps.reshape(
+                (sample.shape[0], *([1] * len(sample.shape[1:])))
+            )
+            sample = sample / timesteps
+
+        if not return_dict:
+            return (sample,)
+
+        return UNet2DOutput(sample=sample)
 
 
 @torch.no_grad()
@@ -164,7 +405,7 @@ class TwinFlow(torch.nn.Module):
         self,
         model: nn.Module,
         x: torch.Tensor,
-        c: List[torch.Tensor],
+        # c: List[torch.Tensor],
     ):
         """
         Distribution Matching (L_rectify helper).
@@ -178,8 +419,20 @@ class TwinFlow(torch.nn.Module):
         x_t = z * self.alpha_in(t) + x * self.gamma_in(t)
 
         # Forward passes for fake (negative time) and real (positive time) trajectories
-        fake_s, _, fake_v, _ = self.forward(model, x_t, -t, -t, **dict(c=c))
-        real_s, _, real_v, _ = self.forward(model, x_t, t, t, **dict(c=c))
+        fake_s, _, fake_v, _ = self.forward(
+            model,
+            x_t,
+            -t,
+            -t,
+            # **dict(c=c),
+        )
+        real_s, _, real_v, _ = self.forward(
+            model,
+            x_t,
+            t,
+            t,
+            # **dict(c=c),
+        )
 
         F_grad = fake_v - real_v
         x_grad = fake_s - real_s
@@ -244,7 +497,8 @@ class TwinFlow(torch.nn.Module):
         self,
         model: nn.Module,
         real_image: torch.Tensor,
-        labels: List[torch.Tensor],
+        # labels: List[torch.Tensor],
+        edited_image: torch.Tensor,
     ):
         """
         Prepare inputs for Flow Matching training.
@@ -256,7 +510,7 @@ class TwinFlow(torch.nn.Module):
         # создаем рандомный т
         t = torch.rand(size=size).to(real_image)
         # лейблы нулевые если их нет
-        labels = [torch.zeros_like(t)] if labels is None else labels
+        # labels = [torch.zeros_like(t)] if labels is None else labels
 
         # Aux time variable tt < t for consistency estimation
         # создаем еще какое-то рандомное время тт которое строго меньше чем т
@@ -268,11 +522,19 @@ class TwinFlow(torch.nn.Module):
         # x_t = t * z + (1-t) * x
         # просто смешиваем по формуле выше, функции тут чтобы запутать видимо
         # получаем инпут для нейросети
-        x_t = z * self.alpha_in(t) + real_image * self.gamma_in(t)
+        # x_t = z * self.alpha_in(t) + real_image * self.gamma_in(t)
+        x_t = (
+            self.alpha_in(t) * real_image
+            + (1.0 - self.alpha_in(t)) * edited_image
+            # + 0.001 * (self.alpha_in(t) * (1.0 - self.alpha_in(t))) ** 0.5 * z
+        )
         # v_t = z - x (Target velocity)
-        target = z * self.alpha_to(t) + real_image * self.gamma_to(t)
+        # target = z * self.alpha_to(t) + real_image * self.gamma_to(t)
+        target = real_image * self.alpha_to(t) + edited_image * self.gamma_to(t)
 
-        return x_t, z, real_image, t, tt, labels, target
+        # return x_t, z, real_image, t, tt, labels, target
+        # return x_t, z, real_image, t, tt, target
+        return x_t, real_image, edited_image, t, tt, target
 
     @torch.no_grad()
     def multi_fwd(
@@ -282,7 +544,7 @@ class TwinFlow(torch.nn.Module):
         x_t: torch.Tensor,
         t: torch.Tensor,
         tt: torch.Tensor,
-        c: List[torch.Tensor],
+        # c: List[torch.Tensor],
         N: int,
     ):
         """
@@ -300,7 +562,11 @@ class TwinFlow(torch.nn.Module):
         for t_c, t_n in zip(ts[:-1], ts[1:]):
             torch.cuda.set_rng_state(rng_state)
             predicted_image, predicted_noise, F_c, _ = self.forward(
-                model, x_t, t_c, t_n, **dict(c=c)
+                model,
+                x_t,
+                t_c,
+                t_n,
+                # **dict(c=c),
             )
             x_t = (
                 self.alpha_in(t_n) * predicted_noise
@@ -320,7 +586,7 @@ class TwinFlow(torch.nn.Module):
         noised_image_t: torch.Tensor,
         t: torch.Tensor,
         tt: torch.Tensor,
-        labels: List[torch.Tensor],
+        # labels: List[torch.Tensor],
         estimation_order: int,
     ):
         """
@@ -349,7 +615,7 @@ class TwinFlow(torch.nn.Module):
             noised_image_t,
             t_m,
             tt,
-            labels,
+            # labels,
             estimation_order,
         )
 
@@ -383,21 +649,21 @@ class TwinFlow(torch.nn.Module):
         self,
         model: Union[nn.Module, Callable],
         real_image: torch.Tensor,
-        labels: List[torch.Tensor],
+        edited_image: torch.Tensor,
+        # labels: List[torch.Tensor],
         e: List[torch.Tensor] = None,
     ):
         """
         TwinFlow Training Step.
         Combines RCGM loss with TwinFlow-specific losses (L_adv, L_rectify).
         """
-        noised_image_t, noise_z, real_image, t, tt, labels, target = (
-            self.prepare_inputs(
-                model,
-                real_image,
-                labels,
-            )
+        # noised_image_t, noise_z, real_image, t, tt, labels, target = (
+        noised_image_t, noise_z, real_image, t, tt, target = self.prepare_inputs(
+            model,
+            real_image,
+            # labels,
+            edited_image,
         )
-        
 
         loss = 0
         rng_state = torch.cuda.get_rng_state()
@@ -407,7 +673,7 @@ class TwinFlow(torch.nn.Module):
             noised_image_t,
             t,
             tt,
-            **dict(c=labels),
+            # **dict(c=labels),
         )
         # обновляем модель через EMA
         self.update_ema(model)
@@ -435,7 +701,7 @@ class TwinFlow(torch.nn.Module):
             noised_image_t,
             t,
             tt,
-            labels,
+            # labels,
             self.estimation_order,
         )
         # заставляем модель предсказания из обычной модели
@@ -449,7 +715,13 @@ class TwinFlow(torch.nn.Module):
 
         # [Optional] Real Velocity Loss
         # Ensures real velocity is learned well (redundant if RCGM loss is perfect)
-        _, _, F_pred, _ = self.forward(model, noised_image_t, t, t, **dict(c=labels))
+        _, _, F_pred, _ = self.forward(
+            model,
+            noised_image_t,
+            t,
+            t,
+            # **dict(c=labels),
+        )
         # а тут мы сразу говорим, за один проход сеть должна предсказать
         # нам итоговое velocity
         loss += self.loss_func(F_pred, target).mean()
@@ -461,19 +733,37 @@ class TwinFlow(torch.nn.Module):
             noise_z,
             torch.ones_like(t),
             torch.zeros_like(t),
-            **dict(c=labels),
+            # **dict(c=labels),
         )
 
         # 2. Fake Velocity Loss / Self-Adversarial (L_adv)
         # Training fake velocity at t in [-1, 0] to match target flow
-        x_t_fake = noise_z * self.alpha_in(t) + x_fake.detach() * self.gamma_in(t)
+        x_t_fake = (
+            noise_z * self.alpha_in(t)
+            + x_fake.detach() * self.gamma_in(t)
+            # + 0.001
+            # * (self.alpha_in(t) * (1.0 - self.alpha_in(t))) ** 0.5
+            # * torch.randn_like(noise_z)
+        )
+        # target_fake = noise_z * self.alpha_to(t) + x_fake.detach() * self.gamma_to(t)
         target_fake = noise_z * self.alpha_to(t) + x_fake.detach() * self.gamma_to(t)
-        _, _, F_th_t_fake, _ = self.forward(model, x_t_fake, -t, -t, **dict(c=labels))
+
+        _, _, F_th_t_fake, _ = self.forward(
+            model,
+            x_t_fake,
+            -t,
+            -t,
+            # **dict(c=labels),
+        )
         loss += self.loss_func(F_th_t_fake, target_fake).mean()
 
         # 3. Distribution Matching / Rectification Loss (L_rectify)
         # Aligns the generated flow with the 'correct' gradient direction
-        _, F_grad = self.dist_match(model, x_fake, labels)
+        _, F_grad = self.dist_match(
+            model,
+            x_fake,
+            # labels,
+        )
         loss += self.loss_func(F_fake, (F_fake - F_grad).detach()).mean()
 
         # [Optional] Consistency mapping (t=1 to tt=0)
@@ -485,7 +775,7 @@ class TwinFlow(torch.nn.Module):
             noise_z,
             torch.ones_like(t),
             torch.zeros_like(t),
-            labels,
+            # labels,
             self.estimation_order,
         )
         loss += self.loss_func(F_fake, rcgm_target).mean()
@@ -505,7 +795,7 @@ class TwinFlow(torch.nn.Module):
 
     def forward(
         self,
-        model: Union[nn.Module, Callable],
+        model: Union[TwinFlowUNet2DModel],
         noised_image_t: torch.Tensor,
         t: torch.Tensor,
         tt: Union[torch.Tensor, None] = None,
@@ -531,18 +821,18 @@ class TwinFlow(torch.nn.Module):
         """
         F_t = model(
             noised_image_t,
-            t=torch.ones(
+            timestep=torch.ones(
                 noised_image_t.size(0),
                 device=noised_image_t.device,
             )
             * (t).flatten(),
-            tt=torch.ones(
+            timestep2=torch.ones(
                 noised_image_t.size(0),
                 device=noised_image_t.device,
             )
             * tt.flatten(),
             **model_kwargs,
-        )
+        ).sample
         t = torch.abs(t)
 
         # Invert flow to recover x and z
@@ -701,6 +991,255 @@ class DiffusionTrainingArguments:
     latent_loss_type: str = field(default="l2")  # "l2" or "l1"
 
 
+def log_validation(
+    vae=None,
+    unet=None,
+    noise_scheduler=None,
+    accelerator=None,
+    weight_dtype=None,
+    global_step=None,
+    training_args=None,
+    model_args=None,
+    diffusion_args: DiffusionTrainingArguments = None,
+    dataset=None,
+    train_transforms=None,
+    checkpoint_path: str = None,
+    trainer: TwinFlow = None,
+    **kwargs,
+):
+    logger.info("Running validation... ")
+    noise_scheduler = FlowMatchEulerDiscreteScheduler()
+
+    # 1. Загрузка VAE (Tiny Autoencoder для скорости и экономии памяти)
+    # vae_val = AutoencoderTiny.from_pretrained(
+    #     "madebyollin/taesd",
+    #     torch_device="cuda",
+    #     torch_dtype=weight_dtype,
+    # ).to(accelerator.device)
+    # vae_val.decoder.ignore_skip = False
+    vae_val = AutoencoderKL.from_pretrained(
+        # "black-forest-labs/FLUX.1-dev",
+        "black-forest-labs/FLUX.2-dev",
+        subfolder="vae",
+        torch_device="cuda",
+    ).to(accelerator.device)
+    vae_val.eval()
+
+    # 2. Загрузка UNet из чекпоинта
+    # unet_val = UNet2DModel.from_pretrained(
+    unet_val = TwinFlowUNet2DModel.from_pretrained(
+        checkpoint_path,
+        subfolder="unet",
+        torch_dtype=weight_dtype,
+    ).to(accelerator.device)
+    unet_val.eval()
+
+    # 3. Подготовка трансформаций
+    valid_transforms = transforms.Compose(
+        [
+            transforms.Resize(
+                diffusion_args.resolution,
+                interpolation=transforms.InterpolationMode.LANCZOS,
+            ),
+            transforms.CenterCrop(diffusion_args.resolution),
+        ]
+    )
+
+    # 4. Выбор изображений для валидации
+    test_images_ids = list(range(0, len(dataset), 30))
+    rng = random.Random(training_args.seed)
+    amount = min(30, len(test_images_ids))
+    selected_ids = rng.sample(test_images_ids, amount)
+
+    images = []
+    originals = []
+    generated = []
+
+    # Вспомогательная функция для получения сигм (как в основном скрипте)
+    def _get_sigmas_val(
+        scheduler,
+        timesteps,
+        n_dim=4,
+        dtype=torch.float32,
+        device="cpu",
+    ):
+        sigmas = scheduler.sigmas.to(device=device, dtype=dtype)
+        schedule_timesteps = scheduler.timesteps.to(device)
+        timesteps = timesteps.to(device)
+        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+        sigma = sigmas[step_indices].flatten()
+        while len(sigma.shape) < n_dim:
+            sigma = sigma.unsqueeze(-1)
+        return sigma
+
+    # ---------------------------------------------------------
+    # НАСТРОЙКА ШЕДУЛЕРА
+    # ---------------------------------------------------------
+    num_steps = diffusion_args.num_inference_steps
+
+    sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
+
+    noise_scheduler.set_timesteps(sigmas=sigmas, device=accelerator.device)
+
+    for idx in selected_ids:
+        item = dataset[idx]
+
+        # Подготовка исходных изображений для визуализации и метрик
+        orig_source_pil = item[diffusion_args.source_image_name].convert("RGB")
+        target_pil = item[diffusion_args.target_image_name].convert("RGB")
+
+        source_tensor = valid_transforms(orig_source_pil)
+        target_tensor = valid_transforms(target_pil)
+
+        # Подготовка латента source
+        # Используем train_transforms для кодирования, как в обучении
+        c_t = (
+            train_transforms(orig_source_pil)
+            .unsqueeze(0)
+            .to(vae_val.dtype)
+            .to(vae_val.device)
+        )
+        noise_scheduler.set_timesteps(sigmas=sigmas, device=accelerator.device)
+
+        with torch.no_grad():
+            # Encode source image
+            z_source = (
+                # vae_val.encode(c_t, return_dict=False)[0]
+                vae_val.encode(c_t, return_dict=False)[0].sample()
+                * vae_val.config.scaling_factor
+            )
+
+            sample = z_source
+
+            # ---------------------------------------------------------
+            # ЦИКЛ СЭМПЛИНГА (Адаптировано из sample())
+            # ---------------------------------------------------------
+            # for i, t in enumerate(noise_scheduler.timesteps):
+            # for i in range(num_steps):
+            #     t = noise_scheduler.timesteps[i]
+            #     # 1. Масштабирование входа (если требуется шедулером)
+            #     if hasattr(noise_scheduler, "scale_model_input"):
+            #         denoiser_input = noise_scheduler.scale_model_input(sample, t)
+            #     else:
+            #         denoiser_input = sample
+
+            #     # 2. Предсказание направления (UNet)
+            #     # unet_val(x, t) -> output
+            #     # print(i, t, noise_scheduler.timesteps)
+            #     pred = unet_val(
+            #         denoiser_input,
+            #         t.to(z_source.device).repeat(denoiser_input.shape[0]),
+            #         torch.zeros_like(
+            #             t.to(z_source.device).repeat(denoiser_input.shape[0])
+            #         ),
+            #         return_dict=False,
+            #     )[0]
+
+            #     # 3. Шаг диффузии (Reverse Process)
+            #     sample = noise_scheduler.step(pred, t, sample, return_dict=False)[0]
+
+            #     # 4. Добавление стохастичности (Bridge Noise)
+            #     # Не добавляем шум после последнего шага
+            #     if i < len(noise_scheduler.timesteps) - 1:
+            #         # Получаем таймстемп следующего шага
+            #         next_timestep = (
+            #             noise_scheduler.timesteps[i + 1]
+            #             .to(z_source.device)
+            #             .repeat(sample.shape[0])
+            #         )
+
+            #         # Получаем сигму для следующего шага
+            #         sigmas_next = _get_sigmas_val(
+            #             noise_scheduler,
+            #             next_timestep,
+            #             n_dim=4,
+            #             dtype=weight_dtype,
+            #             device=z_source.device,
+            #         )
+
+            #         # Формула Bridge Matching: шум пропорционален sqrt(sigma * (1-sigma))
+            #         noise = torch.randn_like(sample)
+            #         bridge_factor = (sigmas_next * (1.0 - sigmas_next)) ** 0.5
+
+            #         sample = (
+            #             sample
+            #             + diffusion_args.bridge_noise_sigma * bridge_factor * noise
+            #         )
+            #         sample = sample.to(z_source.dtype)
+
+            # ---------------------------------------------------------
+            sample = (
+                trainer.sampling_loop(
+                    inital_noise_z=sample,
+                    sampling_model=unet_val,
+                )[-1]
+                .to(vae_val.dtype)
+                .to(vae_val.device)
+            )
+
+            # Декодирование результата
+            output_image = (
+                vae_val.decode(
+                    sample / vae_val.config.scaling_factor,
+                    return_dict=False,
+                )[0]
+            ).clamp(-1, 1)
+
+            pred_image_pil = transforms.ToPILImage()(
+                output_image[0].cpu().float() * 0.5 + 0.5
+            )
+            # print(pred_image_pil)
+
+        # Сборка горизонтальной полоски [Source | Generated | Target]
+        img_h = Image.fromarray(
+            np.hstack(
+                (
+                    np.array(source_tensor),
+                    np.array(pred_image_pil),
+                    np.array(target_tensor),
+                )
+            )
+        )
+
+        originals.append(item[diffusion_args.source_image_name])
+        generated.append(pred_image_pil)
+        images.append(img_h)
+
+    # 5. Расчет метрик
+    # metrics_result = {}
+    # if diffusion_args.metrics_list:
+    #     try:
+    #         evaluator = ImageEvaluator(
+    #             metrics_list=diffusion_args.metrics_list,
+    #             device="cuda",
+    #             num_workers=4,
+    #             prefix_key="eval",
+    #         )
+    #         metrics_result = evaluator.evaluate(
+    #             originals,
+    #             generated,
+    #             batch_size=16,
+    #         )
+    #     except Exception as e:
+    #         logger.warning(f"Evaluation failed with error: {e}")
+
+    # 6. Логирование в WandB / Accelerator
+    for tracker in accelerator.trackers:
+        tracker.log(
+            {
+                "validation": [wandb.Image(image) for image in images],
+                # **metrics_result,
+            }
+        )
+
+    # 7. Очистка памяти
+    del vae_val
+    del unet_val
+    torch.cuda.empty_cache()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 unet2d_config = {
     "sample_size": 64,
     # "in_channels": 4,
@@ -819,7 +1358,8 @@ def main():
         torch_dtype=weight_dtype,
     )
 
-    unet = UNet2DModel(**unet2d_config)
+    # unet = UNet2DModel(**unet2d_config)
+    unet = TwinFlowUNet2DModel(**unet2d_config)
     # unet = UNet2DModel.from_pretrained('checkpoints/auto_remaster/lbm/checkpoint-28800')
     # unet.enable_xformers_memory_efficient_attention()
     unet.set_attention_backend("flash")
@@ -1046,7 +1586,13 @@ def main():
 
     trainer = TwinFlow()
 
-    optimizer = optim.Adam(unet.parameters())
+    progress_bar = tqdm(
+        range(0, training_args.max_steps),
+        initial=initial_global_step,
+        desc="Steps",
+        # Only show the progress bar once on each machine.
+        disable=not accelerator.is_local_main_process,
+    )
 
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
@@ -1075,8 +1621,99 @@ def main():
                     z_source,
                     z_target,
                 )
-            # вычисляем градиент
-            loss.backward()
+                # вычисляем градиент
+                accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        layers_to_opt,
+                        training_args.max_grad_norm,
+                    )
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                global_step += 1
+                logs = {}
+                # log the loss
+                logs["loss"] = loss.detach().item()
+
+                accelerator.log(logs, step=global_step)
+                train_loss = 0.0
+
+                if global_step % training_args.save_steps == 0:
+                    if accelerator.is_main_process:
+                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                        if training_args.save_total_limit is not None:
+                            checkpoints = os.listdir(training_args.output_dir)
+                            checkpoints = [
+                                d for d in checkpoints if d.startswith("checkpoint")
+                            ]
+                            checkpoints = sorted(
+                                checkpoints, key=lambda x: int(x.split("-")[1])
+                            )
+
+                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                            if len(checkpoints) >= training_args.save_total_limit:
+                                num_to_remove = (
+                                    len(checkpoints)
+                                    - training_args.save_total_limit
+                                    + 1
+                                )
+                                removing_checkpoints = checkpoints[0:num_to_remove]
+
+                                logger.info(
+                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                )
+                                logger.info(
+                                    f"removing checkpoints: {', '.join(removing_checkpoints)}"
+                                )
+
+                                for removing_checkpoint in removing_checkpoints:
+                                    removing_checkpoint = os.path.join(
+                                        training_args.output_dir, removing_checkpoint
+                                    )
+                                    shutil.rmtree(removing_checkpoint)
+
+                        save_path = os.path.join(
+                            training_args.output_dir, f"checkpoint-{global_step}"
+                        )
+                        # accelerator.save_state(save_path)
+                        # Сохраняем UNet
+                        unwrap_model(unet).save_pretrained(
+                            os.path.join(save_path, "unet")
+                        )
+                        # VAE не сохраняем, так как он заморожен и используется предобученный
+                        logger.info(f"Saved state to {save_path}")
+
+                        # start validation
+                        log_validation(
+                            vae=vae,
+                            unet=unet,
+                            noise_scheduler=None,
+                            accelerator=accelerator,
+                            weight_dtype=weight_dtype,
+                            global_step=global_step,
+                            script_args=script_args,
+                            training_args=training_args,
+                            model_args=model_args,
+                            diffusion_args=diffusion_args,
+                            dataset=dataset["train"],
+                            train_transforms=train_transforms,
+                            checkpoint_path=save_path,
+                            trainer=trainer,
+                        )
+
+            if accelerator.sync_gradients:
+                logs = {
+                    "step_loss": loss.detach().item(),
+                    "lr": lr_scheduler.get_last_lr()[0],
+                }
+                progress_bar.set_postfix(**logs)
+
+            if global_step >= training_args.max_steps:
+                break
 
     accelerator.end_training()
 

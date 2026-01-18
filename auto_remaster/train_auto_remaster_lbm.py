@@ -96,7 +96,9 @@ class DiffusionTrainingArguments:
     lpips_factor: float = field(default=5.0)
     gan_factor: float = field(default=0.5)
     bridge_noise_sigma: float = field(default=0.001)
-    timestep_sampling: str = field(default="custom_timesteps")  # "uniform", "custom_timesteps"
+    timestep_sampling: str = field(
+        default="custom_timesteps"
+    )  # "uniform", "custom_timesteps"
     logit_mean: float = field(default=0.0)
     logit_std: float = field(default=1.0)
     latent_loss_weight: float = field(default=1.0)
@@ -277,7 +279,6 @@ def log_validation(
                 )[0]
 
                 # 3. Шаг диффузии (Reverse Process)
-                # Теперь здесь не будет IndexError, т.к. массив sigmas имеет нужный запас
                 sample = noise_scheduler.step(pred, t, sample, return_dict=False)[0]
 
                 # 4. Добавление стохастичности (Bridge Noise)

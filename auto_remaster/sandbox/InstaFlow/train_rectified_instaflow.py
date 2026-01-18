@@ -1472,8 +1472,8 @@ def rectified_flow(args, unet=None, reflow_step=0, distill=False):
                 if distill:
                     target = latents
                 else:
-                    target = latents - noise
-                    # target = noise - latents
+                    # target = latents - noise
+                    target = noise - latents
                 # Predict the noise residual and compute loss
                 model_pred = unet(
                     noisy_latents, timesteps, encoder_hidden_states
