@@ -99,6 +99,7 @@ from torch.backends import cudnn
 from diffusers.models.embeddings import Timesteps, TimestepEmbedding
 from typing import Optional, Tuple, Union
 from diffusers.models.unets.unet_2d import UNet2DOutput
+from typing import List, Callable, Union, Literal
 
 
 class Linear:
@@ -149,7 +150,12 @@ class UnifiedSampler(torch.nn.Module):
         dent = self.alpha_in(t) * self.gamma_to(t) - self.gamma_in(t) * self.alpha_to(t)
         q = torch.ones(x_t.size(0), device=x_t.device) * (t).flatten()
         q = q if self.integ_st == 1 else 1 - q
-        F_t = (-1) ** (1 - self.integ_st) * model(x_t, timestep=q, timestep2=tt, **model_kwargs).sample
+        F_t = (-1) ** (1 - self.integ_st) * model(
+            x_t,
+            timestep=q,
+            timestep2=tt,
+            **model_kwargs,
+        ).sample
         t = torch.abs(t)
         z_hat = (x_t * self.gamma_to(t) - F_t * self.gamma_in(t)) / dent
         x_hat = (F_t * self.alpha_in(t) - x_t * self.alpha_to(t)) / dent
@@ -164,11 +170,11 @@ class UnifiedSampler(torch.nn.Module):
         inital_noise_z: torch.FloatTensor,
         sampling_model: Union[nn.Module, Callable],
         sampling_steps: int = 1,
-        stochast_ratio: float = 1.0,
+        stochast_ratio: float = 0.8,
         extrapol_ratio: float = 0.0,
         sampling_order: int = 1,
         time_dist_ctrl: list = [1.0, 1.0, 1.0],
-        rfba_gap_steps: list = [0.001, 0.6],
+        rfba_gap_steps: list = [0.001, 0.7],
         **model_kwargs,
     ):
         """
@@ -507,99 +513,182 @@ def update_ema(ema_model: nn.Module, model: nn.Module, decay: float = 0.9999) ->
 
 
 class TwinFlow(torch.nn.Module):
-    """
-    Recursive Consistent Generation Model (RCGM).
-
-    This class implements the backbone for 'Any-step Generation via N-th Order
-    Recursive Consistent Velocity Field Estimation'. It serves as the foundation
-    for consistency training by estimating higher-order trajectories.
-
-    References:
-        - RCGM: https://github.com/LINs-lab/RCGM/blob/main/assets/paper.pdf
-        - UCGM (Sampler): https://arxiv.org/abs/2505.07447 (Unified Continuous Generative Models)
-    """
-
     def __init__(
         self,
-        ema_decay_rate: float = 0.99,  # Recomended: >=0.99 for estimate_order >=2
+        # --- Training Strategy & Consistency Control ---
+        consistc_ratio: float = 1.0,
+        ema_decay_rate: float = 0.99,
+        # --- Enhanced Target Score Mechanism ---
+        enhanced_ratio: float = 0.5,
+        enhanced_range: List[float] = [0.00, 1.00],
+        # --- Time Discretization & Distribution ---
+        time_dist_ctrl: List[float] = [1.0, 1.0, 1.0],
         estimate_order: int = 2,
-        enhanced_ratio: float = 0.0,
+        loss_func_type: dict = {"type": "barron_reweighting"},
+        dist_match_cof: float = 0.5,
+        use_image_free: bool = False,
         **kwargs,
     ):
         super().__init__()
 
+        self.cor = consistc_ratio
+        self.enr = enhanced_ratio
         self.emd = ema_decay_rate
-        # default 2
-        self.estimation_order = estimate_order  # N-th order estimation (RCGM paper)
+        self.eng = enhanced_range
+        self.tdc = time_dist_ctrl
+        self.estimate_order = estimate_order
+        loss_func_args = loss_func_type.copy()
+        self.lft = loss_func_args.pop("type")
+        self.lfa = loss_func_args
+        self.dmc = dist_match_cof
+        self.uif = use_image_free
 
-        assert self.estimation_order >= 1, "Only support estimate_order >= 1"
+        assert self.estimate_order >= 0, "Only support estimate_order >= 0"
 
         self.cmd = 0
-        self.mod = None  # EMA Model container
-        self.enr = enhanced_ratio  # CFG Guidance ratio
-        self.utf = True
+        self.l2p = 0
+        self.step = 0
+        self.mod = None
+        self.lsw = None
+        self.nge = None
 
-    # ------------------------------------------------------------------
-    # Flow Matching Schedule / OT-Flow Coefficients
-    # Interpolation: x_t = alpha(t) * z + gamma(t) * x
-    # ------------------------------------------------------------------
+        if self.gamma_in(torch.tensor(0)).abs().item() < 0.005:
+            self.integ_st = 0  # Start point if integral from 0 to 1
+            self.alpha_in, self.gamma_in = self.gamma_in, self.alpha_in
+            self.alpha_to, self.gamma_to = self.gamma_to, self.alpha_to
+        elif self.alpha_in(torch.tensor(0)).abs().item() < 0.005:
+            self.integ_st = 1  # Start point if integral from 1 to 0
+        else:
+            raise ValueError("Invalid Alpha and Gamma functions")
+
     def alpha_in(self, t):
-        return t  # Coefficient for noise z
+        return t
 
     def gamma_in(self, t):
-        return 1 - t  # Coefficient for data x
-
-    @torch.no_grad()
-    def dist_match(
-        self,
-        model: nn.Module,
-        x: torch.Tensor,
-        # c: List[torch.Tensor],
-    ):
-        """
-        Distribution Matching (L_rectify helper).
-
-        Matches the distribution of the generated 'fake' flow (reverse time)
-        against the 'real' flow (forward time) to align velocity fields.
-        """
-        z = torch.randn_like(x)
-        size = [x.size(0)] + [1] * (len(x.shape) - 1)
-        t = torch.rand(size=size).to(x)
-        x_t = z * self.alpha_in(t) + x * self.gamma_in(t)
-
-        # Forward passes for fake (negative time) and real (positive time) trajectories
-        fake_s, _, fake_v, _ = self.forward(
-            model,
-            x_t,
-            -t,
-            -t,
-            # **dict(c=c),
-        )
-        real_s, _, real_v, _ = self.forward(
-            model,
-            x_t,
-            t,
-            t,
-            # **dict(c=c),
-        )
-
-        F_grad = fake_v - real_v
-        x_grad = fake_s - real_s
-        return x_grad, F_grad
+        return 1 - t
 
     def alpha_to(self, t):
-        return 1  # d(alpha)/dt
+        return 1
 
     def gamma_to(self, t):
-        return -1  # d(gamma)/dt
+        return -1
+
+    def sample_beta(self, theta_1, theta_2, x):
+        size = [x.size(0)] + [1] * (len(x.shape) - 1)
+        beta_dist = torch.distributions.Beta(theta_1, theta_2)
+        beta_samples = beta_dist.sample(size)
+        return beta_samples.to(x)
 
     def l2_loss(self, pred, target):
-        """Standard L2 (MSE) Loss flattened over spatial dimensions."""
+        """
+        Standard l2 Loss.
+        """
         loss = (pred.float() - target.float()) ** 2
         return loss.flatten(1).mean(dim=1).to(pred.dtype)
 
+    def barron_reweighting_loss(self, pred, target, alpha=1.0, c=1e-3):
+        """
+        Barron-Reweighted L2 Loss (Sample-level + Detach).
+        """
+        mse = torch.mean((pred - target) ** 2, dim=tuple(range(1, pred.ndim)))
+        rmse_sq_norm = mse / (c**2 + 1e-8)  # (x/c)^2
+
+        if abs(alpha - 2.0) < 1e-5:
+            weight = torch.ones_like(mse)
+        else:
+            abs_a_m_2 = abs(alpha - 2.0)
+            weight = (rmse_sq_norm / abs_a_m_2 + 1.0).pow((alpha - 2.0) / 2.0)
+        loss = mse * weight.data
+
+        return loss / c
+
     def loss_func(self, pred, target):
-        return self.l2_loss(pred, target)
+        loss_func = {
+            "l2": self.l2_loss,
+            "barron_reweighting": self.barron_reweighting_loss,
+        }[self.lft]
+
+        return loss_func(pred, target, **self.lfa)
+
+    def prepare_inputs(
+        self,
+        model: nn.Module,
+        z: torch.Tensor,
+        x: torch.Tensor,
+        # c: List[torch.Tensor],
+        # e: List[torch.Tensor],
+    ):
+        # 1. Init time and containers
+        bsz, device = x.shape[0], x.device
+        assert (
+            bsz >= 4
+        )  # we need minimal batch=4 to assign different target time, see L132
+        t = self.sample_beta(self.tdc[0], self.tdc[1], x).clamp_(0, 1) * self.tdc[2]
+        # c = [torch.zeros_like(t)] if c is None else c
+        # e = [torch.zeros_like(t)] if e is None else e
+
+        # Aux time variables
+        tt = t - torch.rand_like(t) * self.cor * t
+        t_min = t - torch.rand_like(t) * t * min(0.05, self.cor)
+
+        probs = {"e2e": 1, "mul": 1, "any": 1, "adv": 1}
+        # 3. Partition batch & Create masks
+        keys, vals = list(probs.keys()), list(probs.values())
+        lens = [int(round(bsz * v / (sum(vals) or 1))) for v in vals]
+        lens[-1] = bsz - sum(lens[:-1])  # Adjust last to match bsz
+
+        masks, cursor = {}, 0
+        for k, l in zip(keys, lens):
+            m = torch.zeros(bsz, dtype=torch.bool, device=device)
+            if l > 0:
+                m[cursor : cursor + l] = True
+            masks[k] = m
+            cursor += l
+
+        # 4. Apply specific logic (using walrus operator for compactness)
+        if (m := masks.get("e2e")) is not None and m.any():
+            t[m], tt[m] = 1.0, 0.0
+        if (m := masks.get("mul")) is not None and m.any():
+            tt[m] = t_min[m]
+
+        if self.uif:
+            x_fake, _, _, _ = self.forward(
+                model,
+                # torch.randn_like(x),
+                # x,
+                z,
+                torch.ones_like(t),
+                torch.zeros_like(t),
+                # **dict(c=c),
+            )
+            z = x_fake.data
+
+        # 5. Adversarial Generation Phase
+        if (m := masks.get("adv")) is not None and m.any():
+            tt[m] = -t[m]  # Flag logic
+            # Generate fake samples (t=1 -> t=0) to replace inputs
+            x_fake, _, _, _ = self.forward(
+                model,
+                # torch.randn_like(x[m]),
+                z[m],
+                torch.ones_like(t[m]),
+                torch.zeros_like(t[m]),
+                # **dict(c=[ic[m] for ic in c]),
+            )
+            x[m] = x_fake.data
+
+        # 6. Construct Training Targets
+        # z = torch.randn_like(x)
+        # x_t = z * self.alpha_in(t) + x * self.gamma_in(t)
+        x_t = z * self.alpha_in(t) + x * self.gamma_in(t)
+        # target = z * self.alpha_to(t) + x * self.gamma_to(t)
+        target = z * self.alpha_to(t) + x * self.gamma_to(t)
+
+        # Restore adv time sign for loss/matching logic
+        if masks["adv"].any():
+            t[masks["adv"]] *= -1
+        # return x_t, t, tt, c, e, target, masks
+        return x_t, t, tt, target, masks
 
     @torch.no_grad()
     def get_refer_predc(
@@ -609,89 +698,39 @@ class TwinFlow(torch.nn.Module):
         x_t: torch.Tensor,
         t: torch.Tensor,
         tt: torch.Tensor,
-        c: List[torch.Tensor],
-        e: List[torch.Tensor],
+        # c: List[torch.Tensor],
+        # e: List[torch.Tensor],
     ):
-        """
-        Get reference predictions with and without conditions (Classifier-Free Guidance).
-        Restores RNG state to ensure noise consistency between forward passes.
-        """
         torch.cuda.set_rng_state(rng_state)
-        # Unconditional forward (using empty condition 'e')
-        refer_x, refer_z, refer_v, _ = self.forward(model, x_t, t, tt, **dict(c=e))
-
+        refer_x, refer_z, refer_v, _ = self.forward(
+            model,
+            x_t,
+            t,
+            tt,
+            # **dict(c=e),
+        )
         torch.cuda.set_rng_state(rng_state)
-        # Conditional forward (using condition 'c')
-        predc_x, predc_z, predc_v, _ = self.forward(model, x_t, t, tt, **dict(c=c))
-
+        predc_x, predc_z, predc_v, _ = self.forward(
+            model,
+            x_t,
+            t,
+            tt,
+            # **dict(c=c),
+        )
         return refer_x, refer_z, refer_v, predc_x, predc_z, predc_v
 
-    @torch.no_grad()
-    def enhance_target(
-        self,
-        target: torch.Tensor,
-        ratio: float,
-        pred_w_c: torch.Tensor,
-        pred_wo_c: torch.Tensor,
-    ):
-        """
-        Enhance the training target using Classifier-Free Guidance (CFG).
-        Target' = Target + w * (Prediction_cond - Prediction_uncond)
-        """
-        target = target + ratio * (pred_w_c - pred_wo_c)
-        return target
-
-    @torch.no_grad()
-    def prepare_inputs(
-        self,
-        model: nn.Module,
-        real_image: torch.Tensor,
-        # labels: List[torch.Tensor],
-        edited_image: torch.Tensor,
-    ):
-        """
-        Prepare inputs for Flow Matching training.
-        Constructs x_t (noisy data) and target vector field.
-        """
-        # тут получается что лен будет 4-1=3, по итогу shape будет
-        # [batch, 1, 1, 1], это надо для бродкастинга
-        size = [real_image.size(0)] + [1] * (len(real_image.shape) - 1)
-        # создаем рандомный т
-        t = torch.rand(size=size).to(real_image)
-        # t = torch.ones_like(t)
-        # лейблы нулевые если их нет
-        # labels = [torch.zeros_like(t)] if labels is None else labels
-
-        # Aux time variable tt < t for consistency estimation
-        # создаем еще какое-то рандомное время тт которое строго меньше чем т
-        tt = t - torch.rand_like(t) * t
-
-        # Construct Flow Matching Targets
-        # генерируем рандомную величину из которой стартует семплирование
-        z = torch.randn_like(real_image)
-        # x_t = t * z + (1-t) * x
-        # просто смешиваем по формуле выше, функции тут чтобы запутать видимо
-        # получаем инпут для нейросети
-        # x_t = z * self.alpha_in(t) + real_image * self.gamma_in(t)
-        x_t = (
-            self.alpha_in(t) * real_image
-            + (1.0 - self.alpha_in(t)) * edited_image
-            + 0.01 * (self.alpha_in(t) * (1.0 - self.alpha_in(t))) ** 0.5 * z
-        )
-        # x_t = (
-        #     self.alpha_in(t) * edited_image
-        #     + (1.0 - self.alpha_in(t)) * real_image
-        #     + 0.01 * (self.alpha_in(t) * (1.0 - self.alpha_in(t))) ** 0.5 * z
-        # )
-        # v_t = z - x (Target velocity)
-        # target = z * self.alpha_to(t) + real_image * self.gamma_to(t)
-        target = real_image * self.alpha_to(t) + edited_image * self.gamma_to(t)
-        # target = edited_image * self.alpha_to(t) + real_image * self.gamma_to(t)
-
-        # return x_t, z, real_image, t, tt, labels, target
-        # return x_t, z, real_image, t, tt, target
-        # return x_t, edited_image, real_image, t, tt, target
-        return x_t, real_image, edited_image, t, tt, target
+    # @torch.no_grad()
+    # def enhance_target(
+    #     self,
+    #     target: torch.Tensor,
+    #     idx: torch.Tensor,
+    #     ratio: float,
+    #     pred_w_c: torch.Tensor,
+    #     pred_wo_c: torch.Tensor,
+    # ):
+    #     target[idx] = target[idx] + ratio * (pred_w_c[idx] - pred_wo_c[idx])
+    #     # target[~idx] = (target[~idx] + pred_w_c[~idx]) * 0.50
+    #     return target
 
     @torch.no_grad()
     def multi_fwd(
@@ -704,34 +743,20 @@ class TwinFlow(torch.nn.Module):
         # c: List[torch.Tensor],
         N: int,
     ):
-        """
-        Used to calculate the recursive consistency target.
-        """
         pred = 0
-        # N=2
-        # t * (1 - i / (N)) + tt * (i / (N))
-        # t * (1 - i / 2) + tt * (i / 2)
         ts = [t * (1 - i / (N)) + tt * (i / (N)) for i in range(N + 1)]
-
-        # Euler integration loop
-        # я не очень понимаю что тут происходит на самом деле
-        # типа решается проблема расхождения test time inference?
         for t_c, t_n in zip(ts[:-1], ts[1:]):
             torch.cuda.set_rng_state(rng_state)
-            predicted_image, predicted_noise, F_c, _ = self.forward(
+            hx, hz, F_c, _ = self.forward(
                 model,
                 x_t,
                 t_c,
                 t_n,
                 # **dict(c=c),
             )
-            x_t = (
-                self.alpha_in(t_n) * predicted_noise
-                + self.gamma_in(t_n) * predicted_image
-            )
+            x_t = self.alpha_in(t_n) * hz + self.gamma_in(t_n) * hx
             pred = pred + F_c * (t_c - t_n)
-
-        return predicted_image, predicted_noise, pred
+        return hx, hz, pred
 
     @torch.no_grad()
     def get_rcgm_target(
@@ -740,52 +765,48 @@ class TwinFlow(torch.nn.Module):
         model: nn.Module,
         F_th_t: torch.Tensor,
         target: torch.Tensor,
-        noised_image_t: torch.Tensor,
+        x_t: torch.Tensor,
         t: torch.Tensor,
         tt: torch.Tensor,
-        # labels: List[torch.Tensor],
-        estimation_order: int,
+        # c: List[torch.Tensor],
+        N: int,
     ):
         """
-        Calculates the RCGM consistency target using N-th order estimation.
-
-        Ref: 'Any-step Generation via N-th Order Recursive Consistent Velocity Field Estimation'
-        Uses a small temporal perturbation (Delta t = 0.01) to enforce local consistency.
+        References:
+        - RCGM: https://github.com/LINs-lab/RCGM/blob/main/assets/paper.pdf
         """
-        # Delta t = 0.01 as mentioned in RCGM paper
-        # хз что делает эта фунция, наверное при минусе, мы выбираем максимум среди данных чисел
-        # тем самым говорим что t_m не может быть меньше чем tt
-        # что сам по себе строго меньше чем t
         t_m = (t - 0.01).clamp_min(tt)
-        # из зашумленного изображения вычитаем то которое должны получить умноженное на какой-то коэфициент
-        # наверное это оговаривается в статье
-        noised_image_t = noised_image_t - target * 0.01  # First order step
-
-        # N-step integration from t_m to tt
-        """
-        через предсказание оригинальных данных и шума в разные стороны
-        получаем предсказание для изображения за 2 прохода
-        """
+        x_t = x_t - target * 0.01
         _, _, Ft_tar = self.multi_fwd(
             rng_state,
             model,
-            noised_image_t,
+            x_t,
             t_m,
             tt,
-            # labels,
-            estimation_order,
+            # c,
+            N,
         )
-
-        # Weighting for boundary conditions near t=tt
         mask = t < (tt + 0.01)
         cof_l = torch.where(mask, torch.ones_like(t), 100 * (t - tt))
         cof_r = torch.where(mask, 1 / (t - tt), torch.ones_like(t) * 100)
-
-        # Reconstruct velocity field target from integral
         Ft_tar = (F_th_t * cof_l - Ft_tar * cof_r) - target
         Ft_tar = F_th_t.data - (Ft_tar).clamp(min=-1.0, max=1.0)
         return Ft_tar
 
+    # @torch.no_grad()
+    # def update_ema(
+    #     self,
+    #     model: nn.Module,
+    # ):
+    #     if self.emd > 0.0 and self.emd < 1.0:
+    #         assert hasattr(model, "ema_transformer")
+    #         self.mod = self.mod or model.ema_transformer
+    #         update_ema(self.mod, model.transformer, decay=self.cmd)
+    #         self.cmd += (1 - self.cmd) * (self.emd - self.cmd) * 0.5
+    #     elif self.emd == 0.0:
+    #         self.mod = model.transformer
+    #     elif self.emd == 1.0:
+    #         self.mod = model.ema_transformer
     @torch.no_grad()
     def update_ema(
         self,
@@ -802,248 +823,186 @@ class TwinFlow(torch.nn.Module):
         elif self.emd == 1.0:
             self.mod = self.mod or deepcopy(model).requires_grad_(False).train()
 
+    @torch.no_grad()
+    def dist_match(
+        self,
+        model: nn.Module,
+        z: torch.Tensor,
+        x: torch.Tensor,
+        # c: List[torch.Tensor],
+    ):
+        # z = torch.randn_like(x)
+        t = self.sample_beta(1.0, 1.0, x)
+        x_t = z * self.alpha_in(t) + x * self.gamma_in(t)
+        fake_s, _, fake_v, _ = self.forward(
+            model,
+            x_t,
+            -t,
+            -t,
+            # **dict(c=c),
+        )
+        real_s, _, real_v, _ = self.forward(
+            model,
+            x_t,
+            t,
+            t,
+            # **dict(c=c),
+        )
+        F_grad = fake_v - real_v
+        x_grad = fake_s - real_s
+
+        F_grad = F_grad.to(torch.float32).clamp(min=-1.0, max=1.0)
+        x_grad = x_grad.to(torch.float32).clamp(min=-1.0, max=1.0)
+        return x_grad, F_grad
+
     def training_step(
         self,
         model: Union[nn.Module, Callable],
-        real_image: torch.Tensor,
+        x: torch.Tensor,
         edited_image: torch.Tensor,
-        # labels: List[torch.Tensor],
-        e: List[torch.Tensor] = None,
+        # c: List[torch.Tensor],
+        # e: List[torch.Tensor],
+        # step: int,
+        # v: torch.Tensor,
     ):
-        """
-        TwinFlow Training Step.
-        Combines RCGM loss with TwinFlow-specific losses (L_adv, L_rectify).
-        """
-        # noised_image_t, noise_z, real_image, t, tt, labels, target = (
-        noised_image_t, noise_z, real_image, t, tt, target = self.prepare_inputs(
-            model,
-            real_image,
-            # labels,
-            edited_image,
-        )
+        with torch.no_grad():
+            # x_t, t, tt, c, e, target, sample_masks = self.prepare_inputs(
+            x_t, t, tt, target, sample_masks = self.prepare_inputs(
+                model,
+                x,
+                edited_image,
+                # c,
+                # e,
+            )
 
-        loss = 0
-        rng_state = torch.cuda.get_rng_state()
-        # F_th_t - velocity field (предсказание модели)
-        _, _, F_th_t, _ = self.forward(
+        loss, rng_state = 0, torch.cuda.get_rng_state()
+        x_wc_t, z_wc_t, F_th_t, den_t = self.forward(
             model,
-            noised_image_t,
+            x_t,
             t,
             tt,
-            # **dict(c=labels),
+            # **dict(c=c),
         )
-        # обновляем модель через EMA
-        self.update_ema(model)
 
-        # Enhance Target (CFG Guidance)
-        # это мы выключаем
-        # if self.enr > 0.0:
+        # Start update the state of ema model
+        if (self.enr != 0.0) or (self.cor != 0.0) or (self.emd != 0.0):
+            self.update_ema(model)
+
+        # Start enhancing target
+        # classifier free guidance
+        # if (self.estimate_order >= 0) and (self.enr != 0.0):
         #     _, _, refer_v, _, _, predc_v = self.get_refer_predc(
-        #         rng_state, self.mod, noised_image_t, t, t, labels, e
+        #         rng_state,
+        #         self.mod,
+        #         x_t,
+        #         t,
+        #         t,
+        #         c,
+        #         e,
         #     )
-        #     target = self.enhance_target(target, self.enr, predc_v, refer_v)
+        #     idx = (t.flatten() < self.eng[1]) & (t.flatten() > self.eng[0])
+        #     idx = idx & (~sample_masks["adv"])
+        #     target_ = target.clone()
+        #     target = self.enhance_target(target, idx, self.enr, predc_v, refer_v)
+        #     if self.emd == 1.0:
+        #         target[idx] = (target - target_)[idx] + refer_v[idx]
 
-        # -----------------------------------------------------------
-        # 1. RCGM Base Loss (L_base)
-        # -----------------------------------------------------------
-        """
-        делаем тут какую-то сложную 2 эвалюацию для нашей картинки.
-        я бы думал о ней как о предикте 2 порядка на данный момент(но не уверен надо читать статью)
-        """
-        rcgm_target = self.get_rcgm_target(
-            rng_state,
-            self.mod,
-            F_th_t,
-            target.clone(),
-            noised_image_t,
-            t,
-            tt,
-            # labels,
-            self.estimation_order,
-        )
-        # заставляем модель предсказания из обычной модели
-        # быть по MSE похожей на предсказание с двунаправленным
-        # предсказанием
-        loss = self.loss_func(F_th_t, rcgm_target).mean()
+        # Start optimizing RCGM-based or multi-step generation (if self.eso = 0)
+        rcgm_idx = sample_masks["e2e"] | sample_masks["any"]
+        if (self.estimate_order >= 1) and (self.cor != 0.0) and (rcgm_idx.any()):
+            model_4_rcgm = self.mod if (self.emd != 1.0) else model
+            rcgm_target = self.get_rcgm_target(
+                rng_state,
+                model_4_rcgm,
+                F_th_t,
+                target,
+                x_t,
+                t,
+                tt,
+                # c,
+                self.estimate_order,
+            )
+            rcgm_idx = ~(sample_masks["adv"])
+            target[rcgm_idx] = rcgm_target[rcgm_idx]
 
-        # -----------------------------------------------------------
-        # TwinFlow Specific Losses
-        # -----------------------------------------------------------
+        weighting = (torch.tan((1 - (t.abs() - tt.abs())) * np.pi / 2.5) + 1).flatten()
+        weighting[sample_masks["adv"]] = 1
+        loss = self.loss_func(F_th_t, target) * weighting
+        # Only calculate the multi-step generation loss (if self.eso = 0)
+        mul_adv_idx = sample_masks["mul"] | sample_masks["adv"]
+        if self.estimate_order >= 1:
+            loss = loss.mean()
+        elif mul_adv_idx.any():
+            loss = loss[mul_adv_idx].mean()
+        else:
+            loss = 0
 
-        # [Optional] Real Velocity Loss
-        # Ensures real velocity is learned well (redundant if RCGM loss is perfect)
-        _, _, F_pred, _ = self.forward(
-            model,
-            noised_image_t,
-            t,
-            t,
-            # **dict(c=labels),
-        )
-        # а тут мы сразу говорим, за один проход сеть должна предсказать
-        # нам итоговое velocity
-        loss += self.loss_func(F_pred, target).mean()
-
-        # One-step generation forward pass (z -> x_fake)
-        # z = torch.randn_like(z); t = rand... (Re-sampling noise/time if needed)
-        x_fake, _, F_fake, _ = self.forward(
-            model,
-            noise_z,
-            torch.ones_like(t),
-            torch.zeros_like(t),
-            # **dict(c=labels),
-        )
-
-        # 2. Fake Velocity Loss / Self-Adversarial (L_adv)
-        # Training fake velocity at t in [-1, 0] to match target flow
-        x_t_fake = (
-            noise_z * self.alpha_in(t)
-            + x_fake.detach() * self.gamma_in(t)
-            + 0.01
-            * (self.alpha_in(t) * (1.0 - self.alpha_in(t))) ** 0.5
-            * torch.randn_like(noise_z)
-        )
-        # target_fake = noise_z * self.alpha_to(t) + x_fake.detach() * self.gamma_to(t)
-        target_fake = noise_z * self.alpha_to(t) + x_fake.detach() * self.gamma_to(t)
-
-        _, _, F_th_t_fake, _ = self.forward(
-            model,
-            x_t_fake,
-            -t,
-            -t,
-            # **dict(c=labels),
-        )
-        loss += self.loss_func(F_th_t_fake, target_fake).mean()
-
-        # 3. Distribution Matching / Rectification Loss (L_rectify)
-        # Aligns the generated flow with the 'correct' gradient direction
-        _, F_grad = self.dist_match(
-            model,
-            x_fake,
-            # labels,
-        )
-        loss += self.loss_func(F_fake, (F_fake - F_grad).detach()).mean()
-
-        # [Optional] Consistency mapping (t=1 to tt=0)
-        rcgm_target = self.get_rcgm_target(
-            rng_state,
-            self.mod,
-            F_fake,
-            target.clone(),
-            noise_z,
-            torch.ones_like(t),
-            torch.zeros_like(t),
-            # labels,
-            self.estimation_order,
-        )
-        loss += self.loss_func(F_fake, rcgm_target).mean()
-
-        """
-        NOTE ON EFFICIENCY:
-        The code above demonstrates the complete TwinFlow logic with all loss terms 
-        (RCGM L_base, L_adv, L_rectify) calculated in a single step.
-        
-        In practice, calculating multiple forward passes with gradients is computationally expensive.
-        For large-scale training, it is recommended to:
-        1. Split the batch into sub-batches.
-        2. Apply different loss terms to different sub-batches (e.g. 50% Base, 25% Adv, 25% Rectify).
-        3. Optimize redundant calculations.
-        """
+        # Start optimizing one or few-step generation
+        opt_idx = sample_masks["e2e"]
+        if (self.cor == 1.0) and (opt_idx.any()):
+            # c_e2e = [ic[opt_idx] for ic in c]
+            x_e2e = x_wc_t[opt_idx]
+            # _, F_grad = self.dist_match(model, x_e2e, c_e2e)
+            _, F_grad = self.dist_match(
+                model,
+                x_e2e,
+                edited_image,
+            )
+            F_fake = F_th_t[opt_idx]
+            e2e_loss = self.loss_func(F_fake, (F_fake - F_grad).data)
+            loss = loss + e2e_loss.mean() * self.dmc
         return loss
 
     def forward(
         self,
-        model: Union[TwinFlowUNet2DModel],
-        noised_image_t: torch.Tensor,
+        model: TwinFlowUNet2DModel,
+        x_t: torch.Tensor,
         t: torch.Tensor,
         tt: Union[torch.Tensor, None] = None,
         **model_kwargs,
     ):
-        """
-        Forward pass.
-        Returns:
-            x_hat: Reconstructed data (x0)
-            z_hat: Reconstructed noise (x1)
-            F_t: Predicted velocity field v_t
-            dent: Denominator (normalization term)
-        """
-        dent = -1  # dent = alpha(t)*gamma'(t) - gamma(t)*alpha'(t) for linear flow
-        """
-        помещаем в модель зашумленное изображение
-        время т
-        время тт
-        там это все внутри превращается в вектор, и 
-        просто конкатенируется с изображением, далее происходит стандартный форвард unet
-        и вот эта вся магия, на выходе мы имеем наше предсказанное значение
-        которое вычитается из оригинальной картинки F_t = x-unet_pred
-        """
-        F_t = model(
-            noised_image_t,
-            timestep=torch.ones(
-                noised_image_t.size(0),
-                device=noised_image_t.device,
-            )
-            * (t).flatten(),
-            timestep2=torch.ones(
-                noised_image_t.size(0),
-                device=noised_image_t.device,
-            )
-            * tt.flatten(),
+        tt = tt.flatten()  # if tt is not None else t.clone().flatten()
+        # dent = self.alpha_in(t) * self.gamma_to(t) - self.gamma_in(t) * self.alpha_to(t)
+        dent = -1
+        q = torch.ones(x_t.size(0), device=x_t.device) * (t).flatten()
+        q = q if self.integ_st == 1 else 1 - q
+        F_t = (-1) ** (1 - self.integ_st) * model(
+            x_t,
+            timestep=q,
+            timestep2=tt,
             **model_kwargs,
         ).sample
         t = torch.abs(t)
-
-        # Invert flow to recover x and z
-        z_hat = (noised_image_t * self.gamma_to(t) - F_t * self.gamma_in(t)) / dent
-        x_hat = (F_t * self.alpha_in(t) - noised_image_t * self.alpha_to(t)) / dent
+        z_hat = (x_t * self.gamma_to(t) - F_t * self.gamma_in(t)) / dent
+        x_hat = (F_t * self.alpha_in(t) - x_t * self.alpha_to(t)) / dent
         return x_hat, z_hat, F_t, dent
 
     def kumaraswamy_transform(self, t, a, b, c):
-        """
-        Kumaraswamy distribution transform for time step discretization.
-        Used to concentrate sampling steps in regions of high curvature.
-        """
         return (1 - (1 - t**a) ** b) ** c
-
-    """
-    Sampler: UCGM (Unified Continuous Generative Models)
-    
-    This sampler is highly compatible with RCGM and TwinFlow frameworks.
-    Since RCGM and TwinFlow are designed to train "Any-step" models (capable of 
-    functioning effectively as both one-step/few-step generators and multi-step 
-    generators), this unified sampler enables seamless switching between these 
-    regimes without structural changes.
-    
-    Reference: https://arxiv.org/abs/2505.07447
-    Adapted from: https://github.com/LINs-lab/UCGM/blob/main/methodes/unigen.py
-    """
 
     @torch.no_grad()
     def sampling_loop(
         self,
         inital_noise_z: torch.FloatTensor,
         sampling_model: Union[nn.Module, Callable],
-        sampling_steps: int = 1,
-        stochast_ratio: float = 1.0,
+        sampling_steps: int = 20,
+        stochast_ratio: float = 0.0,
         extrapol_ratio: float = 0.0,
         sampling_order: int = 1,
         time_dist_ctrl: list = [1.0, 1.0, 1.0],
-        rfba_gap_steps: list = [0.001, 0.6],
+        rfba_gap_steps: list = [0.0, 0.0],
+        sampling_style: Literal["few", "mul", "any"] = "few",
         **model_kwargs,
     ):
         """
-        Executes the UCGM sampling loop.
-
-        Args:
-            inital_noise_z: Initial Gaussian noise.
-            sampling_model: The trained Any-step model (RCGM/TwinFlow).
-            sampling_steps: 1 for One-step generation, >1 for Multi-step refinement.
-            ...
+        References:
+        - UCGM (Sampler): https://arxiv.org/abs/2505.07447 (Unified Continuous Generative Models)
         """
         input_dtype = inital_noise_z.dtype
         assert sampling_order in [1, 2]
         num_steps = (sampling_steps + 1) // 2 if sampling_order == 2 else sampling_steps
 
-        # Time step discretization (with Kumaraswamy transform)
+        # Time step discretization.
         num_steps = num_steps + 1 if (rfba_gap_steps[1] - 0.0) == 0.0 else num_steps
         t_steps = torch.linspace(
             rfba_gap_steps[0], 1.0 - rfba_gap_steps[1], num_steps, dtype=torch.float64
@@ -1052,27 +1011,34 @@ class TwinFlow(torch.nn.Module):
         t_steps = self.kumaraswamy_transform(t_steps, *time_dist_ctrl)
         t_steps = torch.cat([(1 - t_steps), torch.zeros_like(t_steps[:1])])
 
-        # Buffer for extrapolation
+        # Prepare the buffer for the first order prediction
         x_hats, z_hats, buffer_freq = [], [], 1
 
         # Main sampling loop
         x_cur = inital_noise_z.to(torch.float64)
         samples = [inital_noise_z.cpu()]
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
-            # 1. First order prediction (Euler)
+            # First order prediction
+            if sampling_style == "few":
+                t_tgt = torch.zeros_like(t_cur)
+            elif sampling_style == "mul":
+                t_tgt = t_cur
+            elif sampling_style == "any":
+                t_tgt = t_next
+            else:
+                raise ValueError(f"Unknown sampling style: {sampling_style}")
+
             x_hat, z_hat, _, _ = self.forward(
                 sampling_model,
                 x_cur.to(input_dtype),
                 t_cur.to(input_dtype),
-                torch.zeros_like(t_cur),  # tt=0 for few-step (one-step)
-                # t_next.to(input_dtype), # any-step mode
-                # t_cur.to(input_dtype),  # multi-step mode
+                t_tgt.to(input_dtype),
                 **model_kwargs,
             )
             samples.append(x_hat.cpu())
             x_hat, z_hat = x_hat.to(torch.float64), z_hat.to(torch.float64)
 
-            # Extrapolation logic (optional)
+            # Apply extrapolation for prediction (extrapolating z is not nessary?)
             if buffer_freq > 0 and extrapol_ratio > 0:
                 z_hats.append(z_hat)
                 x_hats.append(x_hat)
@@ -1081,7 +1047,6 @@ class TwinFlow(torch.nn.Module):
                     x_hat = x_hat + extrapol_ratio * (x_hat - x_hats[-buffer_freq - 1])
                     z_hats.pop(0), x_hats.pop(0)
 
-            # Stochastic injection (SDE-like behavior)
             if stochast_ratio == "SDE":
                 stochast_ratio = (
                     torch.sqrt((t_next - t_cur).abs())
@@ -1092,12 +1057,11 @@ class TwinFlow(torch.nn.Module):
                 noi = torch.randn(x_cur.size()).to(x_cur)
             else:
                 noi = torch.randn(x_cur.size()).to(x_cur) if stochast_ratio > 0 else 0.0
-
             x_next = self.gamma_in(t_next) * x_hat + self.alpha_in(t_next) * (
                 z_hat * ((1 - stochast_ratio) ** 0.5) + noi * (stochast_ratio**0.5)
             )
 
-            # 2. Second order correction (Heun)
+            # Apply second order correction, Heun-like
             if sampling_order == 2 and i < num_steps - 1:
                 x_pri, z_pri, _, _ = self.forward(
                     sampling_model,
@@ -1212,32 +1176,6 @@ def log_validation(
     originals = []
     generated = []
 
-    # Вспомогательная функция для получения сигм (как в основном скрипте)
-    def _get_sigmas_val(
-        scheduler,
-        timesteps,
-        n_dim=4,
-        dtype=torch.float32,
-        device="cpu",
-    ):
-        sigmas = scheduler.sigmas.to(device=device, dtype=dtype)
-        schedule_timesteps = scheduler.timesteps.to(device)
-        timesteps = timesteps.to(device)
-        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
-        sigma = sigmas[step_indices].flatten()
-        while len(sigma.shape) < n_dim:
-            sigma = sigma.unsqueeze(-1)
-        return sigma
-
-    # ---------------------------------------------------------
-    # НАСТРОЙКА ШЕДУЛЕРА
-    # ---------------------------------------------------------
-    num_steps = diffusion_args.num_inference_steps
-
-    sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
-
-    noise_scheduler.set_timesteps(sigmas=sigmas, device=accelerator.device)
-
     for idx in selected_ids:
         item = dataset[idx]
 
@@ -1256,7 +1194,6 @@ def log_validation(
             .to(vae_val.dtype)
             .to(vae_val.device)
         )
-        noise_scheduler.set_timesteps(sigmas=sigmas, device=accelerator.device)
 
         with torch.no_grad():
             # Encode source image
@@ -1622,6 +1559,7 @@ def main():
         collate_fn=collate_fn,
         batch_size=training_args.per_device_train_batch_size,
         num_workers=training_args.dataloader_num_workers,
+        drop_last=True,
     )
 
     # Scheduler and math around the number of training steps.
