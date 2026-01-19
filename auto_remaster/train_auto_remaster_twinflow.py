@@ -523,7 +523,8 @@ class TwinFlow(torch.nn.Module):
         enhanced_range: List[float] = [0.00, 1.00],
         # --- Time Discretization & Distribution ---
         time_dist_ctrl: List[float] = [1.0, 1.0, 1.0],
-        estimate_order: int = 2,
+        # estimate_order: int = 2,
+        estimate_order: int = 4,
         loss_func_type: dict = {"type": "barron_reweighting"},
         dist_match_cof: float = 0.5,
         use_image_free: bool = False,
