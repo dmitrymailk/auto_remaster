@@ -86,10 +86,261 @@ from einops import rearrange
 from torch.cuda.amp import autocast
 from collections import OrderedDict, defaultdict
 import copy
+from diffusers.models.unets.unet_2d import UNet2DOutput
+from typing import List, Callable, Union, Literal, Optional
+from torchvision.transforms import Normalize
 
 # from .discriminator import NLayerDiscriminator, weights_init
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+def preprocess_raw_image(x, enc_type="dinov2"):
+    # dinov2-vit-b
+    resolution = x.shape[-1]
+    if "dinov2" in enc_type:
+        x = x / 255.0
+        x = Normalize(_IMAGENET_MEAN, _IMAGENET_STD)(x)
+        x = torch.nn.functional.interpolate(
+            # x, 224 * (resolution // 256), mode="bicubic"
+            x,
+            224,
+            mode="bicubic",
+        )
+
+    return x
+
+
+def build_mlp(hidden_size, projector_dim, z_dim):
+    # hidden_size=1152, projector_dim=2048,z_dim=768
+    return nn.Sequential(
+        nn.Linear(hidden_size, projector_dim),
+        nn.SiLU(),
+        nn.Linear(projector_dim, projector_dim),
+        nn.SiLU(),
+        nn.Linear(projector_dim, z_dim),
+    )
+
+
+class REPAEUNet2DModel(UNet2DModel):
+    def __init__(
+        self,
+        sample_size: Optional[Union[int, Tuple[int, int]]] = None,
+        in_channels: int = 3,
+        out_channels: int = 3,
+        center_input_sample: bool = False,
+        time_embedding_type: str = "positional",
+        time_embedding_dim: Optional[int] = None,
+        freq_shift: int = 0,
+        flip_sin_to_cos: bool = True,
+        down_block_types: Tuple[str, ...] = (
+            "DownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+            "AttnDownBlock2D",
+        ),
+        mid_block_type: Optional[str] = "UNetMidBlock2D",
+        up_block_types: Tuple[str, ...] = (
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "AttnUpBlock2D",
+            "UpBlock2D",
+        ),
+        block_out_channels: Tuple[int, ...] = (224, 448, 672, 896),
+        layers_per_block: int = 2,
+        mid_block_scale_factor: float = 1,
+        downsample_padding: int = 1,
+        downsample_type: str = "conv",
+        upsample_type: str = "conv",
+        dropout: float = 0.0,
+        act_fn: str = "silu",
+        attention_head_dim: Optional[int] = 8,
+        norm_num_groups: int = 32,
+        attn_norm_num_groups: Optional[int] = None,
+        norm_eps: float = 1e-5,
+        resnet_time_scale_shift: str = "default",
+        add_attention: bool = True,
+        class_embed_type: Optional[str] = None,
+        num_class_embeds: Optional[int] = None,
+        num_train_timesteps: Optional[int] = None,
+    ):
+        super().__init__(
+            sample_size=sample_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            center_input_sample=center_input_sample,
+            time_embedding_type=time_embedding_type,
+            time_embedding_dim=time_embedding_dim,
+            freq_shift=freq_shift,
+            flip_sin_to_cos=flip_sin_to_cos,
+            down_block_types=down_block_types,
+            mid_block_type=mid_block_type,
+            up_block_types=up_block_types,
+            block_out_channels=block_out_channels,
+            layers_per_block=layers_per_block,
+            mid_block_scale_factor=mid_block_scale_factor,
+            downsample_padding=downsample_padding,
+            downsample_type=downsample_type,
+            upsample_type=upsample_type,
+            dropout=dropout,
+            act_fn=act_fn,
+            attention_head_dim=attention_head_dim,
+            norm_num_groups=norm_num_groups,
+            attn_norm_num_groups=attn_norm_num_groups,
+            norm_eps=norm_eps,
+            resnet_time_scale_shift=resnet_time_scale_shift,
+            add_attention=add_attention,
+            class_embed_type=class_embed_type,
+            num_class_embeds=num_class_embeds,
+            num_train_timesteps=num_train_timesteps,
+        )
+
+        z_dims = [768]
+        self.repa_projector = build_mlp(block_out_channels[-1], 2048, 768)
+
+    def forward(
+        self,
+        sample: torch.Tensor,
+        timestep: Union[torch.Tensor, float, int],
+        class_labels: Optional[torch.Tensor] = None,
+        return_dict: bool = True,
+        use_repa: bool = False,
+    ) -> Union[UNet2DOutput, Tuple]:
+        r"""
+        The [`UNet2DModel`] forward method.
+
+        Args:
+            sample (`torch.Tensor`):
+                The noisy input tensor with the following shape `(batch, channel, height, width)`.
+            timestep (`torch.Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+            class_labels (`torch.Tensor`, *optional*, defaults to `None`):
+                Optional class labels for conditioning. Their embeddings will be summed with the timestep embeddings.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~models.unets.unet_2d.UNet2DOutput`] instead of a plain tuple.
+
+        Returns:
+            [`~models.unets.unet_2d.UNet2DOutput`] or `tuple`:
+                If `return_dict` is True, an [`~models.unets.unet_2d.UNet2DOutput`] is returned, otherwise a `tuple` is
+                returned where the first element is the sample tensor.
+        """
+        # 0. center input if necessary
+        if self.config.center_input_sample:
+            sample = 2 * sample - 1.0
+
+        # 1. time
+        timesteps = timestep
+        if not torch.is_tensor(timesteps):
+            timesteps = torch.tensor(
+                [timesteps], dtype=torch.long, device=sample.device
+            )
+        elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
+            timesteps = timesteps[None].to(sample.device)
+
+        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+        timesteps = timesteps * torch.ones(
+            sample.shape[0], dtype=timesteps.dtype, device=timesteps.device
+        )
+        # reverse time
+
+        t_emb = self.time_proj(timesteps)
+
+        # timesteps does not contain any weights and will always return f32 tensors
+        # but time_embedding might actually be running in fp16. so we need to cast here.
+        # there might be better ways to encapsulate this.
+        t_emb = t_emb.to(dtype=self.dtype)
+        emb = self.time_embedding(t_emb)
+
+        if self.class_embedding is not None:
+            if class_labels is None:
+                raise ValueError(
+                    "class_labels should be provided when doing class conditioning"
+                )
+
+            if self.config.class_embed_type == "timestep":
+                class_labels = self.time_proj(class_labels)
+
+            class_emb = self.class_embedding(class_labels).to(dtype=self.dtype)
+            emb = emb + class_emb
+        elif self.class_embedding is None and class_labels is not None:
+            raise ValueError(
+                "class_embedding needs to be initialized in order to use class conditioning"
+            )
+
+        # 2. pre-process
+        skip_sample = sample
+        sample = self.conv_in(sample)
+
+        # 3. down
+        down_block_res_samples = (sample,)
+        for downsample_block in self.down_blocks:
+            if hasattr(downsample_block, "skip_conv"):
+                sample, res_samples, skip_sample = downsample_block(
+                    hidden_states=sample, temb=emb, skip_sample=skip_sample
+                )
+            else:
+                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+
+            down_block_res_samples += res_samples
+
+        # 4. mid # sample [1, 1280, 16, 16]
+        # ---
+        if use_repa:
+            # sample сейчас имеет форму [Batch, 1280, 16, 16] (например)
+
+            # 1. Превращаем "картинку" в последовательность токенов
+            # Permute: [B, C, H, W] -> [B, H, W, C]
+            h, w = sample.shape[-2], sample.shape[-1]
+            hidden = sample.permute(0, 2, 3, 1)
+
+            # Flatten: [B, H, W, C] -> [B, H*W, C] -> [B, 256, 1280]
+            # Но лучше сохранить форму [B, H, W, C] до интерполяции,
+            # либо интерполировать ДО permute (это эффективнее).
+            hidden = hidden.reshape(-1, 256, 1280)
+            # ВАРИАНТ: Проецируем сразу каждый пиксель (так как MLP работает с последней размерностью)
+            repa_features = self.repa_projector(hidden)  # Выход: [B, H, W, DinoDim]
+
+            # Теперь у нас [B, 16, 16, 768].
+            # Нам нужно будет выровнять это с DINO снаружи.
+            return (sample, repa_features)
+        # ---
+
+        if self.mid_block is not None:
+            sample = self.mid_block(sample, emb)
+
+        # 5. up
+        skip_sample = None
+        for upsample_block in self.up_blocks:
+            res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
+            down_block_res_samples = down_block_res_samples[
+                : -len(upsample_block.resnets)
+            ]
+
+            if hasattr(upsample_block, "skip_conv"):
+                sample, skip_sample = upsample_block(
+                    sample, res_samples, emb, skip_sample
+                )
+            else:
+                sample = upsample_block(sample, res_samples, emb)
+
+        # 6. post-process
+        sample = self.conv_norm_out(sample)
+        sample = self.conv_act(sample)
+        sample = self.conv_out(sample)
+
+        if skip_sample is not None:
+            sample += skip_sample
+
+        if self.config.time_embedding_type == "fourier":
+            timesteps = timesteps.reshape(
+                (sample.shape[0], *([1] * len(sample.shape[1:])))
+            )
+            sample = sample / timesteps
+
+        if not return_dict:
+
+            return (sample,)
+
+        return UNet2DOutput(sample=sample)
 
 
 def weights_init(m):
@@ -1029,8 +1280,6 @@ def main():
             os.makedirs(training_args.output_dir, exist_ok=True)
 
     # Load scheduler for training and sampling (Flow Matching)
-    # Create scheduler from scratch (no need for SDXL)
-    # One scheduler is enough - set_timesteps() in validation doesn't affect training
     noise_scheduler = FlowMatchEulerDiscreteScheduler()
     num_steps = diffusion_args.num_inference_steps
 
@@ -1052,7 +1301,8 @@ def main():
         torch_dtype=weight_dtype,
     )
 
-    unet = UNet2DModel(**unet2d_config)
+    # unet = UNet2DModel(**unet2d_config)
+    unet = REPAEUNet2DModel(**unet2d_config)
     unet.set_attention_backend("flash")
 
     unet.train()
@@ -1317,11 +1567,53 @@ def main():
 
             return selected_timesteps_tensor[idx]
 
+    import timm
+
+    encoder = torch.hub.load("facebookresearch/dinov2", f"dinov2_vitb14")
+    del encoder.head
+    patch_resolution = 16 * (512 // 256)
+    encoder.pos_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
+        encoder.pos_embed.data,
+        [patch_resolution, patch_resolution],
+    )
+    encoder.head = torch.nn.Identity()
+    encoder = encoder.to(accelerator.device)
+    encoder.eval()
+
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             l_acc = [unet, vae, vae_loss_fn]
             # l_acc = [unet]
+            # extract the dinov2 features
+            with torch.no_grad():
+                dino_features = []
+                with accelerator.autocast():
+                    # for encoder, encoder_type, arch in zip(
+                    #     encoders, encoder_types, architectures
+                    # ):
+                    #     """
+                    #     нормализация для dinov2 выглядит вот так
+                    #     ---
+                    #     x = x / 255.0
+                    #     x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+                    #     x = torch.nn.functional.interpolate(
+                    #         x, 224 * (resolution // 256), mode="bicubic"
+                    #     )
+                    #     """
+                    #     raw_image_ = preprocess_raw_image(raw_image, encoder_type)
+                    #     z = encoder.forward_features(raw_image_)
+                    # if "mocov3" in encoder_type:
+                    #     z = z = z[:, 1:]
+                    # if "dinov2" in encoder_type:
+                    z = encoder.forward_features(
+                        preprocess_raw_image(
+                            batch["target_images"].to(weight_dtype),
+                        )
+                    )
+                    z = z["x_norm_patchtokens"]
+                    # torch.Size([1, 1024, 768])
+                    dino_features.append(z)
             with accelerator.accumulate(*l_acc):
                 # Convert images to latent space (Bridge Matching approach)
                 # with torch.no_grad():
@@ -1352,6 +1644,8 @@ def main():
                 )
                 z_target_std = z_target_std * vae.config.scaling_factor
 
+                target = z_source_std - z_target_std
+
                 # Turn off grads for the SiT model (avoid REPA gradient on the SiT model)
                 requires_grad(unet, False)
                 # Avoid BN stats to be updated by the VAE
@@ -1378,38 +1672,34 @@ def main():
                 )
                 # print(sigmas)
                 # Create interpolant (Bridge between z_source and z_target)
-                # noisy_sample = (
-                #     sigmas * z_source_std
-                #     + (1.0 - sigmas) * z_target_std
-                #     + diffusion_args.bridge_noise_sigma
-                #     * (sigmas * (1.0 - sigmas)) ** 0.5
-                #     * torch.randn_like(z_source_std)
-                # )
+                noisy_sample = (
+                    sigmas * z_source_std
+                    + (1.0 - sigmas) * z_target_std
+                    + diffusion_args.bridge_noise_sigma
+                    * (sigmas * (1.0 - sigmas)) ** 0.5
+                    * torch.randn_like(z_source_std)
+                )
                 # noisy_sample = z_source
 
                 # Ensure first timestep uses z_source
-                # for i, t in enumerate(timesteps):
-                #     if t.item() == noise_scheduler.timesteps[0]:
-                #         noisy_sample[i] = z_source_std[i]
+                for i, t in enumerate(timesteps):
+                    if t.item() == noise_scheduler.timesteps[0]:
+                        noisy_sample[i] = z_source_std[i]
 
                 # Predict direction of transport (target = z_source - z_target)
-                # model_pred = unet(
-                #     noisy_sample,
-                #     timesteps,
-                #     return_dict=False,
-                # )[0]
+                model_pred, repa_mlp_features = unet(
+                    noisy_sample, timesteps, return_dict=False, use_repa=True
+                )
 
                 # Target is the direction from z_source to z_target
                 # target = z_source_std - z_target_std
 
-                # denoising_loss = F.mse_loss(
-                #     model_pred,
-                #     target.detach(),
-                #     reduction="mean",
-                # )
+                proj_loss = -F.cosine_similarity(
+                    dino_features[0], repa_mlp_features, dim=-1
+                ).mean()
 
-                # vae_loss = vae_loss + denoising_loss  # * 0.5
-                vae_loss = vae_loss
+                vae_loss = vae_loss + proj_loss * 1.5
+
                 accelerator.backward(vae_loss)
                 if accelerator.sync_gradients:
                     grad_norm_vae = accelerator.clip_grad_norm_(
@@ -1440,29 +1730,13 @@ def main():
 
                 requires_grad(unet, True)
                 unet.train()
-                # with torch.no_grad():
-                #     noisy_sample = (
-                #         sigmas * z_source_std
-                #         + (1.0 - sigmas) * z_target_std
-                #         + diffusion_args.bridge_noise_sigma
-                #         * (sigmas * (1.0 - sigmas)) ** 0.5
-                #         * torch.randn_like(z_source_std)
-                #     )
-                noisy_sample = (
-                    sigmas * z_source_std
-                    + (1.0 - sigmas) * z_target_std
-                    + diffusion_args.bridge_noise_sigma
-                    * (sigmas * (1.0 - sigmas)) ** 0.5
-                    * torch.randn_like(z_source_std)
-                )
 
                 model_pred = unet(
                     noisy_sample.detach(),
                     timesteps,
                     return_dict=False,
                 )[0]
-                # target = z_source_std.detach() - z_target_std.detach()
-                target = z_source_std - z_target_std
+
                 denoising_loss = F.mse_loss(
                     model_pred,
                     target.detach(),

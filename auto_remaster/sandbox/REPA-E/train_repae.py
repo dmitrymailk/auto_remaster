@@ -39,6 +39,7 @@ CLIP_DEFAULT_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
 def preprocess_raw_image(x, enc_type):
+    # dinov2-vit-b
     resolution = x.shape[-1]
     if "clip" in enc_type:
         x = x / 255.0
