@@ -99,7 +99,8 @@ def preprocess_raw_image(x, enc_type="dinov2"):
     # dinov2-vit-b
     resolution = x.shape[-1]
     if "dinov2" in enc_type:
-        x = x / 255.0
+        # x = x / 255.0
+        x = x * 0.5 + 0.5
         x = Normalize(_IMAGENET_MEAN, _IMAGENET_STD)(x)
         x = torch.nn.functional.interpolate(
             # x, 224 * (resolution // 256), mode="bicubic"
@@ -301,7 +302,7 @@ class REPAEUNet2DModel(UNet2DModel):
 
             # Теперь у нас [B, 16, 16, 768].
             # Нам нужно будет выровнять это с DINO снаружи.
-            return (sample, repa_features)
+
         # ---
 
         if self.mid_block is not None:
@@ -337,7 +338,8 @@ class REPAEUNet2DModel(UNet2DModel):
             sample = sample / timesteps
 
         if not return_dict:
-
+            if use_repa:
+                return (sample, repa_features)
             return (sample,)
 
         return UNet2DOutput(sample=sample)
@@ -893,7 +895,7 @@ def vae_forward(vae: AutoencoderKL, x: Any, return_recon=True):
     z = posterior.sample()
 
     recon = vae.decode(
-        z / vae.config.scaling_factor,
+        z,
         False,
     )[0]
     return posterior, z, recon
@@ -1688,7 +1690,10 @@ def main():
 
                 # Predict direction of transport (target = z_source - z_target)
                 model_pred, repa_mlp_features = unet(
-                    noisy_sample, timesteps, return_dict=False, use_repa=True
+                    noisy_sample,
+                    timesteps,
+                    return_dict=False,
+                    use_repa=True,
                 )
 
                 # Target is the direction from z_source to z_target
@@ -1731,11 +1736,12 @@ def main():
                 requires_grad(unet, True)
                 unet.train()
 
-                model_pred = unet(
+                model_pred, repa_mlp_features = unet(
                     noisy_sample.detach(),
                     timesteps,
                     return_dict=False,
-                )[0]
+                    use_repa=True,
+                )
 
                 denoising_loss = F.mse_loss(
                     model_pred,
@@ -1743,6 +1749,12 @@ def main():
                     # target,
                     reduction="mean",
                 )
+                proj_loss = -F.cosine_similarity(
+                    dino_features[0],
+                    repa_mlp_features,
+                    dim=-1,
+                ).mean()
+                denoising_loss += proj_loss
                 # обновляем теперь диффузионную модель
                 accelerator.backward(denoising_loss)
                 if accelerator.sync_gradients:
