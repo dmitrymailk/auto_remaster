@@ -11,6 +11,7 @@
 - pi-flow https://github.com/Lakonik/piFlow
 - https://github.com/guandeh17/Self-Forcing
 - alphaflow https://github.com/snap-research/alphaflow
+- [Mean Flows for One-step Generative Modeling](https://github.com/haidog-yaqub/MeanFlow)
 - LCM https://github.com/huggingface/diffusers/blob/main/docs/source/en/training/lcm_distill.md
 - DMD2 
 - [rCM](https://github.com/NVlabs/rcm)
