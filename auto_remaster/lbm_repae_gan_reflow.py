@@ -1013,6 +1013,7 @@ def log_validation(
         checkpoint_path,
         subfolder="vae",
         torch_device="cuda",
+        torch_dtype=weight_dtype,
     ).to(accelerator.device)
     vae_val.eval()
 
@@ -1293,8 +1294,8 @@ def main():
         # [1000],
         device=accelerator.device,
     ).long()
-    # weight_dtype = torch.float16
-    weight_dtype = torch.float32
+    weight_dtype = torch.bfloat16
+    # weight_dtype = torch.float32
 
     vae = AutoencoderKL.from_pretrained(
         # "black-forest-labs/FLUX.1-dev",
@@ -1305,8 +1306,8 @@ def main():
 
     # unet = UNet2DModel(**unet2d_config)
     unet = REPAEUNet2DModel(**unet2d_config)
-    unet.set_attention_backend("flash")
-
+    # unet.set_attention_backend("flash")
+    unet = unet.to(weight_dtype)
     unet.train()
 
     # ema = copy.deepcopy(unet).to(
@@ -1579,8 +1580,9 @@ def main():
         [patch_resolution, patch_resolution],
     )
     encoder.head = torch.nn.Identity()
-    encoder = encoder.to(accelerator.device)
+    encoder = encoder.to(accelerator.device).to(weight_dtype)
     encoder.eval()
+    encoder.requires_grad_(False)
 
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
@@ -1590,32 +1592,16 @@ def main():
             # extract the dinov2 features
             with torch.no_grad():
                 dino_features = []
-                with accelerator.autocast():
-                    # for encoder, encoder_type, arch in zip(
-                    #     encoders, encoder_types, architectures
-                    # ):
-                    #     """
-                    #     нормализация для dinov2 выглядит вот так
-                    #     ---
-                    #     x = x / 255.0
-                    #     x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-                    #     x = torch.nn.functional.interpolate(
-                    #         x, 224 * (resolution // 256), mode="bicubic"
-                    #     )
-                    #     """
-                    #     raw_image_ = preprocess_raw_image(raw_image, encoder_type)
-                    #     z = encoder.forward_features(raw_image_)
-                    # if "mocov3" in encoder_type:
-                    #     z = z = z[:, 1:]
-                    # if "dinov2" in encoder_type:
-                    z = encoder.forward_features(
-                        preprocess_raw_image(
-                            batch["target_images"].to(weight_dtype),
-                        )
+                # with accelerator.autocast():
+
+                z = encoder.forward_features(
+                    preprocess_raw_image(
+                        batch["target_images"].to(weight_dtype),
                     )
-                    z = z["x_norm_patchtokens"]
-                    # torch.Size([1, 1024, 768])
-                    dino_features.append(z)
+                )
+                z = z["x_norm_patchtokens"].to(weight_dtype)
+                # torch.Size([1, 1024, 768])
+                dino_features.append(z)
             with accelerator.accumulate(*l_acc):
                 # Convert images to latent space (Bridge Matching approach)
                 # with torch.no_grad():
