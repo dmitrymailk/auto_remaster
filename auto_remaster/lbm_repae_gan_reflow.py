@@ -644,7 +644,8 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         loss_config = config
         self.discriminator = NLayerDiscriminator(
             input_nc=3,
-            n_layers=3,
+            # n_layers=3,
+            n_layers=1,
             use_actnorm=False,
         ).apply(weights_init)
 
@@ -797,17 +798,17 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         original_image = original_image.contiguous()
         reconstructions = reconstructions.contiguous()
         # by default
-        if self.reconstruction_loss == "l1":
-            reconstruction_loss = F.l1_loss(
-                original_image, reconstructions, reduction="mean"
-            )
+        # if self.reconstruction_loss == "l1":
+        #     reconstruction_loss = F.l1_loss(
+        #         original_image, reconstructions, reduction="mean"
+        #     )
         # elif self.reconstruction_loss == "l2":
         #     reconstruction_loss = F.mse_loss(inputs, reconstructions, reduction="mean")
         # else:
         #     raise ValueError(
         #         f"Unsuppored reconstruction_loss {self.reconstruction_loss}"
         #     )
-        reconstruction_loss *= self.reconstruction_weight
+        # reconstruction_loss *= self.reconstruction_weight
 
         # Compute perceptual loss.
         perceptual_loss = self.perceptual_loss(original_image, reconstructions).mean()
@@ -855,24 +856,25 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
             pass
         elif self.quantize_mode == "vae":
             # Compute kl loss.
-            reconstruction_loss = reconstruction_loss / torch.exp(self.logvar)
+            # reconstruction_loss = reconstruction_loss / torch.exp(self.logvar)
             posteriors = extra_result_dict
             kl_loss = posteriors.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            total_loss = (
-                reconstruction_loss
-                + self.perceptual_weight * perceptual_loss
-                + self.kl_weight * kl_loss
-                + d_weight * discriminator_factor * generator_loss
-            )
             # total_loss = (
-            #     self.perceptual_weight * perceptual_loss
+            #     reconstruction_loss
+            #     + self.perceptual_weight * perceptual_loss
             #     + self.kl_weight * kl_loss
             #     + d_weight * discriminator_factor * generator_loss
             # )
+            total_loss = (
+                self.perceptual_weight * perceptual_loss
+                + self.kl_weight * kl_loss
+                + d_weight * discriminator_factor * generator_loss
+            )
             loss_dict = dict(
                 total_loss=total_loss.clone().detach(),
-                reconstruction_loss=reconstruction_loss.detach(),
+                # reconstruction_loss=reconstruction_loss.detach(),
+                reconstruction_loss=torch.tensor(0.0).detach(),
                 perceptual_loss=(self.perceptual_weight * perceptual_loss).detach(),
                 kl_loss=(self.kl_weight * kl_loss).detach(),
                 weighted_gan_loss=(
@@ -1260,7 +1262,7 @@ def main():
         log_with=training_args.report_to,
         project_config=accelerator_project_config,
         mixed_precision="no",
-        # mixed_precision="fp16",
+        # mixed_precision="bf16",
     )
 
     # Make one log on every process with the configuration for debugging.
@@ -1294,8 +1296,8 @@ def main():
         # [1000],
         device=accelerator.device,
     ).long()
-    weight_dtype = torch.bfloat16
-    # weight_dtype = torch.float32
+    # weight_dtype = torch.float16
+    weight_dtype = torch.float32
 
     vae = AutoencoderKL.from_pretrained(
         # "black-forest-labs/FLUX.1-dev",
