@@ -3,13 +3,15 @@ export http_proxy="127.0.0.1:2334"
 export https_proxy="127.0.0.1:2334"
 
 loglr=-7
-width=64
+# width=64
+width=32
 lr=$(python -c "import math; print(2**${loglr})")
-run_name="stage_4_msepool-cont-512-1.0-1.0-batch-gradnorm_make_deterministic_test"
+run_name="stage_4_msepool-cont-512-1.0-1.0-batch-gradnorm_make_deterministic_test_flux2"
 echo "Running ${run_name}"
 
 # torchrun --nproc_per_node=1 vae_trainer.py \
-torchrun --nproc_per_node=1 vae_trainer_hf_dataset.py \
+# torchrun --nproc_per_node=1 vae_trainer_hf_dataset.py \
+torchrun --nproc_per_node=1 vae_trainer_hf_dataset_flux2_vae.py \
 --learning_rate_vae ${lr} \
 --vae_ch ${width} \
 --run_name ${run_name} \

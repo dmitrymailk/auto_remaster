@@ -53,7 +53,7 @@ caption_column: edit_prompt
 
 
 # Inference parameters
-num_inference_steps: 4
+num_inference_steps: 1
 
 # Metrics for evaluation
 metrics_list: [

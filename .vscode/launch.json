@@ -12,6 +12,13 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
             "name": "auto_remaster/train_auto_remaster.py",
             "type": "debugpy",
             "request": "launch",
@@ -89,6 +96,44 @@
                 "http_proxy": "127.0.0.1:2334",
                 "https_proxy": "127.0.0.1:2334",
                 "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
+        {
+            "name": "auto_remaster/sandbox/vqgan_training/vae_trainer_hf_dataset_flux2_vae.py",
+            "type": "debugpy",
+            "request": "launch",
+            // "module": "accelerate.commands.launch",
+            "cwd": "/code/auto_remaster/sandbox/vqgan_training",
+            "program": "vae_trainer_hf_dataset_flux2_vae.py",
+            "args": [
+                // "--config_file=/code/auto_remaster/single_gpu.yaml",
+                // "--module",
+                // "auto_remaster.lbm_repae_gan_reflow",
+                "--learning_rate_vae=0.0078125",
+                "--vae_ch=256",
+                "--run_name=debug_test_flux2",
+                "--num_epochs=200",
+                "--max_steps=100000",
+                "--evaluate_every_n_steps=500",
+                "--learning_rate_disc=1e-5",
+                "--batch_size=2",
+                "--do_clamp",
+                "--do_ganloss",
+                "--use_lecam=True",
+                "--project_name='HrDecoderAE'",
+                "--decoder_also_perform_hr=True",
+                "--vae_z_channels=4",
+            ],
+            "justMyCode": false,
+            "env": {
+                "http_proxy": "127.0.0.1:2334",
+                "https_proxy": "127.0.0.1:2334",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "RANK": "0",
+                "WORLD_SIZE": "1",
+                "MASTER_ADDR": "localhost",
+                "MASTER_PORT": "2228",
+                "LOCAL_RANK": "0"
             }
         },
     ]

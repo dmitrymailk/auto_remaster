@@ -474,30 +474,9 @@ class PerceptualLoss(torch.nn.Module):
         self.loss_weight_lpips = None
         self.loss_weight_convnext = None
 
-        # Parsing the model name. We support name formatted in
-        # "lpips-convnext_s-{float_number}-{float_number}", where the
-        # {float_number} refers to the loss weight for each component.
-        # E.g., lpips-convnext_s-1.0-2.0 refers to compute the perceptual loss
-        # using both the convnext_s and lpips, and average the final loss with
-        # (1.0 * loss(lpips) + 2.0 * loss(convnext_s)) / (1.0 + 2.0).
-
         # lpips by defaults in repa-e
         if "lpips" in model_name:
             self.lpips = lpips.LPIPS(net="vgg").eval()
-
-        # if "convnext_s" in model_name:
-        #     self.convnext = models.convnext_small(
-        #         weights=models.ConvNeXt_Small_Weights.IMAGENET1K_V1
-        #     ).eval()
-
-        if "lpips" in model_name and "convnext_s" in model_name:
-            loss_config = model_name.split("-")[-2:]
-            self.loss_weight_lpips, self.loss_weight_convnext = float(
-                loss_config[0]
-            ), float(loss_config[1])
-            print(
-                f"self.loss_weight_lpips, self.loss_weight_convnext: {self.loss_weight_lpips}, {self.loss_weight_convnext}"
-            )
 
         self.register_buffer(
             "imagenet_mean", torch.Tensor(_IMAGENET_MEAN)[None, :, None, None]
@@ -536,24 +515,6 @@ class PerceptualLoss(torch.nn.Module):
             else:
                 num_losses += self.loss_weight_lpips
                 loss += self.loss_weight_lpips * lpips_loss
-        # False by default
-        # if self.convnext is not None:
-        #     # Computes ConvNeXt-s loss, if available.
-        #     input = torch.nn.functional.interpolate(input, size=224, mode="bilinear", align_corners=False, antialias=True)
-        #     target = torch.nn.functional.interpolate(target, size=224, mode="bilinear", align_corners=False, antialias=True)
-        #     pred_input = self.convnext((input - self.imagenet_mean) / self.imagenet_std)
-        #     pred_target = self.convnext((target - self.imagenet_mean) / self.imagenet_std)
-        #     convnext_loss = torch.nn.functional.mse_loss(
-        #         pred_input,
-        #         pred_target,
-        #         reduction="mean")
-
-        #     if self.loss_weight_convnext is None:
-        #         num_losses += 1
-        #         loss += convnext_loss
-        #     else:
-        #         num_losses += self.loss_weight_convnext
-        #         loss += self.loss_weight_convnext * convnext_loss
 
         # weighted avg.
         loss = loss / num_losses
@@ -644,8 +605,8 @@ class ReconstructionLoss_Stage2(torch.nn.Module):
         loss_config = config
         self.discriminator = NLayerDiscriminator(
             input_nc=3,
-            # n_layers=3,
-            n_layers=1,
+            n_layers=3,
+            # n_layers=1,
             use_actnorm=False,
         ).apply(weights_init)
 
@@ -1292,8 +1253,8 @@ def main():
 
     noise_scheduler.set_timesteps(sigmas=sigmas, device=accelerator.device)
     selected_timesteps_tensor = torch.tensor(
-        [250, 500, 750, 1000],
-        # [1000],
+        # [250, 500, 750, 1000],
+        [1000],
         device=accelerator.device,
     ).long()
     # weight_dtype = torch.float16
@@ -1691,7 +1652,7 @@ def main():
                     dino_features[0], repa_mlp_features, dim=-1
                 ).mean()
 
-                vae_loss = vae_loss + proj_loss * 1.5
+                vae_loss = vae_loss + proj_loss * 0.5
 
                 accelerator.backward(vae_loss)
                 if accelerator.sync_gradients:
@@ -1742,7 +1703,7 @@ def main():
                     repa_mlp_features,
                     dim=-1,
                 ).mean()
-                denoising_loss += proj_loss
+                denoising_loss += proj_loss * 0.5
                 # обновляем теперь диффузионную модель
                 accelerator.backward(denoising_loss)
                 if accelerator.sync_gradients:
