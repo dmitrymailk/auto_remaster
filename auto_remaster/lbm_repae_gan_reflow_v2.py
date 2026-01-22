@@ -1435,8 +1435,8 @@ def log_validation(
             # Декодирование результата
             output_image = (
                 vae_val.decode(
-                    # sample / vae_val.config.scaling_factor,
-                    sample,
+                    sample / vae_val.config.scaling_factor,
+                    # sample,
                     return_dict=False,
                 )[0]
             ).clamp(-1, 1)
@@ -1885,295 +1885,137 @@ def main():
     for epoch in range(first_epoch, training_args.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
-            # l_acc = [unet, vae, vae_loss_fn, discriminator]
-            l_acc = [unet, vae, discriminator]
-            # l_acc = [unet]
-            # extract the dinov2 features
-            with torch.no_grad():
-                dino_features = []
-                # with accelerator.autocast():
+            # l_acc = [unet, vae, discriminator]
 
-                z = encoder.forward_features(
-                    preprocess_raw_image(
-                        batch["target_images"].to(weight_dtype),
-                    )
-                )
-                z = z["x_norm_patchtokens"].to(weight_dtype)
-                # torch.Size([1, 1024, 768])
-                dino_features.append(z)
-            with accelerator.accumulate(*l_acc):
-                # Convert images to latent space (Bridge Matching approach)
-                # with torch.no_grad():
-                #     z_source = vae.encode(
-                #         batch["source_images"].to(weight_dtype),
-                #         return_dict=False,
-                #         # )[0]
-                #     )[0].sample()
-                #     z_source = z_source * vae.config.scaling_factor
+            # with torch.no_grad():
+            #     dino_features = []
 
-                #     z_target = vae.encode(
-                #         batch["target_images"].to(weight_dtype),
-                #         return_dict=False,
-                #         # )[0]
-                #     )[0].sample()
-                #     z_target = z_target * vae.config.scaling_factor
-                vae.train()
-
-                z_source_post, z_source_std, z_source_recon = vae_forward(
-                    vae,
-                    batch["source_images"].to(weight_dtype),
-                )
-                z_source_std = z_source_std * vae.config.scaling_factor
-
-                z_target_post, z_target_std, z_target_recon = vae_forward(
-                    vae,
-                    batch["target_images"].to(weight_dtype),
-                )
-                z_target_std = z_target_std * vae.config.scaling_factor
-
-                target = z_source_std - z_target_std
-
-                # получаем предсказание для реальных
-                real_preds = discriminator(batch["target_images"])
-                ###----
-                requires_grad(unet, False)
-                # # Avoid BN stats to be updated by the VAE
-                unet.eval()
-                # Sample timesteps (Bridge Matching)
-                timesteps = _timestep_sampling()
-
-                # Get sigmas for the timesteps
-                sigmas = _get_sigmas(
-                    noise_scheduler,
-                    timesteps,
-                    n_dim=4,
-                    dtype=weight_dtype,
-                    device=z_source_std.device,
-                )
-                # print(sigmas)
-                # Create interpolant (Bridge between z_source and z_target)
-                # noisy_sample = (
-                #     sigmas * z_source_std
-                #     + (1.0 - sigmas) * z_target_std
-                #     + diffusion_args.bridge_noise_sigma
-                #     * (sigmas * (1.0 - sigmas)) ** 0.5
-                #     * torch.randn_like(z_source_std)
-                # )
-                noisy_sample = z_source_std
-
-                # Ensure first timestep uses z_source
-                # for i, t in enumerate(timesteps):
-                #     if t.item() == noise_scheduler.timesteps[0]:
-                #         noisy_sample[i] = z_source_std[i]
-
-                # Predict direction of transport (target = z_source - z_target)
-                model_pred, repa_mlp_features = unet(
-                    noisy_sample,
-                    timesteps,
-                    return_dict=False,
-                    use_repa=True,
-                )
-
-                # # Target is the direction from z_source to z_target
-                # # target = z_source_std - z_target_std
-
-                proj_loss = -F.cosine_similarity(
-                    dino_features[0], repa_mlp_features, dim=-1
-                ).mean()
-
-                ###----
-
-                # предсказание для декодированных
-                # открепляем, чтобы при обучении дискриминатора не обучался сам
-                # декодер
-                fake_preds = discriminator(z_target_recon.detach())
-                # disc_type=BCE по умолчанию
-                # Дискриминатор штрафуют, если он говорит, что реальная картинка — фейк,
-                # или фейковая — реал.
-                d_loss, avg_real_logits, avg_fake_logits, disc_acc = gan_disc_loss(
-                    real_preds,
-                    fake_preds,
-                )
-                # усредняем предсказания среди всех нод
-                # avg_real_logits = avg_scalar_over_nodes(avg_real_logits, device)
-                # avg_fake_logits = avg_scalar_over_nodes(avg_fake_logits, device)
-
-                # Regularizing Generative Adversarial Networks under Limited Data https://arxiv.org/pdf/2104.03310
-                # это техника не дает дискриминатору «зазнаваться» и выдавать слишком уверенные ответы
-                # Что это: Это Экспоненциальное Скользящее Среднее (EMA).
-                # Зачем: Мы запоминаем, какое среднее значение дискриминатор обычно выдает для реальных и фейковых
-                # картинок на протяжении всего обучения. Это создает стабильные «якоря» или ориентиры.
-                # тоже самое для фейков
-                # lecam_loss_weight = 0.1
-                # lecam_anchor_real_logits = 0.0
-                # lecam_anchor_fake_logits = 0.0
-                # lecam_beta = 0.9
-                lecam_anchor_real_logits = (
-                    lecam_beta * lecam_anchor_real_logits
-                    + (1 - lecam_beta) * avg_real_logits
-                )
-                lecam_anchor_fake_logits = (
-                    lecam_beta * lecam_anchor_fake_logits
-                    + (1 - lecam_beta) * avg_fake_logits
-                )
-                total_d_loss = d_loss.mean()
-                d_loss_item = total_d_loss.item()
-                # по умолчанию True
-                if True:
-                    # penalize the real logits to fake and fake logits to real.
-                    lecam_loss = (real_preds - lecam_anchor_fake_logits).pow(
-                        2
-                    ).mean() + (fake_preds - lecam_anchor_real_logits).pow(2).mean()
-                    lecam_loss_item = lecam_loss.item()
-                    total_d_loss = total_d_loss + lecam_loss * lecam_loss_weight
-
-                optimizer_D.zero_grad()
-                # сохраняем градиенты, если real_preds будут использоваться дальше
-                # так как после вызова backward весь граф уничтожается
-                total_d_loss += proj_loss
-                # total_d_loss.backward(retain_graph=True)
-                accelerator.backward(total_d_loss, retain_graph=True)
-                optimizer_D.step()
-
-                # unnormalize the images, and perceptual loss
-                _recon_for_perceptual = gradnorm(z_target_recon)
-
-                # Мы не хотим попиксельного совпадения (это дает мыло). Мы хотим, чтобы нейросеть VGG (внутри LPIPS)
-                # "видела" на обеих картинках одинаковые объекты и текстуры.
-                percep_rec_loss = lpips(
-                    _recon_for_perceptual, batch["target_images"]
-                ).mean()
-
-                # mse, vae loss.
-                recon_for_mse = gradnorm(z_target_recon, weight=0.001)
-                # ничего не делаем, кроме того что заставляем латенты быть близко к 0 по абслютному значению
-                vae_loss, loss_data = vae_loss_function(
-                    batch["target_images"],
-                    recon_for_mse,
-                    z_target_std,
-                )
-
-            ### ---
-            requires_grad(unet, True)
-            unet.train()
-
-            model_pred, repa_mlp_features = unet(
-                noisy_sample.detach(),
-                timesteps,
-                return_dict=False,
-                use_repa=True,
-            )
-
-            denoising_loss = (
-                F.mse_loss(
-                    model_pred,
-                    target.detach(),
-                    # target,
-                    reduction="mean",
-                )
-                * 0.5
-            )
-            proj_loss = -F.cosine_similarity(
-                dino_features[0],
-                repa_mlp_features,
-                dim=-1,
-            ).mean()
-            denoising_loss += proj_loss * 0.1
-            ###
-            ###
-            ###
-            ###
-            recon = vae.decode(
-                z_source_std - model_pred,
-                False,
-            )[0]
-            percep_rec_loss = lpips(recon, batch["target_images"]).mean()
-            denoising_loss += percep_rec_loss
-            ###
-            ###
-            # обновляем теперь диффузионную модель
-            accelerator.backward(denoising_loss, retain_graph=True)
-            ### ---
-
-            # gan loss
-            if global_step >= 0:
-                # нормализуем реконструкцию с обучаемого декодера
-                recon_for_gan = gradnorm(z_target_recon, weight=1.0)
-                # пропускаем нормализованную через дискриминатор
-                fake_preds = discriminator(recon_for_gan)
-                real_preds_const = real_preds.clone().detach()
-                # loss where (real > fake + 0.01)
-                # g_gan_loss = (real_preds_const - fake_preds - 0.1).relu().mean()
-                # по умолчанию данная ветка
-                if disc_type == "bce":
-                    # заставляем предсказывать только для фейковых
-                    g_gan_loss = nn.functional.binary_cross_entropy_with_logits(
-                        fake_preds, torch.ones_like(fake_preds)
-                    )
-                # elif disc_type == "hinge":
-                #     g_gan_loss = -fake_preds.mean()
-                # соединяем лосс с LPIPS, с дискриминатора и просто возведение в степень латентов
-                # для регуляризации
-                overall_vae_loss = percep_rec_loss + g_gan_loss + vae_loss
-                g_gan_loss = g_gan_loss.item()
-            else:
-                overall_vae_loss = percep_rec_loss + vae_loss
-                g_gan_loss = 0.0
-
-            # overall_vae_loss.backward()
-            accelerator.backward(overall_vae_loss)
-            optimizer_vae.step()
-            optimizer_model.step()
-            optimizer_vae.zero_grad()
-            # optimizer_model.zero_grad(set_to_none=True)
-            optimizer_model.zero_grad()
-            lr_scheduler.step()
-            if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(unet.parameters(), 1.0)
-
-            # # Turn off grads for the SiT model (avoid REPA gradient on the SiT model)
-            # requires_grad(unet, False)
-            # # Avoid BN stats to be updated by the VAE
-            # unet.eval()
-            # vae_loss, vae_loss_dict = vae_loss_fn.forward(
-            #     batch["target_images"],
-            #     z_target_recon,
-            #     z_target_post,
-            #     global_step,
-            #     "generator",
-            # )
-            # vae_loss = vae_loss.mean()
-
-            # vae_loss = vae_loss + proj_loss
-
-            # accelerator.backward(vae_loss)
-            # if accelerator.sync_gradients:
-            #     grad_norm_vae = accelerator.clip_grad_norm_(
-            #         vae.parameters(),
-            #         1.0,
+            #     z = encoder.forward_features(
+            #         preprocess_raw_image(
+            #             batch["target_images"].to(weight_dtype),
+            #         )
             #     )
-            # optimizer_vae.step()
-            # optimizer_vae.zero_grad(set_to_none=True)
+            #     z = z["x_norm_patchtokens"].to(weight_dtype)
+            #     # torch.Size([1, 1024, 768])
+            #     dino_features.append(z)
+            # with accelerator.accumulate(*l_acc):
+            #     vae.train()
 
-            # d_loss, d_loss_dict = vae_loss_fn(
-            #     batch["target_images"],
-            #     z_target_recon,
-            #     z_target_post,
-            #     global_step,
-            #     "discriminator",
-            # )
-            # d_loss = d_loss.mean()
-            # # обновляем дискриминатор
-            # accelerator.backward(d_loss)
-            # if accelerator.sync_gradients:
-            #     grad_norm_disc = accelerator.clip_grad_norm_(
-            #         vae_loss_fn.parameters(),
-            #         1.0,
+            #     z_source_post, z_source_std, z_source_recon = vae_forward(
+            #         vae,
+            #         batch["source_images"].to(weight_dtype),
             #     )
-            # optimizer_loss_fn.step()
-            # # очищаем дискриминатор
-            # optimizer_loss_fn.zero_grad(set_to_none=True)
+            #     z_source_std = z_source_std * vae.config.scaling_factor
 
+            #     z_target_post, z_target_std, z_target_recon = vae_forward(
+            #         vae,
+            #         batch["target_images"].to(weight_dtype),
+            #     )
+            #     z_target_std = z_target_std * vae.config.scaling_factor
+
+            #     target = z_source_std - z_target_std
+
+            #     # получаем предсказание для реальных
+            #     real_preds = discriminator(batch["target_images"])
+            #     ###----
+            #     requires_grad(unet, False)
+            #     # # Avoid BN stats to be updated by the VAE
+            #     unet.eval()
+            #     # Sample timesteps (Bridge Matching)
+            #     timesteps = _timestep_sampling()
+
+            #     # Get sigmas for the timesteps
+            #     sigmas = _get_sigmas(
+            #         noise_scheduler,
+            #         timesteps,
+            #         n_dim=4,
+            #         dtype=weight_dtype,
+            #         device=z_source_std.device,
+            #     )
+
+            #     noisy_sample = z_source_std
+
+            #     model_pred, repa_mlp_features = unet(
+            #         noisy_sample,
+            #         timesteps,
+            #         return_dict=False,
+            #         use_repa=True,
+            #     )
+
+            #     proj_loss = -F.cosine_similarity(
+            #         dino_features[0], repa_mlp_features, dim=-1
+            #     ).mean()
+
+            #     ###----
+
+            #     # предсказание для декодированных
+            #     # открепляем, чтобы при обучении дискриминатора не обучался сам
+            #     # декодер
+            #     fake_preds = discriminator(z_target_recon.detach())
+            #     # disc_type=BCE по умолчанию
+            #     # Дискриминатор штрафуют, если он говорит, что реальная картинка — фейк,
+            #     # или фейковая — реал.
+            #     d_loss, avg_real_logits, avg_fake_logits, disc_acc = gan_disc_loss(
+            #         real_preds,
+            #         fake_preds,
+            #     )
+
+            #     # Regularizing Generative Adversarial Networks under Limited Data https://arxiv.org/pdf/2104.03310
+            #     # это техника не дает дискриминатору «зазнаваться» и выдавать слишком уверенные ответы
+            #     # Что это: Это Экспоненциальное Скользящее Среднее (EMA).
+            #     # Зачем: Мы запоминаем, какое среднее значение дискриминатор обычно выдает для реальных и фейковых
+            #     # картинок на протяжении всего обучения. Это создает стабильные «якоря» или ориентиры.
+            #     # тоже самое для фейков
+            #     # lecam_loss_weight = 0.1
+            #     # lecam_anchor_real_logits = 0.0
+            #     # lecam_anchor_fake_logits = 0.0
+            #     # lecam_beta = 0.9
+            #     lecam_anchor_real_logits = (
+            #         lecam_beta * lecam_anchor_real_logits
+            #         + (1 - lecam_beta) * avg_real_logits
+            #     )
+            #     lecam_anchor_fake_logits = (
+            #         lecam_beta * lecam_anchor_fake_logits
+            #         + (1 - lecam_beta) * avg_fake_logits
+            #     )
+            #     total_d_loss = d_loss.mean()
+            #     d_loss_item = total_d_loss.item()
+            #     # по умолчанию True
+            #     if True:
+            #         # penalize the real logits to fake and fake logits to real.
+            #         lecam_loss = (real_preds - lecam_anchor_fake_logits).pow(
+            #             2
+            #         ).mean() + (fake_preds - lecam_anchor_real_logits).pow(2).mean()
+            #         lecam_loss_item = lecam_loss.item()
+            #         total_d_loss = total_d_loss + lecam_loss * lecam_loss_weight
+
+            #     optimizer_D.zero_grad()
+            #     # сохраняем градиенты, если real_preds будут использоваться дальше
+            #     # так как после вызова backward весь граф уничтожается
+            #     total_d_loss += proj_loss
+            #     # total_d_loss.backward(retain_graph=True)
+            #     accelerator.backward(total_d_loss, retain_graph=True)
+            #     optimizer_D.step()
+
+            #     # unnormalize the images, and perceptual loss
+            #     _recon_for_perceptual = gradnorm(z_target_recon)
+
+            #     # Мы не хотим попиксельного совпадения (это дает мыло). Мы хотим, чтобы нейросеть VGG (внутри LPIPS)
+            #     # "видела" на обеих картинках одинаковые объекты и текстуры.
+            #     percep_rec_loss = lpips(
+            #         _recon_for_perceptual, batch["target_images"]
+            #     ).mean()
+
+            #     # mse, vae loss.
+            #     recon_for_mse = gradnorm(z_target_recon, weight=0.001)
+            #     # ничего не делаем, кроме того что заставляем латенты быть близко к 0 по абслютному значению
+            #     vae_loss, loss_data = vae_loss_function(
+            #         batch["target_images"],
+            #         recon_for_mse,
+            #         z_target_std,
+            #     )
+
+            # ### ---
             # requires_grad(unet, True)
             # unet.train()
 
@@ -2184,34 +2026,230 @@ def main():
             #     use_repa=True,
             # )
 
-            # denoising_loss = F.mse_loss(
-            #     model_pred,
-            #     target.detach(),
-            #     # target,
-            #     reduction="mean",
+            # denoising_loss = (
+            #     F.mse_loss(
+            #         model_pred,
+            #         target.detach(),
+            #         # target,
+            #         reduction="mean",
+            #     )
+            #     * 0.5
             # )
             # proj_loss = -F.cosine_similarity(
             #     dino_features[0],
             #     repa_mlp_features,
             #     dim=-1,
             # ).mean()
-            # denoising_loss += proj_loss * 0.5
-            # # обновляем теперь диффузионную модель
-            # accelerator.backward(denoising_loss)
-            # if accelerator.sync_gradients:
-            #     grad_norm_sit = (
-            #         accelerator.clip_grad_norm_(unet.parameters(), 1.0),
-            #     )
-            # optimizer_model.step()
-            # lr_scheduler.step()
-            # optimizer_model.zero_grad(set_to_none=True)
+            # denoising_loss += proj_loss * 0.1
 
+            # recon = vae.decode(
+            #     z_source_std - model_pred,
+            #     False,
+            # )[0]
+            # percep_rec_loss = lpips(recon, batch["target_images"]).mean()
+            # denoising_loss += percep_rec_loss
+
+            # # обновляем теперь диффузионную модель
+            # accelerator.backward(denoising_loss, retain_graph=True)
+
+            # # gan loss
+            # if global_step >= 0:
+            #     # нормализуем реконструкцию с обучаемого декодера
+            #     recon_for_gan = gradnorm(z_target_recon, weight=1.0)
+            #     # пропускаем нормализованную через дискриминатор
+            #     fake_preds = discriminator(recon_for_gan)
+            #     real_preds_const = real_preds.clone().detach()
+            #     # по умолчанию данная ветка
+            #     if disc_type == "bce":
+            #         # заставляем предсказывать только для фейковых
+            #         g_gan_loss = nn.functional.binary_cross_entropy_with_logits(
+            #             fake_preds, torch.ones_like(fake_preds)
+            #         )
+            #     # elif disc_type == "hinge":
+            #     #     g_gan_loss = -fake_preds.mean()
+            #     # соединяем лосс с LPIPS, с дискриминатора и просто возведение в степень латентов
+            #     # для регуляризации
+            #     overall_vae_loss = percep_rec_loss + g_gan_loss + vae_loss
+            #     g_gan_loss = g_gan_loss.item()
+            # else:
+            #     overall_vae_loss = percep_rec_loss + vae_loss
+            #     g_gan_loss = 0.0
+
+            # # overall_vae_loss.backward()
+            # accelerator.backward(overall_vae_loss)
+            # optimizer_vae.step()
+            # optimizer_model.step()
+            # optimizer_vae.zero_grad()
+            # # optimizer_model.zero_grad(set_to_none=True)
+            # optimizer_model.zero_grad()
+            # lr_scheduler.step()
             # if accelerator.sync_gradients:
-            #     unwrapped_model = accelerator.unwrap_model(unet)
-            #     update_ema(
-            #         ema,
-            #         unwrapped_model,
-            #     )
+            #     accelerator.clip_grad_norm_(unet.parameters(), 1.0)
+            # -------------------
+            # Убедитесь, что все модели в режиме обучения
+            unet.train()
+            vae.train()
+            discriminator.train()
+
+            # --- 1. ШАГ ДИСКРИМИНАТОРА ---
+            # Отключаем градиенты генератора для экономии памяти на шаге D
+            requires_grad(unet, False)
+            requires_grad(vae, False)
+            requires_grad(discriminator, True)
+
+            with torch.no_grad():
+                # Кодируем Source
+                z_source_dist = vae.encode(
+                    batch["source_images"].to(weight_dtype)
+                ).latent_dist
+                z_source = z_source_dist.sample() * vae.config.scaling_factor
+
+                # UNet предсказывает поток
+                # Для one-step мы всегда идем в конец, t=999 (или t=0 в зависимости от шедулера)
+                t = (
+                    torch.tensor([999], device=accelerator.device)
+                    .long()
+                    .repeat(z_source.shape[0])
+                )
+                model_pred = unet(
+                    z_source,
+                    t,
+                    return_dict=False,
+                    use_repa=False,
+                )[
+                    0
+                ]  # REPA здесь не обязательна для D
+
+                # Получаем сгенерированный латент
+                # Логика: z_target = z_source - pred
+                z_gen = z_source - model_pred
+
+                # Декодируем (Генерация UNet)
+                fake_image = vae.decode(
+                    z_gen / vae.config.scaling_factor, return_dict=False
+                )[0]
+
+            # Реальные картинки
+            real_image = batch["target_images"].to(weight_dtype)
+
+            # Предсказания дискриминатора
+            # Важно: fake_image.detach() уже сделан неявно через torch.no_grad(), но лучше явно
+            d_real = discriminator(real_image)
+            d_fake = discriminator(fake_image.detach())
+
+            # Лосс Дискриминатора (Hinge или BCE)
+            d_loss = gan_disc_loss(d_real, d_fake, disc_type="bce")[0]
+
+            optimizer_D.zero_grad()
+            accelerator.backward(d_loss)
+            optimizer_D.step()
+
+            # --- 2. ШАГ ГЕНЕРАТОРА (UNet + VAE) ---
+            requires_grad(unet, True)
+            requires_grad(vae, True)
+            requires_grad(discriminator, False)
+
+            # Нам нужно заново прогнать граф, чтобы сохранить градиенты
+            # 2.1 Прогон VAE для Source и Target (нужно для MSE лосса и регуляризации VAE)
+            # Encoder Target
+            z_target_dist = vae.encode(real_image).latent_dist
+            z_target = z_target_dist.sample() * vae.config.scaling_factor
+
+            # Encoder Source
+            z_source_dist = vae.encode(
+                batch["source_images"].to(weight_dtype)
+            ).latent_dist
+            z_source = z_source_dist.sample() * vae.config.scaling_factor
+
+            # 2.2 Прогон UNet
+            t = (
+                torch.tensor([999], device=accelerator.device)
+                .long()
+                .repeat(z_source.shape[0])
+            )
+            model_pred, repa_mlp_features = unet(
+                z_source,
+                t,
+                use_repa=True,
+                return_dict=False,
+            )
+
+            # 2.3 Формирование результата
+            z_gen = z_source - model_pred
+            gen_image = vae.decode(
+                z_gen / vae.config.scaling_factor, return_dict=False
+            )[0]
+
+            # --- СБОРКА ЛОССОВ ---
+
+            # A. Reconstruction / Perceptual Loss (End-to-End)
+            # Картинка от UNet должна быть похожа на Target
+            loss_lpips = lpips(gen_image, real_image).mean()
+
+            # B. GAN Loss (Generator side)
+            # Картинка от UNet должна обмануть дискриминатор
+            pred_fake_g = discriminator(gen_image)
+            loss_gan = F.binary_cross_entropy_with_logits(
+                pred_fake_g, torch.ones_like(pred_fake_g)
+            )
+
+            # C. Latent MSE Loss (Alignment)
+            # Предсказание UNet должно совпадать с математической разницей латентов
+            # Это помогает UNet не "сходить с ума", пока VAE учится
+            target_flow = z_source - z_target  # detach() здесь опционален.
+            # Если НЕ делать detach, VAE энкодер будет учиться выдавать такие латенты,
+            # которые UNet'у легче предсказать. Это круто, но может быть нестабильно.
+            loss_mse = F.mse_loss(model_pred, target_flow)
+
+            # D. VAE Regularization (KL)
+            # Мы должны удерживать латентное пространство компактным, иначе UNet не выучится
+            # Считаем KL для обоих энкодеров
+            kl_loss = (
+                (z_target_dist.kl().mean() + z_source_dist.kl().mean())
+                * 0.5
+                * loss_cfg.kl_weight
+            )
+
+            # E. REPA / DINO Loss (Feature Matching)
+            # (Предполагается, что dino_features вычислены заранее)
+            with torch.no_grad():
+                dino_feat_target = encoder.forward_features(
+                    preprocess_raw_image(real_image)
+                )["x_norm_patchtokens"]
+            loss_proj = -F.cosine_similarity(
+                dino_feat_target, repa_mlp_features, dim=-1
+            ).mean()
+
+            # --- TOTAL LOSS ---
+            # Веса настраивайте аккуратно. GAN и LPIPS должны доминировать.
+            total_gen_loss = (
+                loss_lpips * 1.0
+                + loss_gan * 0.1
+                + loss_mse * 1.0
+                + loss_proj * 0.5
+                + kl_loss
+            )
+
+            # Дополнительный лосс: Чистая реконструкция VAE (Target -> Enc -> Dec -> Target)
+            # Это нужно, чтобы декодер не забыл, как вообще рисовать, если UNet выдает мусор
+            z_target_recon_img = vae.decode(
+                z_target / vae.config.scaling_factor, return_dict=False
+            )[0]
+            loss_vae_pure_recon = F.l1_loss(z_target_recon_img, real_image)
+            total_gen_loss += loss_vae_pure_recon
+
+            optimizer_model.zero_grad()  # unet
+            optimizer_vae.zero_grad()  # vae
+
+            accelerator.backward(total_gen_loss)
+
+            # Клиппинг градиентов важен при совместном обучении
+            accelerator.clip_grad_norm_(unet.parameters(), 1.0)
+            accelerator.clip_grad_norm_(vae.parameters(), 1.0)
+
+            optimizer_model.step()
+            optimizer_vae.step()
+            lr_scheduler.step()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -2219,10 +2257,10 @@ def main():
                 global_step += 1
                 logs = {}
                 # log the loss
-                logs["loss"] = denoising_loss.detach().item()
+                logs["loss"] = total_gen_loss.detach().item()
                 logs["d_loss"] = d_loss.detach().item()
                 # logs["loss_lpips"] = loss_lpips.detach().item()
-                logs["vae_loss"] = vae_loss.detach().item()
+                # logs["vae_loss"] = vae_loss.detach().item()
                 accelerator.log(logs, step=global_step)
                 train_loss = 0.0
 
@@ -2292,7 +2330,8 @@ def main():
 
             if accelerator.sync_gradients:
                 logs = {
-                    "step_loss": denoising_loss.detach().item(),
+                    # "step_loss": denoising_loss.detach().item(),
+                    "step_loss": total_gen_loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0],
                 }
                 progress_bar.set_postfix(**logs)
