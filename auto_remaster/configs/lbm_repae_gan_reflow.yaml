@@ -12,7 +12,7 @@ dataset_config: null
 seed: 2025
 
 # Output configuration
-output_dir: checkpoints/auto_remaster/lbm_repae_gan
+output_dir: checkpoints/auto_remaster/lbm_repae_gan_v2
 logging_dir: logs
 
 # Training optimization parameters
@@ -22,7 +22,7 @@ warmup_steps: 15
 weight_decay: 1e-2
 max_grad_norm: 1.0
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 1
 gradient_checkpointing: false
 dataloader_num_workers: 4
 
@@ -30,8 +30,8 @@ dataloader_num_workers: 4
 # max_steps: 15000
 max_steps: 30000
 # save_steps: 800
-save_steps: 1600
-# save_steps: 50
+# save_steps: 1600
+save_steps: 100
 save_total_limit: 3
 resume_from_checkpoint: false
 eval_on_start: false
