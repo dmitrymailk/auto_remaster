@@ -38,6 +38,7 @@ from diffusers import (
     AutoencoderTiny,
     UNet2DModel,
     FlowMatchEulerDiscreteScheduler,
+    AutoencoderKLFlux2,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
@@ -1250,6 +1251,50 @@ unet2d_config = {
     "resnet_time_scale_shift": "default",
     "add_attention": False,
 }
+# unet2d_config = {
+#     "sample_size": 64,  # Для латента FLUX (1024 / 16 = 64) или (512 / 8 = 64)
+#     "in_channels": 32,  # FLUX VAE channels
+#     "out_channels": 32,
+#     "center_input_sample": False,
+#     "time_embedding_type": "positional",
+#     "freq_shift": 0,
+#     "flip_sin_to_cos": True,
+#     # 1. УЗКАЯ ШИРИНА: Экономим память и шину данных.
+#     # 3060/4060 любят, когда каналов не слишком много (до 512 - ок).
+#     "block_out_channels": (256, 256, 512, 512),
+#     # 2. ПОЛНЫЙ ОТКАЗ ОТ ВНИМАНИЯ (Down/Up Blocks)
+#     # Используем только сверточные блоки. Никаких AttnDownBlock2D.
+#     "down_block_types": (
+#         "DownBlock2D",
+#         "DownBlock2D",
+#         "DownBlock2D",
+#         "DownBlock2D",  # Даже на самом дне только свертки
+#     ),
+#     "up_block_types": (
+#         "UpBlock2D",
+#         "UpBlock2D",
+#         "UpBlock2D",
+#         "UpBlock2D",
+#     ),
+#     # Обычный мид-блок, внимание отключим флагом ниже
+#     "mid_block_type": "UNetMidBlock2D",
+#     # 3. БОЛЬШАЯ ГЛУБИНА: Компенсируем отсутствие ширины и внимания.
+#     # layers_per_block=3 означает, что на каждом разрешении будет 3 ResNet блока.
+#     # Это дает сети "время подумать" (эмуляция шагов ODE).
+#     "layers_per_block": 3,
+#     "mid_block_scale_factor": 1,
+#     "downsample_padding": 1,
+#     "downsample_type": "conv",  # Conv лучше сохраняет детали при сжатии
+#     "upsample_type": "conv",
+#     "dropout": 0.0,
+#     "act_fn": "silu",
+#     "norm_num_groups": 32,  # GroupNorm отлично работает с батчами
+#     "norm_eps": 1e-05,
+#     "resnet_time_scale_shift": "scale_shift",  # Лучше для генерации, чем default
+#     # !!! ГЛАВНЫЙ БУСТ СКОРОСТИ !!!
+#     # Выключает внимание в MidBlock. В Down/Up его и так нет из-за типов блоков выше.
+#     "add_attention": False,
+# }
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.36.0.dev0")
@@ -1392,14 +1437,14 @@ def log_validation(
                 # 2. Предсказание направления (UNet)
                 # unet_val(x, t) -> output
                 # print(i, t, noise_scheduler.timesteps)
-                pred = unet_val(
+                sample = unet_val(
                     denoiser_input,
                     t.to(z_source.device).repeat(denoiser_input.shape[0]),
                     return_dict=False,
                 )[0]
 
                 # 3. Шаг диффузии (Reverse Process)
-                sample = noise_scheduler.step(pred, t, sample, return_dict=False)[0]
+                # sample = noise_scheduler.step(pred, t, sample, return_dict=False)[0]
 
                 # 4. Добавление стохастичности (Bridge Noise)
                 # Не добавляем шум после последнего шага
@@ -1435,7 +1480,7 @@ def log_validation(
             # Декодирование результата
             output_image = (
                 vae_val.decode(
-                    sample / vae_val.config.scaling_factor,
+                    (z_source - sample) / vae_val.config.scaling_factor,
                     # sample,
                     return_dict=False,
                 )[0]
@@ -1579,6 +1624,20 @@ def main():
         subfolder="vae",
         torch_dtype=weight_dtype,
     )
+    vae.requires_grad_(False)
+    vae = vae.eval()
+    # print(vae)
+    # new_state = {}
+    # state = torch.load(
+    #     "/code/auto_remaster/sandbox/vqgan_training/ckpt/stage_4_msepool-cont-512-1.0-1.0-batch-gradnorm_make_deterministic_test_flux2/vae_epoch_14_step_12001.pt",
+    #     weights_only=True,
+    # )
+    # for key in state.keys():
+    #     new_state[key.replace("module.", "")] = state[key]
+    # vae.load_state_dict(
+    #     new_state,
+    #     strict=False,
+    # )
 
     # unet = UNet2DModel(**unet2d_config)
     unet = REPAEUNet2DModel(**unet2d_config)
@@ -2085,171 +2144,146 @@ def main():
             # lr_scheduler.step()
             # if accelerator.sync_gradients:
             #     accelerator.clip_grad_norm_(unet.parameters(), 1.0)
-            # -------------------
-            # Убедитесь, что все модели в режиме обучения
-            unet.train()
-            vae.train()
-            discriminator.train()
-
-            # --- 1. ШАГ ДИСКРИМИНАТОРА ---
-            # Отключаем градиенты генератора для экономии памяти на шаге D
-            requires_grad(unet, False)
-            requires_grad(vae, False)
-            requires_grad(discriminator, True)
-
+            ############
+            #################
+            #################
+            ############
             with torch.no_grad():
-                # Кодируем Source
+                # 1. Получаем латент source (условие/вход для UNet)
+                # Предполагаем, что UNet делает mapping: Source Latent -> Target Latent за 1 шаг
                 z_source_dist = vae.encode(
                     batch["source_images"].to(weight_dtype)
                 ).latent_dist
                 z_source = z_source_dist.sample() * vae.config.scaling_factor
 
-                # UNet предсказывает поток
-                # Для one-step мы всегда идем в конец, t=999 (или t=0 в зависимости от шедулера)
-                t = (
-                    torch.tensor([999], device=accelerator.device)
-                    .long()
-                    .repeat(z_source.shape[0])
+                # 2. Подготовка таймстепов для одношаговой генерации
+                # Используем t=0 (или минимальный t), так как предсказываем чистое изображение
+                timesteps = (
+                    torch.ones(
+                        z_source.shape[0],
+                        device=accelerator.device,
+                        dtype=torch.long,
+                    )
+                    * 1000
                 )
-                model_pred = unet(
-                    z_source,
-                    t,
-                    return_dict=False,
-                    use_repa=False,
-                )[
-                    0
-                ]  # REPA здесь не обязательна для D
 
-                # Получаем сгенерированный латент
-                # Логика: z_target = z_source - pred
-                z_gen = z_source - model_pred
+            # --- Шаг 1: Обучение Дискриминатора ---
+            # Замораживаем UNet, размораживаем Дискриминатор
+            # requires_grad(unet, False)
+            requires_grad(discriminator, True)
 
-                # Декодируем (Генерация UNet)
-                fake_image = vae.decode(
-                    z_gen / vae.config.scaling_factor, return_dict=False
-                )[0]
+            # Генерация фейка (без градиентов для генератора)
 
-            # Реальные картинки
-            real_image = batch["target_images"].to(weight_dtype)
+            # Предсказание латента из UNet
+            z_pred_for_d = unet(
+                z_source,
+                timesteps,
+                return_dict=False,
+                use_repa=False,
+            )[0]
+            # Накапливаем градиенты для D (если gradient_accumulation > 1)
+            with accelerator.accumulate(discriminator):
+                # Декодирование в пиксели для дискриминатора
+                # Используем .sample, так как AutoencoderKL возвращает DecoderOutput
+                with torch.no_grad():
+                    fake_image_d = vae.decode(
+                        (z_source - z_pred_for_d) / vae.config.scaling_factor,
+                        return_dict=False,
+                    )[0]
 
-            # Предсказания дискриминатора
-            # Важно: fake_image.detach() уже сделан неявно через torch.no_grad(), но лучше явно
-            d_real = discriminator(real_image)
-            d_fake = discriminator(fake_image.detach())
+                # Предсказания дискриминатора
+                real_preds = discriminator(batch["target_images"])
+                fake_preds = discriminator(
+                    fake_image_d.detach()
+                )  # Detach на всякий случай, хотя мы в no_grad
 
-            # Лосс Дискриминатора (Hinge или BCE)
-            d_loss = gan_disc_loss(d_real, d_fake, disc_type="bce")[0]
+                # Расчет GAN Loss (Hinge или BCE)
+                d_loss, avg_real_logits, avg_fake_logits, disc_acc = gan_disc_loss(
+                    real_preds, fake_preds, disc_type=disc_type
+                )
 
-            optimizer_D.zero_grad()
-            accelerator.backward(d_loss)
-            optimizer_D.step()
+                # LeCam Regularization (из VAE скрипта)
+                # Обновляем EMA якоря
+                lecam_anchor_real_logits = (
+                    lecam_beta * lecam_anchor_real_logits
+                    + (1 - lecam_beta) * avg_real_logits
+                )
+                lecam_anchor_fake_logits = (
+                    lecam_beta * lecam_anchor_fake_logits
+                    + (1 - lecam_beta) * avg_fake_logits
+                )
 
-            # --- 2. ШАГ ГЕНЕРАТОРА (UNet + VAE) ---
+                total_d_loss = d_loss.mean()
+
+                # Добавляем LeCam loss
+                lecam_loss = (real_preds - lecam_anchor_fake_logits).pow(2).mean() + (
+                    fake_preds - lecam_anchor_real_logits
+                ).pow(2).mean()
+                total_d_loss += lecam_loss * lecam_loss_weight
+
+                # Обратное распространение для D
+                accelerator.backward(total_d_loss)
+                optimizer_D.step()
+                optimizer_D.zero_grad()
+
+            # --- Шаг 2: Обучение Генератора (UNet) ---
+            # Размораживаем UNet, замораживаем Дискриминатор (чтобы не тратить память на его градиенты)
             requires_grad(unet, True)
-            requires_grad(vae, True)
             requires_grad(discriminator, False)
 
-            # Нам нужно заново прогнать граф, чтобы сохранить градиенты
-            # 2.1 Прогон VAE для Source и Target (нужно для MSE лосса и регуляризации VAE)
-            # Encoder Target
-            z_target_dist = vae.encode(real_image).latent_dist
-            z_target = z_target_dist.sample() * vae.config.scaling_factor
+            with accelerator.accumulate(unet):
+                # Прямой проход UNet (с градиентами)
+                z_pred = unet(
+                    z_source,
+                    timesteps,
+                    return_dict=False,
+                    use_repa=False,
+                )[0]
 
-            # Encoder Source
-            z_source_dist = vae.encode(
-                batch["source_images"].to(weight_dtype)
-            ).latent_dist
-            z_source = z_source_dist.sample() * vae.config.scaling_factor
+                # Декодирование (градиенты текут СКВОЗЬ декодер к z_pred, но веса декодера не меняются)
+                fake_image_g = vae.decode(
+                    (z_source - z_pred) / vae.config.scaling_factor, return_dict=False
+                )[0]
 
-            # 2.2 Прогон UNet
-            t = (
-                torch.tensor([999], device=accelerator.device)
-                .long()
-                .repeat(z_source.shape[0])
-            )
-            model_pred, repa_mlp_features = unet(
-                z_source,
-                t,
-                use_repa=True,
-                return_dict=False,
-            )
+                # Применяем GradNorm для стабилизации (как в VAE скрипте)
+                # Это нормализует градиенты перед попаданием в перцептуал/GAN лоссы
+                fake_image_g_norm = gradnorm(fake_image_g, weight=1.0)
 
-            # 2.3 Формирование результата
-            z_gen = z_source - model_pred
-            gen_image = vae.decode(
-                z_gen / vae.config.scaling_factor, return_dict=False
-            )[0]
+                # 1. LPIPS Loss (Основная метрика качества)
+                # Сравниваем декодированный предсказанный латент с реальной целевой картинкой
+                loss_lpips = lpips(fake_image_g_norm, batch["target_images"]).mean()
 
-            # --- СБОРКА ЛОССОВ ---
+                # 2. Generator GAN Loss (Обман дискриминатора)
+                # Нормируем вход для дискриминатора так же, как в VAE скрипте
+                recon_for_gan = gradnorm(fake_image_g, weight=1.0)
+                g_fake_preds = discriminator(recon_for_gan)
 
-            # A. Reconstruction / Perceptual Loss (End-to-End)
-            # Картинка от UNet должна быть похожа на Target
-            loss_lpips = lpips(gen_image, real_image).mean()
+                if disc_type == "bce":
+                    loss_gan = nn.functional.binary_cross_entropy_with_logits(
+                        g_fake_preds, torch.ones_like(g_fake_preds)
+                    )
 
-            # B. GAN Loss (Generator side)
-            # Картинка от UNet должна обмануть дискриминатор
-            pred_fake_g = discriminator(gen_image)
-            loss_gan = F.binary_cross_entropy_with_logits(
-                pred_fake_g, torch.ones_like(pred_fake_g)
-            )
+                loss_z_reg = z_pred.pow(2).mean()
 
-            # C. Latent MSE Loss (Alignment)
-            # Предсказание UNet должно совпадать с математической разницей латентов
-            # Это помогает UNet не "сходить с ума", пока VAE учится
-            target_flow = z_source - z_target  # detach() здесь опционален.
-            # Если НЕ делать detach, VAE энкодер будет учиться выдавать такие латенты,
-            # которые UNet'у легче предсказать. Это круто, но может быть нестабильно.
-            loss_mse = F.mse_loss(model_pred, target_flow)
+                # Итоговый лосс генератора
+                # Мы НЕ используем MSE на латентах, как и требовалось.
+                # LPIPS тянет текстуры, GAN тянет реализм
+                total_gen_loss = loss_lpips * 1.0 + loss_gan * 0.1 + loss_z_reg * 0.0001
 
-            # D. VAE Regularization (KL)
-            # Мы должны удерживать латентное пространство компактным, иначе UNet не выучится
-            # Считаем KL для обоих энкодеров
-            kl_loss = (
-                (z_target_dist.kl().mean() + z_source_dist.kl().mean())
-                * 0.5
-                * loss_cfg.kl_weight
-            )
+                # Обратное распространение для G
+                accelerator.backward(total_gen_loss)
 
-            # E. REPA / DINO Loss (Feature Matching)
-            # (Предполагается, что dino_features вычислены заранее)
-            with torch.no_grad():
-                dino_feat_target = encoder.forward_features(
-                    preprocess_raw_image(real_image)
-                )["x_norm_patchtokens"]
-            loss_proj = -F.cosine_similarity(
-                dino_feat_target, repa_mlp_features, dim=-1
-            ).mean()
+                # Клиппинг градиентов UNet
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(unet.parameters(), 1.0)
 
-            # --- TOTAL LOSS ---
-            # Веса настраивайте аккуратно. GAN и LPIPS должны доминировать.
-            total_gen_loss = (
-                loss_lpips * 1.0
-                + loss_gan * 0.1
-                + loss_mse * 1.0
-                + loss_proj * 0.5
-                + kl_loss
-            )
-
-            # Дополнительный лосс: Чистая реконструкция VAE (Target -> Enc -> Dec -> Target)
-            # Это нужно, чтобы декодер не забыл, как вообще рисовать, если UNet выдает мусор
-            z_target_recon_img = vae.decode(
-                z_target / vae.config.scaling_factor, return_dict=False
-            )[0]
-            loss_vae_pure_recon = F.l1_loss(z_target_recon_img, real_image)
-            total_gen_loss += loss_vae_pure_recon
-
-            optimizer_model.zero_grad()  # unet
-            optimizer_vae.zero_grad()  # vae
-
-            accelerator.backward(total_gen_loss)
-
-            # Клиппинг градиентов важен при совместном обучении
-            accelerator.clip_grad_norm_(unet.parameters(), 1.0)
-            accelerator.clip_grad_norm_(vae.parameters(), 1.0)
-
-            optimizer_model.step()
-            optimizer_vae.step()
-            lr_scheduler.step()
+                optimizer_model.step()
+                optimizer_model.zero_grad()
+                lr_scheduler.step()
+            #####
+            ########d#######
+            ################
+            #####
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -2258,8 +2292,8 @@ def main():
                 logs = {}
                 # log the loss
                 logs["loss"] = total_gen_loss.detach().item()
-                logs["d_loss"] = d_loss.detach().item()
-                # logs["loss_lpips"] = loss_lpips.detach().item()
+                # logs["d_loss"] = d_loss.detach().item()
+                logs["loss_lpips"] = loss_lpips.detach().item()
                 # logs["vae_loss"] = vae_loss.detach().item()
                 accelerator.log(logs, step=global_step)
                 train_loss = 0.0
