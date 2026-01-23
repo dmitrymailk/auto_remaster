@@ -221,3 +221,4 @@ vqgan-output
 *.gz
 buffers
 model_lcm
+.ppd_env

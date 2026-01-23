@@ -52,7 +52,7 @@ caption_column: edit_prompt
 
 
 # Inference parameters
-num_inference_steps: 4
+num_inference_steps: 8
 
 # Metrics for evaluation
 metrics_list: [
@@ -74,7 +74,7 @@ timestep_sampling: "custom_timesteps"  # Options: "uniform", "custom_timesteps"
 logit_mean: 0.0  # For log_normal timestep_sampling
 logit_std: 1.0   # For log_normal timestep_sampling
 latent_loss_weight: 1.0
-latent_loss_type: "l2"  # Options: "l2", "l1"
+latent_loss_type: "l1"  # Options: "l2", "l1"
 
 # Tracker project name
 tracker_project_name: auto_remaster

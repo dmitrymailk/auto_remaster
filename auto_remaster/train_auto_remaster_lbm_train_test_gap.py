@@ -753,23 +753,164 @@ def main():
                 # Sample timesteps (Bridge Matching)
                 timesteps = _timestep_sampling()
 
+                # --- БЛОК ACCUMULATED SELF-GENERATION ---
+
+                # Включаем после разогрева
+                # perturbation_prob = 0.5 if global_step > 2000 else 0.0
+                perturbation_prob = 0.5
+
+                if np.random.rand() < perturbation_prob:
+                    # 1. Рассчитываем размер шага
+                    step_size_int = (
+                        1000 // diffusion_args.num_inference_steps
+                    )  # 125 для 8 шагов
+
+                    # 2. Определяем, на сколько шагов назад мы можем уйти
+                    # Мы не можем уйти дальше 1000 (Source).
+                    # (1000 - t) // step_size дает макс. кол-во шагов "вверх" по потоку.
+
+                    # Используем view(-1) для корректной работы с тензорами
+                    steps_available_up = (1000 - timesteps) // step_size_int
+
+                    # Выбираем случайную глубину симуляции для каждого элемента батча или общую
+                    # Для простоты и скорости выберем общую глубину для батча, но не больше доступного максимума
+                    # Ограничим max_chain, чтобы не замедлять обучение слишком сильно (например, макс 3 шага)
+                    max_sim_steps = 4
+
+                    # Нужно найти минимум среди батча, чтобы не выйти за 1000
+                    min_available = steps_available_up.min().item()
+
+                    if min_available < 1:
+                        # Если мы уже в t=1000 или близко, мы не можем идти назад.
+                        # Используем идеальный сэмпл (fallback)
+                        n_steps_back = 0
+                    else:
+                        # Случайно выбираем от 1 до min(3, доступно)
+                        limit = min(max_sim_steps, int(min_available))
+                        n_steps_back = np.random.randint(1, limit + 1)
+
+                    if n_steps_back > 0:
+                        # 3. Стартовое время симуляции (t_start)
+                        t_start_int = timesteps + n_steps_back * step_size_int
+                        t_start_int = t_start_int.clamp(max=1000)
+
+                        # Получаем идеальную точку старта (на прямой)
+                        sigmas_start = _get_sigmas(
+                            noise_scheduler,
+                            t_start_int,
+                            n_dim=4,
+                            dtype=weight_dtype,
+                            device=z_source.device,
+                        )
+
+                        # current_sim_sample - это "шарик", который мы будем катить вниз
+                        current_sim_sample = (
+                            sigmas_start * z_source + (1.0 - sigmas_start) * z_target
+                        )
+
+                        # 4. ЦИКЛ СИМУЛЯЦИИ (накапливаем ошибку)
+                        # Мы идем от t_start вниз к t_target (timesteps)
+
+                        curr_t = t_start_int
+
+                        with torch.no_grad():
+                            for _ in range(n_steps_back):
+                                # a. Предсказываем скорость в текущей точке
+                                pred_velocity = unet(
+                                    current_sim_sample,
+                                    curr_t,
+                                    return_dict=False,
+                                )[0]
+
+                                # b. Определяем следующее время (на шаг вниз)
+                                next_t = curr_t - step_size_int
+
+                                # Получаем сигмы для шага
+                                s_curr = _get_sigmas(
+                                    noise_scheduler,
+                                    curr_t,
+                                    n_dim=4,
+                                    dtype=weight_dtype,
+                                    device=z_source.device,
+                                )
+                                s_next = _get_sigmas(
+                                    noise_scheduler,
+                                    next_t,
+                                    n_dim=4,
+                                    dtype=weight_dtype,
+                                    device=z_source.device,
+                                )
+                                dt_sigma = s_next - s_curr  # Отрицательное число
+
+                                # c. Делаем шаг Эйлера
+                                current_sim_sample = (
+                                    current_sim_sample + pred_velocity * dt_sigma
+                                )
+
+                                # Обновляем время для следующей итерации
+                                curr_t = next_t
+
+                        # После цикла current_sim_sample находится во времени timesteps,
+                        # но он пришел туда "своим ходом" через 1-3 шага, накопив кривизну.
+                        noisy_sample = current_sim_sample
+
+                        # Sigmas нужны для финального расчета лосса (соответствуют времени timesteps)
+                        sigmas = _get_sigmas(
+                            noise_scheduler,
+                            timesteps,
+                            n_dim=4,
+                            dtype=weight_dtype,
+                            device=z_source.device,
+                        )
+
+                    else:
+                        # Fallback (если t=1000)
+                        sigmas = _get_sigmas(
+                            noise_scheduler,
+                            timesteps,
+                            n_dim=4,
+                            dtype=weight_dtype,
+                            device=z_source.device,
+                        )
+                        noisy_sample = sigmas * z_source + (1.0 - sigmas) * z_target
+
+                else:
+                    # --- СТАНДАРТНАЯ ВЕТКА ---
+                    sigmas = _get_sigmas(
+                        noise_scheduler,
+                        timesteps,
+                        n_dim=4,
+                        dtype=weight_dtype,
+                        device=z_source.device,
+                    )
+
+                    noisy_sample = (
+                        sigmas * z_source
+                        + (1.0 - sigmas) * z_target
+                        + diffusion_args.bridge_noise_sigma
+                        * (sigmas * (1.0 - sigmas)) ** 0.5
+                        * torch.randn_like(z_source)
+                    )
+
+                # --- ДАЛЬШЕ БЕЗ ИЗМЕНЕНИЙ ---
+
                 # Get sigmas for the timesteps
-                sigmas = _get_sigmas(
-                    noise_scheduler,
-                    timesteps,
-                    n_dim=4,
-                    dtype=weight_dtype,
-                    device=z_source.device,
-                )
-                # print(sigmas)
-                # Create interpolant (Bridge between z_source and z_target)
-                noisy_sample = (
-                    sigmas * z_source
-                    + (1.0 - sigmas) * z_target
-                    + diffusion_args.bridge_noise_sigma
-                    * (sigmas * (1.0 - sigmas)) ** 0.5
-                    * torch.randn_like(z_source)
-                )
+                # sigmas = _get_sigmas(
+                #     noise_scheduler,
+                #     timesteps,
+                #     n_dim=4,
+                #     dtype=weight_dtype,
+                #     device=z_source.device,
+                # )
+                # # print(sigmas)
+                # # Create interpolant (Bridge between z_source and z_target)
+                # noisy_sample = (
+                #     sigmas * z_source
+                #     + (1.0 - sigmas) * z_target
+                #     + diffusion_args.bridge_noise_sigma
+                #     * (sigmas * (1.0 - sigmas)) ** 0.5
+                #     * torch.randn_like(z_source)
+                # )
                 # noisy_sample = z_source
 
                 # Ensure first timestep uses z_source
