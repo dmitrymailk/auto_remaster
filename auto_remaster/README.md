@@ -11,7 +11,11 @@
 - pi-flow https://github.com/Lakonik/piFlow
 - https://github.com/guandeh17/Self-Forcing
 - alphaflow https://github.com/snap-research/alphaflow
+- https://github.com/Xinxi-Zhang/Re-MeanFlow
 - [Mean Flows for One-step Generative Modeling](https://github.com/haidog-yaqub/MeanFlow)
+- https://github.com/Candibulldog/MeanFlow-Edge2Image
+- [FlowTurbo: Towards Real-time Flow-Based Image Generation with Velocity Refiner (NeurIPS 2024)](https://github.com/shiml20/FlowTurbo)
+- [Diffusion-GAN — Official PyTorch implementation](https://github.com/Zhendong-Wang/Diffusion-GAN)
 - LCM https://github.com/huggingface/diffusers/blob/main/docs/source/en/training/lcm_distill.md
 - DMD2 
 - [rCM](https://github.com/NVlabs/rcm)
@@ -41,6 +45,7 @@
 - обучение на 8 шагов, затем дистиляция
 - можно создать синтетический датасет с нужной позицией камеры при помощи qwen edit relight и гаусианов, так как мы можем свободно двигать камеру при просмотре гаусианнов. 
 - инициализация с других моделей
+- пареллельно в сети моделировать низкие частоты и высокие, и в конце их объединять как в https://arxiv.org/pdf/2508.19789 StableIntrinsic: Detail-preserving One-step Diffusion Model for Multi-view Material Estimation
 
 ### Идеи (которые не сработают)
 - HRM модель, упор не на 1 шаг, а на множество, но очень легкой моделью

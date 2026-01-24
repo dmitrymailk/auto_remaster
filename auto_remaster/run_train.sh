@@ -16,9 +16,10 @@ hf_train_config=/code/auto_remaster/configs/lbm.yaml
 
 # python -m auto_remaster.train_auto_remaster --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster --config $hf_train_config
-accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm --config $hf_train_config
+# accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.train_vae --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.twinflow --config $hf_train_config
 # python twinflow.py
 # accelerate launch --config_file=$config_path -m auto_remaster.lbm_repae_gan_reflow --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.lbm_repae_gan_reflow_v2 --config $hf_train_config
+accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm_train_test_gap --config $hf_train_config

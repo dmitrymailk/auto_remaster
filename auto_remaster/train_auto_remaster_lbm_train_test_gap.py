@@ -74,6 +74,9 @@ import torchvision
 
 from auto_remaster.evaluation import ImageEvaluator
 import bitsandbytes as bnb
+import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
+from torchvision.transforms import InterpolationMode
 
 
 @dataclass
@@ -109,7 +112,8 @@ unet2d_config = {
     "sample_size": 64,
     # "in_channels": 4,
     # "in_channels": 16,
-    "in_channels": 32,
+    # "in_channels": 32,
+    "in_channels": 32 * 2,
     # "out_channels": 4,
     # "out_channels": 16,
     "out_channels": 32,
@@ -268,7 +272,7 @@ def log_validation(
                     denoiser_input = noise_scheduler.scale_model_input(sample, t)
                 else:
                     denoiser_input = sample
-
+                denoiser_input = torch.cat([denoiser_input, z_source], dim=1)
                 # 2. Предсказание направления (UNet)
                 # unet_val(x, t) -> output
                 # print(i, t, noise_scheduler.timesteps)
@@ -531,6 +535,85 @@ def main():
         examples["target_images"] = [train_transforms(image) for image in target_images]
         return examples
 
+    # я пробовал запускать так обучение, результаты как-то хуже оказались
+    # def preprocess_train(examples):
+    #     # Константы (или передавайте их как аргументы, если они меняются)
+    #     # Обычно source_column и target_column берутся из конфига
+    #     # source_column = "input_image"  # Замените на ваше название колонки
+    #     # target_column = "edited_image"  # Замените на ваше название колонки
+
+    #     # Используем бикубическую интерполяцию для лучшего качества
+    #     interpolation = InterpolationMode.BICUBIC
+
+    #     # 1. Выбираем размер для батча
+    #     resolutions = [128, 256, 384, 512]
+    #     size = random.choice(resolutions)
+
+    #     source_images_output = []
+    #     target_images_output = []
+
+    #     for src_img, tgt_img in zip(examples[source_column], examples[target_column]):
+    #         # Конвертация обязательна, чтобы убрать альфа-канал (RGBA -> RGB)
+    #         src_img = src_img.convert("RGB")
+    #         tgt_img = tgt_img.convert("RGB")
+
+    #         # --- ШАГ 1: ЛОГИКА РЕСАЙЗА ---
+
+    #         # Получаем текущие размеры (W, H)
+    #         w, h = src_img.size
+    #         min_dim = min(w, h)
+
+    #         # Логика:
+    #         # 1. Если size == 512, мы хотим видеть "общую картину", поэтому делаем resize.
+    #         # 2. НО! Если исходная картинка МЕНЬШЕ выбранного size (например, картинка 256, а size 384),
+    #         #    функция RandomCrop упадет с ошибкой. В этом случае всегда нужно делать resize/upscale.
+
+    #         if size == 512 or min_dim < size:
+    #             # Resize до размера 'size' по короткой стороне, сохраняя пропорции
+    #             src_img = TF.resize(src_img, size, interpolation=interpolation)
+    #             tgt_img = TF.resize(tgt_img, size, interpolation=interpolation)
+    #         else:
+    #             # Для 128, 256, 384 (если картинка больше этих размеров)
+    #             # Оставляем оригинал, чтобы кроп вырезал детальные текстуры (High Res)
+    #             pass
+
+    #         # --- ШАГ 2: СИНХРОННЫЙ RANDOM CROP ---
+    #         # Теперь вырезаем квадрат. Гарантировано, что картинка >= size.
+    #         i, j, h, w = transforms.RandomCrop.get_params(
+    #             src_img, output_size=(size, size)
+    #         )
+
+    #         src_img = TF.crop(src_img, i, j, h, w)
+    #         tgt_img = TF.crop(tgt_img, i, j, h, w)
+
+    #         # --- ШАГ 3: РАНДОМНЫЕ ФЛИПЫ ---
+    #         # Горизонтальный
+    #         if random.random() > 0.5:
+    #             src_img = TF.hflip(src_img)
+    #             tgt_img = TF.hflip(tgt_img)
+
+    #         # Вертикальный (Опционально: убедитесь, что для вашей задачи это имеет смысл.
+    #         # Для фото людей/пейзажей vertical flip обычно НЕ делают, для текстур/спутника - делают)
+    #         if random.random() > 0.5:
+    #             src_img = TF.vflip(src_img)
+    #             tgt_img = TF.vflip(tgt_img)
+
+    #         # --- ШАГ 4: ТЕНЗОРЫ И НОРМАЛИЗАЦИЯ ---
+    #         src_t = TF.to_tensor(src_img)
+    #         tgt_t = TF.to_tensor(tgt_img)
+
+    #         # Normalize: (x - 0.5) / 0.5 -> диапазон [-1, 1]
+    #         src_t = TF.normalize(src_t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+    #         tgt_t = TF.normalize(tgt_t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+
+    #         source_images_output.append(src_t)
+    #         target_images_output.append(tgt_t)
+
+    #     return {
+    #         "source_images": source_images_output,
+    #         "target_images": target_images_output,
+    #     }
+
     with accelerator.main_process_first():
         dataset["train"] = dataset["train"].shuffle(seed=training_args.seed)
         # Set the training transforms
@@ -787,7 +870,8 @@ def main():
                     else:
                         # Случайно выбираем от 1 до min(3, доступно)
                         limit = min(max_sim_steps, int(min_available))
-                        n_steps_back = np.random.randint(1, limit + 1)
+                        # n_steps_back = np.random.randint(1, limit + 1)
+                        n_steps_back = limit
 
                     if n_steps_back > 0:
                         # 3. Стартовое время симуляции (t_start)
@@ -816,8 +900,12 @@ def main():
                         with torch.no_grad():
                             for _ in range(n_steps_back):
                                 # a. Предсказываем скорость в текущей точке
+                                model_input_temp = torch.cat(
+                                    [current_sim_sample, z_source],
+                                    dim=1,
+                                )
                                 pred_velocity = unet(
-                                    current_sim_sample,
+                                    model_input_temp,
                                     curr_t,
                                     return_dict=False,
                                 )[0]
@@ -919,8 +1007,10 @@ def main():
                         noisy_sample[i] = z_source[i]
 
                 # Predict direction of transport (target = z_source - z_target)
+                model_input = torch.cat([noisy_sample, z_source], dim=1)
+                # print(noisy_sample.shape, z_source.shape)
                 model_pred = unet(
-                    noisy_sample,
+                    model_input,
                     timesteps,
                     return_dict=False,
                 )[0]
@@ -954,16 +1044,16 @@ def main():
 
                 x_tgt = batch["target_images"].float()
                 loss_lpips = net_lpips(denoised_sample, x_tgt.to(weight_dtype)).mean()
-                pixel_loss = F.l1_loss(
-                    denoised_sample.float(),
-                    x_tgt.to(weight_dtype),
-                    reduction="mean",
-                )
+                # pixel_loss = F.l1_loss(
+                #     denoised_sample.float(),
+                #     x_tgt.to(weight_dtype),
+                #     reduction="mean",
+                # )
 
                 loss = (
                     loss * diffusion_args.latent_loss_weight
                     + loss_lpips * diffusion_args.lpips_factor
-                    + pixel_loss
+                    # + pixel_loss
                 )
 
                 accelerator.backward(loss)
