@@ -9,10 +9,12 @@ export CUDA_VISIBLE_DEVICES=0
 config_path=/code/auto_remaster/single_gpu.yaml
 
 # hf_train_config=/code/auto_remaster/configs/sd1.5_ddpm.yaml
-hf_train_config=/code/auto_remaster/configs/lbm.yaml
+# hf_train_config=/code/auto_remaster/configs/lbm.yaml
 # hf_train_config=/code/auto_remaster/configs/vae.yaml
 # hf_train_config=/code/auto_remaster/configs/twinflow.yaml
 # hf_train_config=/code/auto_remaster/configs/lbm_repae_gan_reflow.yaml
+# hf_train_config=/code/auto_remaster/configs/lbm_train_test_gap.yaml
+hf_train_config=/code/auto_remaster/configs/lbm_train_test_gap_struct_noise.yaml
 
 # python -m auto_remaster.train_auto_remaster --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster --config $hf_train_config
@@ -22,4 +24,5 @@ hf_train_config=/code/auto_remaster/configs/lbm.yaml
 # python twinflow.py
 # accelerate launch --config_file=$config_path -m auto_remaster.lbm_repae_gan_reflow --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.lbm_repae_gan_reflow_v2 --config $hf_train_config
-accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm_train_test_gap --config $hf_train_config
+# accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm_train_test_gap --config $hf_train_config
+accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm_train_test_gap_struct_noise --config $hf_train_config

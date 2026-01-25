@@ -1,0 +1,88 @@
+# Dataset configuration
+# dataset_name: dim/nfs_pix2pix_1920_1080_v5
+# dataset_name: dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+# dataset_name: dim/nfs_pix2pix_1920_1080_v6
+dataset_name: dim/render_nfs_4screens_6_sdxl_1_wan_mix
+# Cache directory
+# cache_dir: dataset/nfs_pix2pix_1920_1080_v5
+# cache_dir: dataset/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+# cache_dir: dataset/nfs_pix2pix_1920_1080_v6
+cache_dir: dataset/render_nfs_4screens_6_sdxl_1_wan_mix
+dataset_config: null
+seed: 2025
+
+# Output configuration
+output_dir: checkpoints/auto_remaster/lbm_train_test_gap_struct_noise
+logging_dir: logs
+
+# Training optimization parameters
+learning_rate: 5e-6
+lr_scheduler_type: "constant"
+warmup_steps: 500
+weight_decay: 1e-2
+max_grad_norm: 1.0
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 1
+gradient_checkpointing: false
+dataloader_num_workers: 4
+
+# Training duration
+# max_steps: 15000
+max_steps: 300000
+# save_steps: 500
+save_steps: 1600
+save_total_limit: 3
+resume_from_checkpoint: false
+eval_on_start: false
+
+# Reporting
+report_to: wandb
+
+# Diffusion/LBM specific parameters
+# resolution: 320
+resolution: 512
+use_ema: false
+scale_lr: false
+
+# Dataset column names
+source_image_name: input_image
+target_image_name: edited_image
+caption_column: edit_prompt
+
+
+
+# Inference parameters
+num_inference_steps: 8
+
+# Metrics for evaluation
+metrics_list: [
+    "lpips",
+    "mse",
+    "ssim",
+    "dists",
+    "psnr",
+    "fid",
+]
+
+# Loss weights (for compatibility, not used in LBM)
+lpips_factor: 10.0
+gan_factor: 0.5
+
+# LBM specific parameters
+bridge_noise_sigma: 0.05
+timestep_sampling: "custom_timesteps"  # Options: "uniform", "custom_timesteps"
+logit_mean: 0.0  # For log_normal timestep_sampling
+logit_std: 1.0   # For log_normal timestep_sampling
+latent_loss_weight: 1.0
+latent_loss_type: "l1"  # Options: "l2", "l1"
+
+# Tracker project name
+tracker_project_name: auto_remaster
+
+# Optional parameters (defaults)
+noise_offset: 0.0
+input_perturbation: 0.0
+revision: null
+variant: null
+non_ema_revision: null
+
