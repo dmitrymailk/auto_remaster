@@ -106,6 +106,7 @@ class DiffusionTrainingArguments:
     logit_std: float = field(default=1.0)
     latent_loss_weight: float = field(default=1.0)
     latent_loss_type: str = field(default="l2")  # "l2" or "l1"
+    minimal_noise_r: float = field(default=20.0)
 
 
 unet2d_config = {
@@ -488,10 +489,10 @@ def log_validation(
                 z_source.float(),  # float обязателен для FFT
                 noise_std=1.0,
                 pad_factor=1.5,
-                cutoff_radius=10.0,  # Фиксированный радиус для валидации
+                cutoff_radius=diffusion_args.minimal_noise_r,  # Фиксированный радиус для валидации
                 input_noise=torch.randn_like(z_source.float()),
                 sampling_method="fft",
-            ).to(dtype=sample.dtype, device=sample.device)
+            ).to(dtype=z_source.dtype, device=z_source.device)
 
             sample = z_source + diffusion_args.bridge_noise_sigma * structured_noise
 
@@ -544,7 +545,7 @@ def log_validation(
                         z_source.float(),  # float обязателен для FFT
                         noise_std=1.0,
                         pad_factor=1.5,
-                        cutoff_radius=10.0,  # Фиксированный радиус для валидации
+                        cutoff_radius=diffusion_args.minimal_noise_r,  # Фиксированный радиус для валидации
                         input_noise=torch.randn_like(z_source.float()),
                         sampling_method="fft",
                     ).to(dtype=sample.dtype, device=sample.device)
@@ -822,7 +823,9 @@ def main():
     # Remove discriminator and GAN-related components (not needed for LBM)
     # Only keep LPIPS for optional pixel loss if needed
     net_lpips = lpips.LPIPS(net="vgg").cuda()
+    net_lpips_alex = lpips.LPIPS(net="alex").cuda()
     net_lpips.requires_grad_(False)
+    net_lpips_alex.requires_grad_(False)
 
     # Only optimize UNet parameters (VAE is frozen)
     layers_to_opt = []
@@ -1109,9 +1112,7 @@ def main():
                                 current_sim_sample = (
                                     current_sim_sample
                                     + pred_velocity * dt_sigma
-                                    + diffusion_args.bridge_noise_sigma
-                                    * (s_next * (1.0 - s_next)) ** 0.5
-                                    * structured_noise
+                                    #
                                 )
 
                                 # Обновляем время для следующей итерации
@@ -1119,7 +1120,12 @@ def main():
 
                         # После цикла current_sim_sample находится во времени timesteps,
                         # но он пришел туда "своим ходом" через 1-3 шага, накопив кривизну.
-                        noisy_sample = current_sim_sample
+                        noisy_sample = (
+                            current_sim_sample
+                            + diffusion_args.bridge_noise_sigma
+                            * (s_next * (1.0 - s_next)) ** 0.5
+                            * structured_noise
+                        )
 
                         # Sigmas нужны для финального расчета лосса (соответствуют времени timesteps)
                         sigmas = _get_sigmas(
@@ -1181,13 +1187,13 @@ def main():
 
                 # Compute loss in latent space
                 if diffusion_args.latent_loss_type == "l2":
-                    loss = F.mse_loss(
+                    latent_loss = F.mse_loss(
                         model_pred,
                         target.detach(),
                         reduction="mean",
                     )
                 elif diffusion_args.latent_loss_type == "l1":
-                    loss = F.l1_loss(
+                    latent_loss = F.l1_loss(
                         model_pred,
                         target.detach(),
                         reduction="mean",
@@ -1205,6 +1211,9 @@ def main():
 
                 x_tgt = batch["target_images"].float()
                 loss_lpips = net_lpips(denoised_sample, x_tgt.to(weight_dtype)).mean()
+                loss_lpips_alex = net_lpips_alex(
+                    denoised_sample, x_tgt.to(weight_dtype)
+                ).mean()
                 # pixel_loss = F.l1_loss(
                 #     denoised_sample.float(),
                 #     x_tgt.to(weight_dtype),
@@ -1212,9 +1221,11 @@ def main():
                 # )
 
                 loss = (
-                    loss * diffusion_args.latent_loss_weight
-                    + loss_lpips * diffusion_args.lpips_factor
+                    # latent_loss * diffusion_args.latent_loss_weight
+                    # + loss_lpips * diffusion_args.lpips_factor
                     # + pixel_loss
+                    loss_lpips * diffusion_args.lpips_factor
+                    + loss_lpips_alex * diffusion_args.lpips_factor
                 )
 
                 accelerator.backward(loss)
@@ -1234,7 +1245,7 @@ def main():
                 logs = {}
                 # log the loss
                 logs["loss"] = loss.detach().item()
-                logs["latent_loss"] = loss.detach().item()
+                logs["latent_loss"] = latent_loss.detach().item()
                 logs["loss_lpips"] = loss_lpips.detach().item()
                 # logs["mse_loss"] = mse_loss.detach().item()
                 accelerator.log(logs, step=global_step)

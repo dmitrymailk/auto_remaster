@@ -8,6 +8,7 @@
 - flow matching
 - rectified flow
 - InstaFlow https://github.com/gnobitab/InstaFlow https://github.com/isamu-isozaki/diffusers/blob/rectified_flow/examples/rectified_insta_flow/train_rectified_instaflow.py https://colab.research.google.com/drive/13GmggtFLnVj55i2XnVp-E_-tLgv2ThSm#scrollTo=9QpxgPmqXZQd (нет никакого смысла воспроизводить его, это просто rectified flow)
+- [NeuralRemaster: Phase-Preserving Diffusion for Structure-Aligned Generation](https://arxiv.org/pdf/2512.05106)
 - pi-flow https://github.com/Lakonik/piFlow
 - https://github.com/guandeh17/Self-Forcing
 - alphaflow https://github.com/snap-research/alphaflow
