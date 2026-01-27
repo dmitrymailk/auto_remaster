@@ -222,3 +222,4 @@ vqgan-output
 buffers
 model_lcm
 .ppd_env
+dim

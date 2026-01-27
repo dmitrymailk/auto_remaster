@@ -12,13 +12,14 @@
 - pi-flow https://github.com/Lakonik/piFlow
 - https://github.com/guandeh17/Self-Forcing
 - alphaflow https://github.com/snap-research/alphaflow
-- https://github.com/Xinxi-Zhang/Re-MeanFlow
+- [FlowTurbo: Towards Real-time Flow-Based Image Generation with Velocity Refiner (NeurIPS 2024)](https://github.com/shiml20/FlowTurbo)
+- [Straighter and Faster: Efficient One-Step Generative Modeling via Meanflow on Rectified Trajectories](https://github.com/Xinxi-Zhang/Re-MeanFlow)
 - [Mean Flows for One-step Generative Modeling](https://github.com/haidog-yaqub/MeanFlow)
 - https://github.com/Candibulldog/MeanFlow-Edge2Image
-- [FlowTurbo: Towards Real-time Flow-Based Image Generation with Velocity Refiner (NeurIPS 2024)](https://github.com/shiml20/FlowTurbo)
 - [Diffusion-GAN — Official PyTorch implementation](https://github.com/Zhendong-Wang/Diffusion-GAN)
 - LCM https://github.com/huggingface/diffusers/blob/main/docs/source/en/training/lcm_distill.md
 - DMD2 
+- https://zsyoaoa.github.io/projects/resshift/
 - [rCM](https://github.com/NVlabs/rcm)
 - LightningDiT
 - The GAN is dead
@@ -33,12 +34,14 @@
 - https://github.com/zhuyu-cs/MeanFlow
 - https://github.com/gnobitab/FlowGrad
 - RMT-diffusion?
+- TRM-block?
 
 ### Оценка генеративных моделей
 - DreamStyle: A Unified Framework for Video Stylization
 
 ### Базовые методы которые стоит попробовать 
-- для создания крутой базовой модели можно попробовать просто сделать lora на qwen image, из нее уже потом пытаться что-то дистиллировать
+- FlowTurbo ОБЯЗАТЕЛЬНО нужно сделать, но это все равно стоит рассматривать только как метод ускорения. он требует всего 4% параметров для значимого ускорения.
+- для создания крутой базовой модели можно попробовать просто сделать lora на qwen image, из нее уже потом пытаться что-то дистиллировать(это на самом деле очень хорошая идея, примерно так сделали SnapGen++)
 - сделать лосс для нижней половины экрана более высоким чем для остальной картинки
 - учиться на кропах в высоком разрешении, а не только на всей картинке сразу
 - аугментация через сдвиг, поворот и кроп
@@ -96,7 +99,13 @@
 - [DiffO: Single-step Diffusion for Image Compression at Ultra-Low Bitrates](https://arxiv.org/pdf/2506.16572v1)
 - [fast-DiT Scalable Diffusion Models with Transformers (DiT)](https://github.com/chuanyangjin/fast-DiT)
 - [Reconstruct Anything Model (RAM)](https://github.com/matthieutrs/ram)
-
+- [Official PyTorch and Diffusers Implementation of "LinFusion: 1 GPU, 1 Minute, 16K Image"](https://github.com/fla-org/flash-bidirectional-linear-attention)
+- [SnapGen++: Unleashing Diffusion Transformers for Efficient High-Fidelity Image Generation on Edge Devices](https://arxiv.org/pdf/2601.08303)
+- [SnapGen: Taming High-Resolution Text-to-Image Models for Mobile Devices with Efficient Architectures and Training](https://arxiv.org/pdf/2412.09619)
+- [PocketSR: The Super-Resolution Expert in Your Pocket Mobiles](https://arxiv.org/pdf/2510.03012)
+- https://github.com/horseee/DeepCache
+- [BK-SDM: A Lightweight, Fast, and Cheap Version of Stable Diffusion](https://arxiv.org/pdf/2305.15798)
+- [Scalable High-Resolution Pixel-Space Image Synthesis with Hourglass Diffusion Transformers](https://crowsonkb.github.io/hourglass-diffusion-transformers/)
 
 ### GANs
 - [The GAN is dead; long live the GAN! A Modern Baseline GAN](https://arxiv.org/pdf/2501.05441)
@@ -163,9 +172,26 @@
 - https://github.com/snap-research/alphaflow
 - https://github.com/segmind/distill-sd
 
+### Super Resolution
+- https://zsyoaoa.github.io/projects/resshift/
+- https://github.com/wyf0912/SinSR
+- https://github.com/XPixelGroup/BasicSR
+- https://github.com/hongyuanyu/SPAN
+- https://github.com/neosr-project/neosr
+- https://github.com/XPixelGroup/HAT
+- https://github.com/zsyOAOA/InvSR
+- [One-Step Effective Diffusion Network for Real-World Image Super-Resolution](https://github.com/cswry/OSEDiff)
+
 ### Losses
 - https://github.com/richzhang/PerceptualSimilarity
 - https://github.com/sypsyp97/convnext_perceptual_loss
+
+### Train Frameworks
+- https://github.com/bghira/SimpleTuner
+- https://github.com/modelscope/DiffSynth-Studio
+- https://github.com/tdrussell/diffusion-pipe
+- https://github.com/aigc-apps/VideoX-Fun
+
 
 ### Theory
 
@@ -188,6 +214,27 @@
 - [Let us Flow Together](https://www.cs.utexas.edu/~lqiang/PDF/flow_book.pdf)
 - https://rectifiedflow.github.io/
 
-### Ссылки на датасеты
+### Normal Map, Depth Estimation
+- [NormalCrafter: Learning Temporally Consistent Normals from Video Diffusion Priors](https://normalcrafter.github.io/)
+- [UniGeo: Taming Video Diffusion for Unified Consistent Geometry Estimation](https://github.com/SunYangtian/UniGeo)
+- [\[CVPR 2025 Highlight\] Video Depth Anything: Consistent Depth Estimation for Super-Long Videos](https://github.com/DepthAnything/Video-Depth-Anything)
+- [RollingDepth: Video Depth without Video Models](https://github.com/prs-eth/rollingdepth)
+- [Diffusion Knows Transparency : Repurposing Video Diffusion for Transparent Object Depth and Normal Estimation](https://daniellli.github.io/projects/DKT/)
+- [Light of Normals: Unified Feature Representation for Universal Photometric Stereo](https://github.com/houyuanchen111/LINO_UniPS)
+- [Lotus: Diffusion-based Visual Foundation Model for High-quality Dense Prediction](https://lotus3d.github.io/)
+
+### Нормали из гаусианов
+- 
+
+### Ссылки на датасеты с машинами
 - [GenAD: OpenDV Dataset The largest driving video dataset to date, containing more than 1700 hours of real-world driving videos.](https://opendrivelab.com/datasets)
+- https://www.shutterstock.com/video/search/rally-car-racing
+- https://www.kaggle.com/datasets/manideep1108/culane
+- https://www.kaggle.com/datasets/manideep1108/tusimple
+- https://www.nuscenes.org/
+- https://bair.berkeley.edu/blog/2018/05/30/bdd/
+- https://www.a2d2.audi/en/dataset/ - хороший кажется
+- [VIL-100: A New Dataset and A Baseline Model for Video Instance Lane Detection](https://github.com/yujun0-0/MMA-Net)
+- [comma2k19 comma.ai presents comma2k19, a dataset of over 33 hours of commute in California's 280 highway.](https://github.com/commaai/comma2k19)
+- [OpenLKA: An Open Dataset for Lane Keeping Assist Systems](https://github.com/OpenLKA/OpenLKA)
 
