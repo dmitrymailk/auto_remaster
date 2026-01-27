@@ -38,6 +38,7 @@
 
 ### Оценка генеративных моделей
 - DreamStyle: A Unified Framework for Video Stylization
+- оценку стабильности можно взять из normal crafter
 
 ### Базовые методы которые стоит попробовать 
 - FlowTurbo ОБЯЗАТЕЛЬНО нужно сделать, но это все равно стоит рассматривать только как метод ускорения. он требует всего 4% параметров для значимого ускорения.
@@ -222,8 +223,20 @@
 - [Diffusion Knows Transparency : Repurposing Video Diffusion for Transparent Object Depth and Normal Estimation](https://daniellli.github.io/projects/DKT/)
 - [Light of Normals: Unified Feature Representation for Universal Photometric Stereo](https://github.com/houyuanchen111/LINO_UniPS)
 - [Lotus: Diffusion-based Visual Foundation Model for High-quality Dense Prediction](https://lotus3d.github.io/)
+- [Marigold: Affordable Adaptation of Diffusion-Based Image Generators for Image Analysis](https://github.com/prs-eth/marigold)
+- [Marigold-DC: Zero-Shot Monocular Depth Completion with Guided Diffusion](https://marigolddepthcompletion.github.io/)
+- [\[NeurIPS 2024\] Depth Anything V2. A More Capable Foundation Model for Monocular Depth Estimation](https://github.com/DepthAnything/Depth-Anything-V2)
+- [Converts a depth map image to a normal map image using Python](https://github.com/cobanov/depth2normal)
+- [Official implementation of the paper: "D2NT: A High-Performing Depth-to-Normal Translator"](https://github.com/fengyi233/depth-to-normal-translator)
 
 ### Нормали из гаусианов
+- [SuGaR: Surface-Aligned Gaussian Splatting for Efficient 3D Mesh Reconstruction and High-Quality Mesh Rendering](https://anttwo.github.io/sugar/)
+- 
+
+### Гаусианы по видео
+- [Street Gaussians: Modeling Dynamic Urban Scenes with Gaussian Splatting](https://zju3dv.github.io/street_gaussians/)
+- [Pytorch implementation for "DeSiRe-GS: 4D Street Gaussians for Static-Dynamic Decomposition and Surface Reconstruction for Urban Driving Scenes](https://github.com/chengweialan/DeSiRe-GS)
+- [DN-Splatter + AGS-Mesh: Depth and Normal Priors for Gaussian Splatting](https://github.com/maturk/dn-splatter)
 - 
 
 ### Ссылки на датасеты с машинами
