@@ -105,7 +105,7 @@ def log_validation(
     )
 
     # Select 5 random images deterministically
-    num_samples = 5
+    num_samples = 15
     indices = range(len(dataset))
     num_samples = min(num_samples, len(dataset))
 
@@ -180,7 +180,7 @@ def log_validation(
 
     # Select 5 random images deterministically (using same seed logic)
     gen_indices = range(len(gen_dataset))
-    gen_num_samples = min(5, len(gen_dataset))
+    gen_num_samples = min(num_samples, len(gen_dataset))
     gen_selected_indices = rng.sample(gen_indices, gen_num_samples)
 
     for idx in gen_selected_indices:
@@ -1172,7 +1172,7 @@ def main(args):
 
     # Force single prompt logic
     # Hardcoded prompt as per user request
-    args.instance_prompt = "make this image photorealistic"
+    args.instance_prompt = "make this image photorealistic NFS_2008"
 
     # We encode the instance prompt once and reuse it.
     with offload_models(
