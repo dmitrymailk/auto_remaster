@@ -1,37 +1,3 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# /// script
-# dependencies = [
-#     "diffusers @ git+https://github.com/huggingface/diffusers.git",
-#     "torch>=2.0.0",
-#     "accelerate>=0.31.0",
-#     "transformers>=4.41.2",
-#     "ftfy",
-#     "tensorboard",
-#     "Jinja2",
-#     "peft>=0.11.1",
-#     "sentencepiece",
-#     "torchvision",
-#     "datasets",
-#     "bitsandbytes",
-#     "prodigyopt",
-# ]
-# ///
-
 import argparse
 import copy
 import itertools
@@ -55,17 +21,17 @@ from accelerate.utils import (
     ProjectConfiguration,
     set_seed,
 )
-from huggingface_hub import create_repo, upload_folder
 from peft import LoraConfig, prepare_model_for_kbit_training, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
 from PIL import Image
 from PIL.ImageOps import exif_transpose
 from torch.utils.data import Dataset
-from torch.utils.data.sampler import BatchSampler
 from torchvision import transforms
 from torchvision.transforms import functional as TF
+from torchvision.transforms import InterpolationMode
 from tqdm.auto import tqdm
 from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
+from datasets import load_dataset
 
 import diffusers
 from diffusers import (
@@ -83,11 +49,9 @@ from diffusers.training_utils import (
     cast_training_params,
     compute_density_for_timestep_sampling,
     compute_loss_weighting_for_sd3,
-    find_nearest_bucket,
     free_memory,
     get_fsdp_kwargs_from_accelerator,
     offload_models,
-    parse_buckets_string,
     wrap_with_fsdp,
 )
 from diffusers.utils import (
@@ -96,7 +60,6 @@ from diffusers.utils import (
     is_wandb_available,
     load_image,
 )
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_torch_npu_available
 from diffusers.utils.torch_utils import is_compiled_module
 
@@ -113,102 +76,18 @@ check_min_version("0.37.0.dev0")
 logger = get_logger(__name__)
 
 
-def save_model_card(
-    repo_id: str,
-    images=None,
-    base_model: str = None,
-    instance_prompt=None,
-    validation_prompt=None,
-    repo_folder=None,
-    fp8_training=False,
-):
-    widget_dict = []
-    if images is not None:
-        for i, image in enumerate(images):
-            image.save(os.path.join(repo_folder, f"image_{i}.png"))
-            widget_dict.append(
-                {
-                    "text": validation_prompt if validation_prompt else " ",
-                    "output": {"url": f"image_{i}.png"},
-                }
-            )
-
-    model_description = f"""
-# Flux.2 [Klein] DreamBooth LoRA - {repo_id}
-
-<Gallery />
-
-## Model description
-
-These are {repo_id} DreamBooth LoRA weights for {base_model}.
-
-The weights were trained using [DreamBooth](https://dreambooth.github.io/) with the [Flux2 diffusers trainer](https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_flux2.md).
-
-FP8 training? {fp8_training}
-
-## Trigger words
-
-You should use `{instance_prompt}` to trigger the image generation.
-
-## Download model
-
-[Download the *.safetensors LoRA]({repo_id}/tree/main) in the Files & versions tab.
-
-## Use it with the [🧨 diffusers library](https://github.com/huggingface/diffusers)
-
-```py
-from diffusers import AutoPipelineForText2Image
-import torch
-pipeline = AutoPipelineForText2Image.from_pretrained("black-forest-labs/FLUX.2", torch_dtype=torch.bfloat16).to('cuda')
-pipeline.load_lora_weights('{repo_id}', weight_name='pytorch_lora_weights.safetensors')
-image = pipeline('{validation_prompt if validation_prompt else instance_prompt}').images[0]
-```
-
-For more details, including weighting, merging and fusing LoRAs, check the [documentation on loading LoRAs in diffusers](https://huggingface.co/docs/diffusers/main/en/using-diffusers/loading_adapters)
-
-## License
-
-Please adhere to the licensing terms as described [here](https://huggingface.co/black-forest-labs/FLUX.2/blob/main/LICENSE.md).
-"""
-    model_card = load_or_create_model_card(
-        repo_id_or_path=repo_id,
-        from_training=True,
-        license="other",
-        base_model=base_model,
-        prompt=instance_prompt,
-        model_description=model_description,
-        widget=widget_dict,
-    )
-    tags = [
-        "text-to-image",
-        "diffusers-training",
-        "diffusers",
-        "lora",
-        "flux2",
-        "flux2-diffusers",
-        "template:sd-lora",
-    ]
-
-    model_card = populate_model_card(model_card, tags=tags)
-    model_card.save(os.path.join(repo_folder, "README.md"))
-
-
 def log_validation(
     pipeline,
     args,
     accelerator,
-    pipeline_args,
+    dataset,
     epoch,
     torch_dtype,
+    prompt_embeds=None,
+    text_ids=None,
     is_final_validation=False,
 ):
-    args.num_validation_images = (
-        args.num_validation_images if args.num_validation_images else 1
-    )
-    logger.info(
-        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-        f" {args.validation_prompt}."
-    )
+    logger.info("Running validation...")
     pipeline = pipeline.to(dtype=torch_dtype)
     pipeline.enable_model_cpu_offload()
     pipeline.set_progress_bar_config(disable=True)
@@ -225,31 +104,132 @@ def log_validation(
         else nullcontext()
     )
 
+    # Select 5 random images deterministically
+    num_samples = 5
+    indices = range(len(dataset))
+    num_samples = min(num_samples, len(dataset))
+
+    # Use a local Random instance to ensure the same validation images are selected every time
+    # if a seed is provided.
+    rng = random.Random(args.seed) if args.seed is not None else random.Random()
+    selected_indices = rng.sample(indices, num_samples)
+
     images = []
-    for _ in range(args.num_validation_images):
+
+    # Validation loop
+    for idx in selected_indices:
+        example = dataset[idx]
+
+        # Get control image and prompt
+        cond_image_column = args.cond_image_column
+        # caption_column = args.caption_column # Not used, we use single prompt
+        image_column = args.image_column
+
+        control_image = example[cond_image_column]
+        # prompt = example[caption_column] # Ignored
+        target_image = example[image_column]
+
+        # Helper validation transform
+        validation_transform = transforms.Compose(
+            [
+                transforms.Resize(
+                    args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+                ),
+                transforms.CenterCrop(args.resolution),
+            ]
+        )
+
+        # Resize and CenterCrop to match training logic exactly using standard Compose
+        control_image = validation_transform(control_image)
+        target_image = validation_transform(target_image)
+
+        with autocast_ctx:
+            # We strictly use the pre-computed prompt embeddings
+            image = pipeline(
+                prompt_embeds=prompt_embeds,
+                image=control_image,
+                num_inference_steps=30,  # Use reasonable steps for validation
+                generator=generator,
+                guidance_scale=args.guidance_scale,
+            ).images[0]
+
+            # Combine [Original (Condition) | Generated | Target]
+            w, h = image.size
+            if target_image.size != (w, h):
+                target_image = target_image.resize((w, h))
+
+            combined = Image.new("RGB", (w * 3, h))
+            combined.paste(control_image, (0, 0))
+            combined.paste(image, (w, 0))
+            combined.paste(target_image, (w * 2, 0))
+
+            images.append(combined)
+
+    # Generalization Validation
+    logger.info("Running generalization validation on dim/nfs_pix2pix_1920_1080_v5...")
+    gen_images = []
+
+    generalization_dataset_name = "dim/nfs_pix2pix_1920_1080_v5"
+
+    # Load generalization dataset on the fly
+    gen_dataset = load_dataset(
+        generalization_dataset_name,
+        split="train",
+        cache_dir="/code/dataset/" + generalization_dataset_name.split("/")[-1],
+    )
+
+    # Select 5 random images deterministically (using same seed logic)
+    gen_indices = range(len(gen_dataset))
+    gen_num_samples = min(5, len(gen_dataset))
+    gen_selected_indices = rng.sample(gen_indices, gen_num_samples)
+
+    for idx in gen_selected_indices:
+        example = gen_dataset[idx]
+
+        # Assuming same column names: input_image, edited_image
+        control_image = example[args.cond_image_column]
+        target_image = example[args.image_column]
+
+        # Reuse same transform
+        control_image = validation_transform(control_image)
+        target_image = validation_transform(target_image)
+
         with autocast_ctx:
             image = pipeline(
-                image=pipeline_args["image"],
-                prompt_embeds=pipeline_args["prompt_embeds"],
-                negative_prompt_embeds=pipeline_args["negative_prompt_embeds"],
+                prompt_embeds=prompt_embeds,
+                image=control_image,
+                num_inference_steps=30,
                 generator=generator,
+                guidance_scale=args.guidance_scale,
             ).images[0]
-            images.append(image)
+
+            w, h = image.size
+            if target_image.size != (w, h):
+                target_image = target_image.resize((w, h))
+
+            combined = Image.new("RGB", (w * 3, h))
+            combined.paste(control_image, (0, 0))
+            combined.paste(image, (w, 0))
+            combined.paste(target_image, (w * 2, 0))
+
+            gen_images.append(combined)
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
-        if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images(phase_name, np_images, epoch, dataformats="NHWC")
+
         if tracker.name == "wandb":
-            tracker.log(
-                {
-                    phase_name: [
-                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
-                        for i, image in enumerate(images)
-                    ]
-                }
-            )
+            log_dict = {
+                phase_name: [
+                    wandb.Image(image, caption=f"Val Epoch {epoch}")
+                    for i, image in enumerate(images)
+                ]
+            }
+            if gen_images:
+                log_dict["generalization"] = [
+                    wandb.Image(image, caption=f"Gen Val Epoch {epoch}")
+                    for i, image in enumerate(gen_images)
+                ]
+            tracker.log(log_dict)
 
     del pipeline
     free_memory()
@@ -317,12 +297,6 @@ def parse_args(input_args=None):
         default=None,
         help="The config of the Dataset, leave as None if there's only one config.",
     )
-    parser.add_argument(
-        "--instance_data_dir",
-        type=str,
-        default=None,
-        help=("A folder containing the training data. "),
-    )
 
     parser.add_argument(
         "--cache_dir",
@@ -345,12 +319,6 @@ def parse_args(input_args=None):
         default=None,
         help="Column in the dataset containing the condition image. Must be specified when performing I2I fine-tuning",
     )
-    parser.add_argument(
-        "--caption_column",
-        type=str,
-        default=None,
-        help="The column of the dataset containing the instance prompt for each image",
-    )
 
     parser.add_argument(
         "--repeats",
@@ -360,61 +328,17 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument(
-        "--class_data_dir",
-        type=str,
-        default=None,
-        required=False,
-        help="A folder containing the training data of class images.",
-    )
-    parser.add_argument(
-        "--instance_prompt",
-        type=str,
-        default=None,
-        required=False,
-        help="The prompt with identifier specifying the instance, e.g. 'photo of a TOK dog', 'in the style of TOK'",
-    )
-    parser.add_argument(
         "--max_sequence_length",
         type=int,
         default=512,
         help="Maximum sequence length to use with with the T5 text encoder",
     )
     parser.add_argument(
-        "--validation_prompt",
-        type=str,
-        default=None,
-        help="A prompt that is used during validation to verify that the model is learning.",
-    )
-    parser.add_argument(
-        "--validation_image",
-        type=str,
-        default=None,
-        help="path to an image that is used during validation as the condition image to verify that the model is learning.",
-    )
-    parser.add_argument(
-        "--skip_final_inference",
-        default=False,
-        action="store_true",
-        help="Whether to skip the final inference step with loaded lora weights upon training completion. This will run intermediate validation inference if `validation_prompt` is provided. Specify to reduce memory.",
-    )
-    parser.add_argument(
-        "--final_validation_prompt",
-        type=str,
-        default=None,
-        help="A prompt that is used during a final validation to verify that the model is learning. Ignored if `--validation_prompt` is provided.",
-    )
-    parser.add_argument(
-        "--num_validation_images",
+        "--validation_steps",
         type=int,
-        default=4,
-        help="Number of images that should be generated during validation with `validation_prompt`.",
-    )
-    parser.add_argument(
-        "--validation_epochs",
-        type=int,
-        default=50,
+        default=250,
         help=(
-            "Run dreambooth validation every X epochs. Dreambooth validation consists of running the prompt"
+            "Run dreambooth validation every X steps. Dreambooth validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`."
         ),
     )
@@ -455,16 +379,7 @@ def parse_args(input_args=None):
             " resolution"
         ),
     )
-    parser.add_argument(
-        "--aspect_ratio_buckets",
-        type=str,
-        default=None,
-        help=(
-            "Aspect ratio buckets to use for training. Define as a string of 'h1,w1;h2,w2;...'. "
-            "e.g. '1024,1024;768,1360;1360,768;880,1168;1168,880;1248,832;832,1248'"
-            "Images will be resized and cropped to fit the nearest bucket. If provided, --resolution is ignored."
-        ),
-    )
+
     parser.add_argument(
         "--center_crop",
         default=False,
@@ -700,23 +615,6 @@ def parse_args(input_args=None):
         "--max_grad_norm", default=1.0, type=float, help="Max gradient norm."
     )
     parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        help="Whether or not to push the model to the Hub.",
-    )
-    parser.add_argument(
-        "--hub_token",
-        type=str,
-        default=None,
-        help="The token to use to push to the Model Hub.",
-    )
-    parser.add_argument(
-        "--hub_model_id",
-        type=str,
-        default=None,
-        help="The name of the repository to keep in sync with the local `output_dir`.",
-    )
-    parser.add_argument(
         "--logging_dir",
         type=str,
         default="logs",
@@ -734,15 +632,9 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--cache_latents",
-        action="store_true",
-        default=False,
-        help="Cache the VAE latents",
-    )
-    parser.add_argument(
         "--report_to",
         type=str,
-        default="tensorboard",
+        default="wandb",
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
@@ -800,15 +692,9 @@ def parse_args(input_args=None):
         )
     else:
         assert args.image_column is not None
-        assert args.caption_column is not None
 
-    if args.dataset_name is None and args.instance_data_dir is None:
-        raise ValueError("Specify either `--dataset_name` or `--instance_data_dir`")
-
-    if args.dataset_name is not None and args.instance_data_dir is not None:
-        raise ValueError(
-            "Specify only one of `--dataset_name` or `--instance_data_dir`"
-        )
+    if args.dataset_name is None:
+        raise ValueError("Specify `--dataset_name`")
 
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -817,359 +703,7 @@ def parse_args(input_args=None):
     return args
 
 
-class DreamBoothDataset(Dataset):
-    """
-    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
-    It pre-processes the images.
-    """
-
-    def __init__(
-        self,
-        instance_data_root,
-        instance_prompt,
-        size=1024,
-        repeats=1,
-        center_crop=False,
-        buckets=None,
-    ):
-        self.size = size
-        self.center_crop = center_crop
-
-        self.instance_prompt = instance_prompt
-        self.custom_instance_prompts = None
-
-        self.buckets = buckets
-
-        # if --dataset_name is provided or a metadata jsonl file is provided in the local --instance_data directory,
-        # we load the training data using load_dataset
-        if args.dataset_name is not None:
-            try:
-                from datasets import load_dataset
-            except ImportError:
-                raise ImportError(
-                    "You are trying to load your data using the datasets library. If you wish to train using custom "
-                    "captions please install the datasets library: `pip install datasets`. If you wish to load a "
-                    "local folder containing images only, specify --instance_data_dir instead."
-                )
-            # Downloading and loading a dataset from the hub.
-            # See more about loading custom images at
-            # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-            dataset = load_dataset(
-                args.dataset_name,
-                args.dataset_config_name,
-                cache_dir=args.cache_dir,
-            )
-            # Preprocessing the datasets.
-            column_names = dataset["train"].column_names
-
-            # 6. Get the column names for input/target.
-            if (
-                args.cond_image_column is not None
-                and args.cond_image_column not in column_names
-            ):
-                raise ValueError(
-                    f"`--cond_image_column` value '{args.cond_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                )
-            if args.image_column is None:
-                image_column = column_names[0]
-                logger.info(f"image column defaulting to {image_column}")
-            else:
-                image_column = args.image_column
-                if image_column not in column_names:
-                    raise ValueError(
-                        f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                    )
-            instance_images = dataset["train"][image_column]
-            cond_images = None
-            cond_image_column = args.cond_image_column
-            if cond_image_column is not None:
-                cond_images = [
-                    dataset["train"][i][cond_image_column]
-                    for i in range(len(dataset["train"]))
-                ]
-                assert len(instance_images) == len(cond_images)
-
-            if args.caption_column is None:
-                logger.info(
-                    "No caption column provided, defaulting to instance_prompt for all images. If your dataset "
-                    "contains captions/prompts for the images, make sure to specify the "
-                    "column as --caption_column"
-                )
-                self.custom_instance_prompts = None
-            else:
-                if args.caption_column not in column_names:
-                    raise ValueError(
-                        f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                    )
-                custom_instance_prompts = dataset["train"][args.caption_column]
-                # create final list of captions according to --repeats
-                self.custom_instance_prompts = []
-                for caption in custom_instance_prompts:
-                    self.custom_instance_prompts.extend(
-                        itertools.repeat(caption, repeats)
-                    )
-        else:
-            self.instance_data_root = Path(instance_data_root)
-            if not self.instance_data_root.exists():
-                raise ValueError("Instance images root doesn't exists.")
-
-            instance_images = [
-                Image.open(path) for path in list(Path(instance_data_root).iterdir())
-            ]
-            self.custom_instance_prompts = None
-
-        self.instance_images = []
-        self.cond_images = []
-        for i, img in enumerate(instance_images):
-            self.instance_images.extend(itertools.repeat(img, repeats))
-            if args.dataset_name is not None and cond_images is not None:
-                self.cond_images.extend(itertools.repeat(cond_images[i], repeats))
-
-        self.pixel_values = []
-        self.cond_pixel_values = []
-        for i, image in enumerate(self.instance_images):
-            image = exif_transpose(image)
-            if not image.mode == "RGB":
-                image = image.convert("RGB")
-            dest_image = None
-            if self.cond_images:  # todo: take care of max area for buckets
-                dest_image = self.cond_images[i]
-                image_width, image_height = dest_image.size
-                if image_width * image_height > 1024 * 1024:
-                    dest_image = Flux2ImageProcessor._resize_to_target_area(
-                        dest_image, 1024 * 1024
-                    )
-                    image_width, image_height = dest_image.size
-
-                multiple_of = 2 ** (
-                    4 - 1
-                )  # 2 ** (len(vae.config.block_out_channels) - 1), temp!
-                image_width = (image_width // multiple_of) * multiple_of
-                image_height = (image_height // multiple_of) * multiple_of
-                image_processor = Flux2ImageProcessor()
-                dest_image = image_processor.preprocess(
-                    dest_image,
-                    height=image_height,
-                    width=image_width,
-                    resize_mode="crop",
-                )
-                # Convert back to PIL
-                dest_image = dest_image.squeeze(0)
-                if dest_image.min() < 0:
-                    dest_image = (dest_image + 1) / 2
-                dest_image = (torch.clamp(dest_image, 0, 1) * 255).byte().cpu()
-
-                if dest_image.shape[0] == 1:
-                    # Gray scale image
-                    dest_image = Image.fromarray(dest_image.squeeze().numpy(), mode="L")
-                else:
-                    # RGB scale image: (C, H, W) -> (H, W, C)
-                    dest_image = TF.to_pil_image(dest_image)
-
-                dest_image = exif_transpose(dest_image)
-                if not dest_image.mode == "RGB":
-                    dest_image = dest_image.convert("RGB")
-
-            width, height = image.size
-
-            # Find the closest bucket
-            bucket_idx = find_nearest_bucket(height, width, self.buckets)
-            target_height, target_width = self.buckets[bucket_idx]
-            self.size = (target_height, target_width)
-
-            # based on the bucket assignment, define the transformations
-            image, dest_image = self.paired_transform(
-                image,
-                dest_image=dest_image,
-                size=self.size,
-                center_crop=args.center_crop,
-                random_flip=args.random_flip,
-            )
-            self.pixel_values.append((image, bucket_idx))
-            if dest_image is not None:
-                self.cond_pixel_values.append((dest_image, bucket_idx))
-
-        self.num_instance_images = len(self.instance_images)
-        self._length = self.num_instance_images
-
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(
-                    size, interpolation=transforms.InterpolationMode.BILINEAR
-                ),
-                (
-                    transforms.CenterCrop(size)
-                    if center_crop
-                    else transforms.RandomCrop(size)
-                ),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-
-    def __len__(self):
-        return self._length
-
-    def __getitem__(self, index):
-        example = {}
-        instance_image, bucket_idx = self.pixel_values[index % self.num_instance_images]
-        example["instance_images"] = instance_image
-        example["bucket_idx"] = bucket_idx
-        if self.cond_pixel_values:
-            dest_image, _ = self.cond_pixel_values[index % self.num_instance_images]
-            example["cond_images"] = dest_image
-
-        if self.custom_instance_prompts:
-            caption = self.custom_instance_prompts[index % self.num_instance_images]
-            if caption:
-                example["instance_prompt"] = caption
-            else:
-                example["instance_prompt"] = self.instance_prompt
-
-        else:  # custom prompts were provided, but length does not match size of image dataset
-            example["instance_prompt"] = self.instance_prompt
-
-        return example
-
-    def paired_transform(
-        self,
-        image,
-        dest_image=None,
-        size=(224, 224),
-        center_crop=False,
-        random_flip=False,
-    ):
-        # 1. Resize (deterministic)
-        resize = transforms.Resize(
-            size, interpolation=transforms.InterpolationMode.BILINEAR
-        )
-        image = resize(image)
-        if dest_image is not None:
-            dest_image = resize(dest_image)
-
-        # 2. Crop: either center or SAME random crop
-        if center_crop:
-            crop = transforms.CenterCrop(size)
-            image = crop(image)
-            if dest_image is not None:
-                dest_image = crop(dest_image)
-        else:
-            # get_params returns (i, j, h, w)
-            i, j, h, w = transforms.RandomCrop.get_params(image, output_size=size)
-            image = TF.crop(image, i, j, h, w)
-            if dest_image is not None:
-                dest_image = TF.crop(dest_image, i, j, h, w)
-
-        # 3. Random horizontal flip with the SAME coin flip
-        if random_flip:
-            do_flip = random.random() < 0.5
-            if do_flip:
-                image = TF.hflip(image)
-                if dest_image is not None:
-                    dest_image = TF.hflip(dest_image)
-
-        # 4. ToTensor + Normalize (deterministic)
-        to_tensor = transforms.ToTensor()
-        normalize = transforms.Normalize([0.5], [0.5])
-        image = normalize(to_tensor(image))
-        if dest_image is not None:
-            dest_image = normalize(to_tensor(dest_image))
-
-        return (image, dest_image) if dest_image is not None else (image, None)
-
-
-def collate_fn(examples):
-    pixel_values = [example["instance_images"] for example in examples]
-    prompts = [example["instance_prompt"] for example in examples]
-
-    pixel_values = torch.stack(pixel_values)
-    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-
-    batch = {"pixel_values": pixel_values, "prompts": prompts}
-    if any("cond_images" in example for example in examples):
-        cond_pixel_values = [example["cond_images"] for example in examples]
-        cond_pixel_values = torch.stack(cond_pixel_values)
-        cond_pixel_values = cond_pixel_values.to(
-            memory_format=torch.contiguous_format
-        ).float()
-        batch.update({"cond_pixel_values": cond_pixel_values})
-    return batch
-
-
-class BucketBatchSampler(BatchSampler):
-    def __init__(
-        self, dataset: DreamBoothDataset, batch_size: int, drop_last: bool = False
-    ):
-        if not isinstance(batch_size, int) or batch_size <= 0:
-            raise ValueError(
-                "batch_size should be a positive integer value, but got batch_size={}".format(
-                    batch_size
-                )
-            )
-        if not isinstance(drop_last, bool):
-            raise ValueError(
-                "drop_last should be a boolean value, but got drop_last={}".format(
-                    drop_last
-                )
-            )
-
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.drop_last = drop_last
-
-        # Group indices by bucket
-        self.bucket_indices = [[] for _ in range(len(self.dataset.buckets))]
-        for idx, (_, bucket_idx) in enumerate(self.dataset.pixel_values):
-            self.bucket_indices[bucket_idx].append(idx)
-
-        self.sampler_len = 0
-        self.batches = []
-
-        # Pre-generate batches for each bucket
-        for indices_in_bucket in self.bucket_indices:
-            # Shuffle indices within the bucket
-            random.shuffle(indices_in_bucket)
-            # Create batches
-            for i in range(0, len(indices_in_bucket), self.batch_size):
-                batch = indices_in_bucket[i : i + self.batch_size]
-                if len(batch) < self.batch_size and self.drop_last:
-                    continue  # Skip partial batch if drop_last is True
-                self.batches.append(batch)
-                self.sampler_len += 1  # Count the number of batches
-
-    def __iter__(self):
-        # Shuffle the order of the batches each epoch
-        random.shuffle(self.batches)
-        for batch in self.batches:
-            yield batch
-
-    def __len__(self):
-        return self.sampler_len
-
-
-class PromptDataset(Dataset):
-    "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
-
-    def __init__(self, prompt, num_samples):
-        self.prompt = prompt
-        self.num_samples = num_samples
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, index):
-        example = {}
-        example["prompt"] = self.prompt
-        example["index"] = index
-        return example
-
-
 def main(args):
-    if args.report_to == "wandb" and args.hub_token is not None:
-        raise ValueError(
-            "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
-            " Please use `hf auth login` to authenticate with the Hub."
-        )
 
     if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
         # due to pytorch#99272, MPS does not yet support bfloat16.
@@ -1225,12 +759,6 @@ def main(args):
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
-
-        if args.push_to_hub:
-            repo_id = create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name,
-                exist_ok=True,
-            ).repo_id
 
     # Load the tokenizers
     tokenizer = Qwen2TokenizerFast.from_pretrained(
@@ -1352,7 +880,11 @@ def main(args):
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
-
+    print("*****")
+    print("*****")
+    print("*****")
+    print(args.lora_layers)
+    print("*****")
     if args.lora_layers is not None:
         target_modules = [layer.strip() for layer in args.lora_layers.split(",")]
     else:
@@ -1560,28 +1092,74 @@ def main(args):
             safeguard_warmup=args.prodigy_safeguard_warmup,
         )
 
-    if args.aspect_ratio_buckets is not None:
-        buckets = parse_buckets_string(args.aspect_ratio_buckets)
-    else:
-        buckets = [(args.resolution, args.resolution)]
-    logger.info(f"Using parsed aspect ratio buckets: {buckets}")
-
     # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDataset(
-        instance_data_root=args.instance_data_dir,
-        instance_prompt=args.instance_prompt,
-        size=args.resolution,
-        repeats=args.repeats,
-        center_crop=args.center_crop,
-        buckets=buckets,
+    dataset = load_dataset(
+        args.dataset_name,
+        args.dataset_config_name,
+        cache_dir="/code/dataset/" + args.dataset_name.split("/")[-1],
     )
-    batch_sampler = BucketBatchSampler(
-        train_dataset, batch_size=args.train_batch_size, drop_last=True
+
+    train_transform = transforms.Compose(
+        [
+            transforms.Resize(
+                args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+            ),
+            transforms.CenterCrop(args.resolution),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
+        ]
     )
+
+    def preprocess_train(examples):
+        all_images = [image.convert("RGB") for image in examples[args.image_column]]
+        all_cond_images = [
+            image.convert("RGB") for image in examples[args.cond_image_column]
+        ]
+
+        # User requested single prompt for all images, so we don't need dataset captions.
+        # Captions will be handled via args.instance_prompt globally.
+
+        pixel_values = []
+        cond_pixel_values = []
+
+        for img, cond_img in zip(all_images, all_cond_images):
+            # Apply composed transforms
+            img = train_transform(img)
+            cond_img = train_transform(cond_img)
+
+            pixel_values.append(img)
+            cond_pixel_values.append(cond_img)
+
+        return {
+            "pixel_values": pixel_values,
+            "cond_pixel_values": cond_pixel_values,
+        }
+
+    def collate_fn_internal(examples):
+        pixel_values = torch.stack([example["pixel_values"] for example in examples])
+        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+
+        cond_pixel_values = torch.stack(
+            [example["cond_pixel_values"] for example in examples]
+        )
+        cond_pixel_values = cond_pixel_values.to(
+            memory_format=torch.contiguous_format
+        ).float()
+
+        # No prompts returned here
+
+        return {
+            "pixel_values": pixel_values,
+            "cond_pixel_values": cond_pixel_values,
+        }
+
+    train_dataset = dataset["train"].with_transform(preprocess_train)
+
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_sampler=batch_sampler,
-        collate_fn=lambda examples: collate_fn(examples),
+        shuffle=True,
+        collate_fn=collate_fn_internal,
+        batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
 
@@ -1592,105 +1170,34 @@ def main(args):
             )
         return prompt_embeds, text_ids
 
-    # If no type of tuning is done on the text_encoder and custom instance prompts are NOT
-    # provided (i.e. the --instance_prompt is used for all images), we encode the instance prompt once to avoid
-    # the redundant encoding.
-    if not train_dataset.custom_instance_prompts:
-        with offload_models(
-            text_encoding_pipeline, device=accelerator.device, offload=args.offload
-        ):
-            instance_prompt_hidden_states, instance_text_ids = compute_text_embeddings(
-                args.instance_prompt, text_encoding_pipeline
-            )
+    # Force single prompt logic
+    # Hardcoded prompt as per user request
+    args.instance_prompt = "make this image photorealistic"
 
-    if args.validation_prompt is not None:
-        validation_image = load_image(args.validation_image).convert("RGB")
-        validation_kwargs = {"image": validation_image}
-        with offload_models(
-            text_encoding_pipeline, device=accelerator.device, offload=args.offload
-        ):
-            validation_kwargs["prompt_embeds"], _text_ids = compute_text_embeddings(
-                args.validation_prompt, text_encoding_pipeline
-            )
-            validation_kwargs["negative_prompt_embeds"], _text_ids = (
-                compute_text_embeddings("", text_encoding_pipeline)
-            )
-
-    # Init FSDP for text encoder
-    if args.fsdp_text_encoder:
-        fsdp_kwargs = get_fsdp_kwargs_from_accelerator(accelerator)
-        text_encoder_fsdp = wrap_with_fsdp(
-            model=text_encoding_pipeline.text_encoder,
-            device=accelerator.device,
-            offload=args.offload,
-            limit_all_gathers=True,
-            use_orig_params=True,
-            fsdp_kwargs=fsdp_kwargs,
+    # We encode the instance prompt once and reuse it.
+    with offload_models(
+        text_encoding_pipeline, device=accelerator.device, offload=args.offload
+    ):
+        instance_prompt_hidden_states, instance_text_ids = compute_text_embeddings(
+            args.instance_prompt, text_encoding_pipeline
         )
 
-        text_encoding_pipeline.text_encoder = text_encoder_fsdp
-        dist.barrier()
+    # Validation prompts are redundant as we use the single instance prompt for validation too.
+    # The instance_prompt_hidden_states are reused in log_validation.
 
-    # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
-    # pack the statically computed variables appropriately here. This is so that we don't
-    # have to pass them to the dataloader.
-    if not train_dataset.custom_instance_prompts:
-        prompt_embeds = instance_prompt_hidden_states
-        text_ids = instance_text_ids
+    # Delete text encoder to save memory as we only use cached embeddings
+    del text_encoding_pipeline
+    if is_fsdp:
+        # If FSDP was initialized (though we are deleting it), ensure cleanup implies no further use
+        pass
 
-    # if cache_latents is set to True, we encode images to latents and store them.
-    # Similar to pre-encoding in the case of a single instance prompt, if custom prompts are provided
-    # we encode them in advance as well.
-    precompute_latents = args.cache_latents or train_dataset.custom_instance_prompts
-    if precompute_latents:
-        prompt_embeds_cache = []
-        text_ids_cache = []
-        latents_cache = []
-        cond_latents_cache = []
-        for batch in tqdm(train_dataloader, desc="Caching latents"):
-            with torch.no_grad():
-                if args.cache_latents:
-                    with offload_models(
-                        vae, device=accelerator.device, offload=args.offload
-                    ):
-                        batch["pixel_values"] = batch["pixel_values"].to(
-                            accelerator.device, non_blocking=True, dtype=vae.dtype
-                        )
-                        latents_cache.append(
-                            vae.encode(batch["pixel_values"]).latent_dist
-                        )
-                        batch["cond_pixel_values"] = batch["cond_pixel_values"].to(
-                            accelerator.device, non_blocking=True, dtype=vae.dtype
-                        )
-                        cond_latents_cache.append(
-                            vae.encode(batch["cond_pixel_values"]).latent_dist
-                        )
-                if train_dataset.custom_instance_prompts:
-                    if args.fsdp_text_encoder:
-                        prompt_embeds, text_ids = compute_text_embeddings(
-                            batch["prompts"], text_encoding_pipeline
-                        )
-                    else:
-                        with offload_models(
-                            text_encoding_pipeline,
-                            device=accelerator.device,
-                            offload=args.offload,
-                        ):
-                            prompt_embeds, text_ids = compute_text_embeddings(
-                                batch["prompts"], text_encoding_pipeline
-                            )
-                    prompt_embeds_cache.append(prompt_embeds)
-                    text_ids_cache.append(text_ids)
-
-    # move back to cpu before deleting to ensure memory is freed see: https://github.com/huggingface/diffusers/issues/11376#issue-3008144624
-    if args.cache_latents:
-        vae = vae.to("cpu")
-        del vae
-
-    # move back to cpu before deleting to ensure memory is freed see: https://github.com/huggingface/diffusers/issues/11376#issue-3008144624
-    text_encoding_pipeline = text_encoding_pipeline.to("cpu")
-    del text_encoder, tokenizer
     free_memory()
+
+    prompt_embeds = instance_prompt_hidden_states
+    text_ids = instance_text_ids
+
+    # We do NOT run latent caching loop as per user request.
+    # Images are encoded on the fly in the training loop.
 
     # Scheduler and math around the number of training steps.
     # Check the PR https://github.com/huggingface/diffusers/pull/8312 for detailed explanation.
@@ -1819,32 +1326,25 @@ def main(args):
 
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
-            prompts = batch["prompts"]
+            # prompts = batch["prompts"] # No longer available
 
             with accelerator.accumulate(models_to_accumulate):
-                if train_dataset.custom_instance_prompts:
-                    prompt_embeds = prompt_embeds_cache[step]
-                    text_ids = text_ids_cache[step]
-                else:
-                    num_repeat_elements = len(prompts)
-                    prompt_embeds = prompt_embeds.repeat(num_repeat_elements, 1, 1)
-                    text_ids = text_ids.repeat(num_repeat_elements, 1, 1)
+                # Always repeat the cached prompt embeddings
+                # We assume args.train_batch_size is the batch size (or batch["pixel_values"].shape[0])
+                current_batch_size = batch["pixel_values"].shape[0]
+                batch_prompt_embeds = prompt_embeds.repeat(current_batch_size, 1, 1)
+                batch_text_ids = text_ids.repeat(current_batch_size, 1, 1)
 
                 # Convert images to latent space
-                if args.cache_latents:
-                    model_input = latents_cache[step].mode()
-                    cond_model_input = cond_latents_cache[step].mode()
-                else:
-                    with offload_models(
-                        vae, device=accelerator.device, offload=args.offload
-                    ):
-                        pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
-                        cond_pixel_values = batch["cond_pixel_values"].to(
-                            dtype=vae.dtype
-                        )
+                # We always encode on the fly as per user request (and removed cache logic)
+                with offload_models(
+                    vae, device=accelerator.device, offload=args.offload
+                ):
+                    pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
+                    cond_pixel_values = batch["cond_pixel_values"].to(dtype=vae.dtype)
 
-                    model_input = vae.encode(pixel_values).latent_dist.mode()
-                    cond_model_input = vae.encode(cond_pixel_values).latent_dist.mode()
+                model_input = vae.encode(pixel_values).latent_dist.mode()
+                cond_model_input = vae.encode(cond_pixel_values).latent_dist.mode()
 
                 model_input = Flux2KleinPipeline._patchify_latents(model_input)
                 model_input = (model_input - latents_bn_mean) / latents_bn_std
@@ -1926,8 +1426,8 @@ def main(args):
                     hidden_states=packed_noisy_model_input,  # (B, image_seq_len, C)
                     timestep=timesteps / 1000,
                     guidance=guidance,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,  # B, text_seq_len, 4
+                    encoder_hidden_states=batch_prompt_embeds,
+                    txt_ids=batch_text_ids,  # B, text_seq_len, 4
                     img_ids=model_input_ids,  # B, image_seq_len, 4
                     return_dict=False,
                 )[0]
@@ -2009,39 +1509,38 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
+                    # Validation logic in training loop - INSIDE sync_gradients
+                    if global_step == 20 or (global_step % args.validation_steps == 0):
+                        # create pipeline
+                        pipeline = Flux2KleinPipeline.from_pretrained(
+                            args.pretrained_model_name_or_path,
+                            text_encoder=None,
+                            tokenizer=None,
+                            transformer=unwrap_model(transformer),
+                            revision=args.revision,
+                            variant=args.variant,
+                            torch_dtype=weight_dtype,
+                        )
+                        images = log_validation(
+                            pipeline=pipeline,
+                            args=args,
+                            accelerator=accelerator,
+                            dataset=dataset["train"],
+                            epoch=epoch,
+                            torch_dtype=weight_dtype,
+                            prompt_embeds=prompt_embeds,
+                            text_ids=text_ids,
+                        )
+
+                        del pipeline
+                        free_memory()
+
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
-
-        if accelerator.is_main_process:
-            if (
-                args.validation_prompt is not None
-                and epoch % args.validation_epochs == 0
-            ):
-                # create pipeline
-                pipeline = Flux2KleinPipeline.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    text_encoder=None,
-                    tokenizer=None,
-                    transformer=unwrap_model(transformer),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-                images = log_validation(
-                    pipeline=pipeline,
-                    args=args,
-                    accelerator=accelerator,
-                    pipeline_args=validation_kwargs,
-                    epoch=epoch,
-                    torch_dtype=weight_dtype,
-                )
-
-                del pipeline
-                free_memory()
 
     # Save the lora layers
     accelerator.wait_for_everyone()
@@ -2090,62 +1589,9 @@ def main(args):
             **_collate_lora_metadata(modules_to_save),
         )
 
-        images = []
-        run_validation = (
-            args.validation_prompt and args.num_validation_images > 0
-        ) or (args.final_validation_prompt)
-        should_run_final_inference = not args.skip_final_inference and run_validation
-        if should_run_final_inference:
-            pipeline = Flux2KleinPipeline.from_pretrained(
-                args.pretrained_model_name_or_path,
-                revision=args.revision,
-                variant=args.variant,
-                torch_dtype=weight_dtype,
-            )
-            # load attention processors
-            pipeline.load_lora_weights(args.output_dir)
-
-            # run inference
-            images = []
-            if args.validation_prompt and args.num_validation_images > 0:
-                images = log_validation(
-                    pipeline=pipeline,
-                    args=args,
-                    accelerator=accelerator,
-                    pipeline_args=validation_kwargs,
-                    epoch=epoch,
-                    is_final_validation=True,
-                    torch_dtype=weight_dtype,
-                )
-            del pipeline
-            free_memory()
-
-        validation_prompt = (
-            args.validation_prompt
-            if args.validation_prompt
-            else args.final_validation_prompt
-        )
-        save_model_card(
-            (
-                (args.hub_model_id or Path(args.output_dir).name)
-                if not args.push_to_hub
-                else repo_id
-            ),
-            images=images,
-            base_model=args.pretrained_model_name_or_path,
-            instance_prompt=args.instance_prompt,
-            validation_prompt=validation_prompt,
-            repo_folder=args.output_dir,
-            fp8_training=args.do_fp8_training,
-        )
-
-        if args.push_to_hub:
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
+        # Final "validation" is just saving the model card to point to the last validation images
+        # Since we log to wandb, we might not need to manually generate images here again.
+        # However, saving the LoRA was the critical part.
 
     accelerator.end_training()
 
