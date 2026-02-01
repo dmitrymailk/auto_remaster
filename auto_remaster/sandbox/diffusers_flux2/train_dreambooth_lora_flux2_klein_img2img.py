@@ -1329,13 +1329,13 @@ def main(args):
             # prompts = batch["prompts"] # No longer available
 
             with accelerator.accumulate(models_to_accumulate):
-                # Always repeat the cached prompt embeddings
+                # Подготовка батча: дублируем эмбеддинги под размер текущего батча
                 # We assume args.train_batch_size is the batch size (or batch["pixel_values"].shape[0])
                 current_batch_size = batch["pixel_values"].shape[0]
                 batch_prompt_embeds = prompt_embeds.repeat(current_batch_size, 1, 1)
                 batch_text_ids = text_ids.repeat(current_batch_size, 1, 1)
 
-                # Convert images to latent space
+                # Кодирование VAE на лету (вместо кэширования), работает с .to(dtype=vae.dtype)
                 # We always encode on the fly as per user request (and removed cache logic)
                 with offload_models(
                     vae, device=accelerator.device, offload=args.offload
@@ -1343,9 +1343,11 @@ def main(args):
                     pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
                     cond_pixel_values = batch["cond_pixel_values"].to(dtype=vae.dtype)
 
+                # VAE Encoder: получаем сжатые латентные представления для таргета и кондишна
                 model_input = vae.encode(pixel_values).latent_dist.mode()
                 cond_model_input = vae.encode(cond_pixel_values).latent_dist.mode()
 
+                # "Патчификация" латентов и нормализация статистиками VAE
                 model_input = Flux2KleinPipeline._patchify_latents(model_input)
                 model_input = (model_input - latents_bn_mean) / latents_bn_std
 
@@ -1354,6 +1356,7 @@ def main(args):
                 )
                 cond_model_input = (cond_model_input - latents_bn_mean) / latents_bn_std
 
+                # Подготовка ID для Rotary Positional Embeddings (RoPE)
                 model_input_ids = Flux2KleinPipeline._prepare_latent_ids(
                     model_input
                 ).to(device=model_input.device)
@@ -1368,12 +1371,16 @@ def main(args):
                     cond_model_input.shape[0], -1, model_input_ids.shape[-1]
                 )
 
-                # Sample noise that we'll add to the latents
+                # Генерируем случайный шум той же размерности, что и вход
                 noise = torch.randn_like(model_input)
                 bsz = model_input.shape[0]
 
-                # Sample a random timestep for each image
+                # Сэмплируем временные шаги t (timesteps) для Flow Matching
                 # for weighting schemes where we sample timesteps non-uniformly
+                # Weighting Scheme (схема взвешивания) нужна для того, чтобы модель не училась на всех уровнях шума одинаково,
+                # а уделяла больше внимания самым важным этапам восстановления изображения (обычно средним уровням шума,
+                # где формируется структура). Она регулирует как частоту выбора определенных t (timestep sampling),
+                # так и вес ошибки loss scaling.
                 u = compute_density_for_timestep_sampling(
                     weighting_scheme=args.weighting_scheme,
                     batch_size=bsz,
@@ -1386,15 +1393,15 @@ def main(args):
                     device=model_input.device
                 )
 
-                # Add noise according to flow matching.
-                # zt = (1 - texp) * x + texp * z1
+                # Flow Matching: смешиваем картинку и шум.
+                # zt = (1 - t) * x + t * noise ("траектория" от данных к шуму)
                 sigmas = get_sigmas(
                     timesteps, n_dim=model_input.ndim, dtype=model_input.dtype
                 )
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
                 # [B, C, H, W] -> [B, H*W, C]
-                # concatenate the model inputs with the cond inputs
+                # Упаковываем 2D латенты в 1D последовательность токенов
                 packed_noisy_model_input = Flux2KleinPipeline._pack_latents(
                     noisy_model_input
                 )
@@ -1404,7 +1411,7 @@ def main(args):
                 orig_input_shape = packed_noisy_model_input.shape
                 orig_input_ids_shape = model_input_ids.shape
 
-                # concatenate the model inputs with the cond inputs
+                # Конкатенация: склеиваем зашумленный вход (target) и условие (condition)
                 packed_noisy_model_input = torch.cat(
                     [packed_noisy_model_input, packed_cond_model_input], dim=1
                 )
@@ -1412,7 +1419,7 @@ def main(args):
                     [model_input_ids, cond_model_input_ids], dim=1
                 )
 
-                # handle guidance
+                # Обработка guidance scale (если используется)
                 if transformer.config.guidance_embeds:
                     guidance = torch.full(
                         [1], args.guidance_scale, device=accelerator.device
@@ -1421,7 +1428,7 @@ def main(args):
                 else:
                     guidance = None
 
-                # Predict the noise residual
+                # Предикт Модели: трансформер предсказывает "скорость" (velocity) v
                 model_pred = transformer(
                     hidden_states=packed_noisy_model_input,  # (B, image_seq_len, C)
                     timestep=timesteps / 1000,
@@ -1431,7 +1438,7 @@ def main(args):
                     img_ids=model_input_ids,  # B, image_seq_len, 4
                     return_dict=False,
                 )[0]
-                # pruning the condition information
+                # Pruning: отрезаем часть выхода, относящуюся к condition (она не нужна для лосса)
                 model_pred = model_pred[:, : orig_input_shape[1], :]
                 model_input_ids = model_input_ids[:, : orig_input_ids_shape[1], :]
 
@@ -1439,16 +1446,17 @@ def main(args):
                     model_pred, model_input_ids
                 )
 
+                # Расчет весов для лосса (weighting scheme)
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
                 weighting = compute_loss_weighting_for_sd3(
                     weighting_scheme=args.weighting_scheme, sigmas=sigmas
                 )
 
-                # flow matching loss
+                # Целевой вектор для Flow Matching: разница (шум - данные)
                 target = noise - model_input
 
-                # Compute regular loss.
+                # MSE Loss: разница между предсказанным вектором и реальным
                 loss = torch.mean(
                     (
                         weighting.float() * (model_pred.float() - target.float()) ** 2
