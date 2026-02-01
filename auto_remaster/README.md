@@ -188,10 +188,14 @@
 - https://github.com/sypsyp97/convnext_perceptual_loss
 
 ### Train Frameworks
+- https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_flux2.md
+- https://github.com/Nerogar/OneTrainer
+- https://github.com/kohya-ss/musubi-tuner
 - https://github.com/bghira/SimpleTuner
-- https://github.com/modelscope/DiffSynth-Studio
+- https://github.com/modelscope/DiffSynth-Studio (простой на расширение но сырой, нет валидации, нет оптимизации под слабое железо типа 5090)
 - https://github.com/tdrussell/diffusion-pipe
 - https://github.com/aigc-apps/VideoX-Fun
+- https://github.com/ostris/ai-toolkit (очень тяжело расширять, если зависло нифига не выключишь, )
 
 
 ### Theory

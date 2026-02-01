@@ -1,0 +1,21 @@
+accelerate launch train_dreambooth_lora_flux2_klein_img2img.py \
+  --pretrained_model_name_or_path=black-forest-labs/FLUX.2-klein-base-4B  \
+  --output_dir="outputs/flux2_i2i" \
+  --dataset_name="kontext-community/relighting" \
+  --image_column="output" --cond_image_column="file_name" --caption_column="instruction" \
+  --do_fp8_training \
+  --cache_latents \
+  --resolution=512 \
+  --train_batch_size=1 \
+  --guidance_scale=1 \
+  --gradient_accumulation_steps=4 \
+  --optimizer="adamw" \
+  --use_8bit_adam \
+  --cache_latents \
+  --learning_rate=1e-4 \
+  --lr_scheduler="constant_with_warmup" \
+  --lr_warmup_steps=200 \
+  --max_train_steps=1000 \
+  --rank=16 \
+  --mixed_precision=bf16 \
+  --seed="0" \
