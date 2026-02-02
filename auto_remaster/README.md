@@ -82,6 +82,8 @@
 - [NeAR: Coupled Neural Asset–Renderer Stack](https://arxiv.org/pdf/2511.18600)
 - [WHAT MATTERS WHEN REPURPOSING DIFFUSIONMODELS FOR GENERAL DENSE PERCEPTION TASKS?](https://arxiv.org/pdf/2403.06090)
 - [Diffusion Knows Transparency: Repurposing Video Diffusion for Transparent Object Depth and Normal Estimation](https://github.com/Daniellli/DKT)
+- https://github.com/Tele-AI/TeleStyle
+- https://github.com/EzioBy/Ditto
 
 ### Best models
 - [SDXL: Improving Latent Diffusion Models for High-Resolution Image Synthesis](https://arxiv.org/pdf/2307.01952)

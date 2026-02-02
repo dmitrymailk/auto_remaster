@@ -374,7 +374,7 @@ def log_validation(
         validation_transform = transforms.Compose(
             [
                 transforms.Resize(
-                    args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+                    args.resolution, interpolation=transforms.InterpolationMode.LANCZOS
                 ),
                 transforms.CenterCrop(args.resolution),
             ]
@@ -398,7 +398,7 @@ def log_validation(
                     # Then we immediately pass it to pipeline? No, we need latents.
                     # We can use `control_image` (which is already valid_transformed PIL)
                     pass
-                    
+
                 # Need to match VAE device/dtype (VAE might be on CPU due to offloading)
                 img_tensor = transforms.ToTensor()(control_image)
                 img_tensor = (img_tensor - 0.5) / 0.5
@@ -406,20 +406,20 @@ def log_validation(
                 # Use strict vae_dtype (float16) and accelerator device (GPU)
                 # pipeline.vae.device might be CPU if offloaded, but forward pass happens on GPU
                 img_tensor = img_tensor.to(device=accelerator.device, dtype=vae_dtype)
-                
+
                 # Encode
                 z_source = pipeline.vae.encode(img_tensor).latent_dist.mode()
-                
+
                 # Generate noise (perform on GPU for speed, usually)
                 # Cast back to torch_dtype (bf16) for structure noise and pipeline
                 z_source = z_source.to(device=accelerator.device, dtype=torch_dtype)
-                
+
                 # Generate noise
                 noise_spatial = generate_structured_noise_batch_vectorized(
                     z_source,
                     cutoff_radius=structural_noise_radius,
                 ).to(dtype=torch_dtype, device=accelerator.device)
-                
+
                 # Patchify latents to match pipeline expectations
                 latents = pipeline._patchify_latents(noise_spatial)
 
@@ -488,15 +488,15 @@ def log_validation(
                 img_tensor = (img_tensor - 0.5) / 0.5
                 img_tensor = img_tensor.unsqueeze(0)
                 img_tensor = img_tensor.to(device=accelerator.device, dtype=vae_dtype)
-                
+
                 z_source = pipeline.vae.encode(img_tensor).latent_dist.mode()
                 z_source = z_source.to(device=accelerator.device, dtype=torch_dtype)
-                
+
                 noise_spatial = generate_structured_noise_batch_vectorized(
                     z_source,
                     cutoff_radius=structural_noise_radius,
                 ).to(dtype=torch_dtype, device=accelerator.device)
-                
+
                 # Patchify latents
                 latents = pipeline._patchify_latents(noise_spatial)
 
@@ -541,7 +541,6 @@ def log_validation(
     free_memory()
 
     return images
-
 
 
 def module_filter_fn(mod: torch.nn.Module, fqn: str):
@@ -1179,7 +1178,9 @@ def main(args):
             config=Float8LinearConfig(pad_inner_dim=True),
         )
 
-    text_encoder.to(**to_kwargs)
+    # Text encoder init on CPU
+    text_encoder.to(dtype=weight_dtype)
+    text_encoder.to("cpu")
     # Initialize a text encoding pipeline and keep it to CPU for now.
     text_encoding_pipeline = Flux2KleinPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1379,32 +1380,6 @@ def main(args):
             eps=args.adam_epsilon,
         )
 
-    if args.optimizer.lower() == "prodigy":
-        try:
-            import prodigyopt
-        except ImportError:
-            raise ImportError(
-                "To use Prodigy, please install the prodigyopt library: `pip install prodigyopt`"
-            )
-
-        optimizer_class = prodigyopt.Prodigy
-
-        if args.learning_rate <= 0.1:
-            logger.warning(
-                "Learning rate is too low. When using prodigy, it's generally better to set learning rate around 1.0"
-            )
-
-        optimizer = optimizer_class(
-            params_to_optimize,
-            betas=(args.adam_beta1, args.adam_beta2),
-            beta3=args.prodigy_beta3,
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-            decouple=args.prodigy_decouple,
-            use_bias_correction=args.prodigy_use_bias_correction,
-            safeguard_warmup=args.prodigy_safeguard_warmup,
-        )
-
     # Dataset and DataLoaders creation:
     dataset = load_dataset(
         args.dataset_name,
@@ -1415,7 +1390,7 @@ def main(args):
     train_transform = transforms.Compose(
         [
             transforms.Resize(
-                args.resolution, interpolation=transforms.InterpolationMode.BILINEAR
+                args.resolution, interpolation=transforms.InterpolationMode.LANCZOS
             ),
             transforms.CenterCrop(args.resolution),
             transforms.ToTensor(),
@@ -1488,11 +1463,23 @@ def main(args):
     args.instance_prompt = "make this image photorealistic"
 
     # We encode the instance prompt once and reuse it.
-    with offload_models(
-        text_encoding_pipeline, device=accelerator.device, offload=args.offload
-    ):
-        instance_prompt_hidden_states, instance_text_ids = compute_text_embeddings(
-            args.instance_prompt, text_encoding_pipeline
+    # Calculate embeddings on CPU to avoid OOM with the Transformer on GPU
+    instance_prompt_hidden_states, instance_text_ids = compute_text_embeddings(
+        args.instance_prompt, text_encoding_pipeline
+    )
+
+    # Move embeddings to accelerator device
+    instance_prompt_hidden_states = instance_prompt_hidden_states.to(accelerator.device)
+    instance_text_ids = instance_text_ids.to(accelerator.device)
+
+    # Save prompt embeddings to disk
+    if accelerator.is_main_process:
+        torch.save(
+            instance_prompt_hidden_states.to("cpu"),
+            os.path.join(args.output_dir, "prompt_embeds.pt"),
+        )
+        torch.save(
+            instance_text_ids.to("cpu"), os.path.join(args.output_dir, "text_ids.pt")
         )
 
     # Validation prompts are redundant as we use the single instance prompt for validation too.
@@ -1500,9 +1487,6 @@ def main(args):
 
     # Delete text encoder to save memory as we only use cached embeddings
     del text_encoding_pipeline
-    if is_fsdp:
-        # If FSDP was initialized (though we are deleting it), ensure cleanup implies no further use
-        pass
 
     free_memory()
 
@@ -1659,8 +1643,10 @@ def main(args):
                 # VAE Encoder: получаем сжатые латентные представления для таргета и кондишна
                 model_input = vae.encode(pixel_values).latent_dist.mode()
                 # Capture spatial latents for structural noise
-                cond_model_input_spatial = vae.encode(cond_pixel_values).latent_dist.mode()
-                
+                cond_model_input_spatial = vae.encode(
+                    cond_pixel_values
+                ).latent_dist.mode()
+
                 # "Патчификация" латентов и нормализация статистиками VAE
                 model_input = Flux2KleinPipeline._patchify_latents(model_input)
                 model_input = (model_input - latents_bn_mean) / latents_bn_std
@@ -1686,22 +1672,14 @@ def main(args):
                 )
 
                 # Генерируем случайный шум той же размерности, что и вход
-                if args.structural_noise_radius is not None and args.structural_noise_radius > 0:
-                    # Generate structural noise using condition latents (spatial)
-                    noise_spatial = generate_structured_noise_batch_vectorized(
-                        cond_model_input_spatial,
-                        cutoff_radius=args.structural_noise_radius,
-                    ).to(dtype=model_input.dtype, device=model_input.device)
-                    
-                    # Patchify structural noise
-                    noise = Flux2KleinPipeline._patchify_latents(noise_spatial)
-                    # Note: Noise should NOT be normalized by BN stats, it should be Gaussian-like.
-                    # generate_structured_noise returns noise with std=1 (by default).
-                    # Standard Flux noise is just Unit Gaussian.
-                    # So we just patchify.
-                else:
-                    noise = torch.randn_like(model_input)
-                
+                noise_spatial = generate_structured_noise_batch_vectorized(
+                    cond_model_input_spatial,
+                    cutoff_radius=args.structural_noise_radius,
+                ).to(dtype=model_input.dtype, device=model_input.device)
+
+                # Patchify structural noise
+                noise = Flux2KleinPipeline._patchify_latents(noise_spatial)
+
                 bsz = model_input.shape[0]
 
                 # Сэмплируем временные шаги t (timesteps) для Flow Matching
