@@ -73,7 +73,234 @@ if is_wandb_available():
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.37.0.dev0")
 
+
 logger = get_logger(__name__)
+
+
+def create_frequency_soft_cutoff_mask(
+    height: int,
+    width: int,
+    cutoff_radius: float,
+    transition_width: float = 5.0,
+    device: torch.device = None,
+) -> torch.Tensor:
+    """
+    Create a smooth frequency cutoff mask for low-pass filtering.
+
+    Args:
+        height: Image height
+        width: Image width
+        cutoff_radius: Frequency cutoff radius (0 = no structure, max_radius = full structure)
+        transition_width: Width of smooth transition (smaller = sharper cutoff)
+        device: Device to create tensor on
+
+    Returns:
+        torch.Tensor: Frequency mask of shape (height, width)
+    """
+    if device is None:
+        device = torch.device("cpu")
+
+    # Create frequency coordinates
+    u = torch.arange(height, device=device)
+    v = torch.arange(width, device=device)
+    u, v = torch.meshgrid(u, v, indexing="ij")
+
+    # Calculate distance from center
+    center_u, center_v = height // 2, width // 2
+    frequency_radius = torch.sqrt((u - center_u) ** 2 + (v - center_v) ** 2)
+
+    # Create smooth transition mask
+    mask = torch.exp(
+        -((frequency_radius - cutoff_radius) ** 2) / (2 * transition_width**2)
+    )
+    mask = torch.where(frequency_radius <= cutoff_radius, torch.ones_like(mask), mask)
+
+    return mask
+
+
+def clip_frequency_magnitude(noise_magnitudes, clip_percentile=0.95):
+    """Clip frequency domain magnitude to prevent large values."""
+
+    # Calculate clipping threshold
+    clip_threshold = torch.quantile(noise_magnitudes, clip_percentile)
+
+    # Clip large values
+    clipped_magnitudes = torch.clamp(noise_magnitudes, max=clip_threshold)
+
+    return clipped_magnitudes
+
+
+def generate_structured_noise_batch_vectorized(
+    image_batch: torch.Tensor,
+    noise_std: float = 1.0,
+    pad_factor: float = 1.5,
+    cutoff_radius: float = None,
+    transition_width: float = 2.0,
+    input_noise: torch.Tensor = None,
+    sampling_method: str = "fft",
+) -> torch.Tensor:
+    """
+    Generate structured noise for a batch of images using frequency soft cutoff.
+    Reduces boundary artifacts by padding images before FFT processing.
+
+    Args:
+        image_batch: Batch of image tensors of shape (B, C, H, W)
+        noise_std: Standard deviation for Gaussian noise
+        pad_factor: Padding factor (1.5 = 50% padding, 2.0 = 100% padding)
+        cutoff_radius: Frequency cutoff radius (None = auto-calculate)
+        transition_width: Width of smooth transition for frequency cutoff
+        input_noise: Optional input noise tensor to use instead of generating new noise.
+        sampling_method: Method to sample noise magnitude ('fft', 'cdf', 'two-gaussian')
+
+    Returns:
+        torch.Tensor: Batch of structured noise tensors of shape (B, C, H, W)
+    """
+    assert sampling_method in ["fft", "cdf", "two-gaussian"]
+    # Ensure tensor is on the correct device
+    batch_size, channels, height, width = image_batch.shape
+    dtype = image_batch.dtype
+    device = image_batch.device
+    image_batch = image_batch.float()
+
+    # Calculate padding size for overlap-add method
+    pad_h = int(height * (pad_factor - 1))
+    pad_h = pad_h // 2 * 2  # make it even
+    pad_w = int(width * (pad_factor - 1))
+    pad_w = pad_w // 2 * 2  # make it even
+
+    # Pad images with reflection to reduce boundary artifacts
+    padded_images = torch.nn.functional.pad(
+        image_batch,
+        (pad_w // 2, pad_w // 2, pad_h // 2, pad_h // 2),
+        mode="reflect",  # Mirror edges for natural transitions
+    )
+
+    # Calculate padded dimensions
+    padded_height = height + pad_h
+    padded_width = width + pad_w
+
+    # Create frequency soft cutoff mask only if cutoff_radius is provided
+    if cutoff_radius is not None:
+        cutoff_radius = min(min(padded_height / 2, padded_width / 2), cutoff_radius)
+        freq_mask = create_frequency_soft_cutoff_mask(
+            padded_height, padded_width, cutoff_radius, transition_width, device
+        )
+    else:
+        # No cutoff - preserve all frequencies (full structure preservation)
+        freq_mask = torch.ones(padded_height, padded_width, device=device)
+
+    # Apply 2D FFT to padded images
+    fft = torch.fft.fft2(padded_images, dim=(-2, -1))
+
+    # Shift zero frequency to center
+    fft_shifted = torch.fft.fftshift(fft, dim=(-2, -1))
+
+    # Extract phase and magnitude for all images
+    image_phases = torch.angle(fft_shifted)
+    image_phases = clip_frequency_magnitude(image_phases)
+    image_magnitudes = torch.abs(fft_shifted)
+
+    if input_noise is not None:
+        # Use provided noise
+        noise_batch = torch.nn.functional.pad(
+            input_noise,
+            (pad_w // 2, pad_w // 2, pad_h // 2, pad_h // 2),
+            mode="reflect",  # Mirror edges for natural transitions
+        )
+        noise_batch = noise_batch.float()
+    else:
+        # Generate Gaussian noise for the padded size
+        noise_batch = torch.randn_like(padded_images)
+
+    # Extract noise magnitude and phase
+    if sampling_method == "fft":
+        # Apply 2D FFT to noise batch
+        noise_fft = torch.fft.fft2(noise_batch, dim=(-2, -1))
+        noise_fft_shifted = torch.fft.fftshift(noise_fft, dim=(-2, -1))
+
+        noise_magnitudes = torch.abs(noise_fft_shifted)
+        noise_phases = torch.angle(noise_fft_shifted)
+    elif sampling_method == "cdf":
+        # The magnitude of FFT of Gaussian noise follows a Rayleigh distribution.
+        # We can sample it directly.
+        # The scale of the Rayleigh distribution is related to the std of the Gaussian noise
+        # and the size of the FFT.
+        # For an N-point FFT of Gaussian noise with variance sigma^2, the variance of
+        # the real and imaginary parts of the FFT coefficients is N*sigma^2.
+        # The scale parameter for the Rayleigh distribution is sqrt(N*sigma^2 / 2).
+        # Here, N = padded_height * padded_width.
+
+        N = padded_height * padded_width
+        rayleigh_scale = (N / 2) ** 0.5
+
+        ## Sample from a standard Rayleigh distribution (scale=1) and then scale it.
+        uu = torch.rand(size=image_magnitudes.shape, device=device)
+        noise_magnitudes = rayleigh_scale * torch.sqrt(-2.0 * torch.log(uu))
+        if input_noise is not None:
+            noise_fft = torch.fft.fft2(noise_batch, dim=(-2, -1))
+            noise_fft_shifted = torch.fft.fftshift(noise_fft, dim=(-2, -1))
+
+            noise_magnitudes = torch.abs(noise_fft_shifted)
+            noise_phases = torch.angle(noise_fft_shifted)
+        else:
+            noise_phases = (
+                torch.rand(size=image_magnitudes.shape, device=device) * 2 * torch.pi
+                - torch.pi
+            )
+    elif sampling_method == "two-gaussian":
+        N = padded_height * padded_width
+        rayleigh_scale = (N / 2) ** 0.5
+        # A standard Rayleigh can be generated from two standard normal distributions.
+        u1 = torch.randn_like(image_magnitudes)
+        u2 = torch.randn_like(image_magnitudes)
+        noise_magnitudes = rayleigh_scale * torch.sqrt(u1**2 + u2**2)
+        if input_noise is not None:
+            noise_fft = torch.fft.fft2(noise_batch, dim=(-2, -1))
+            noise_fft_shifted = torch.fft.fftshift(noise_fft, dim=(-2, -1))
+
+            noise_magnitudes = torch.abs(noise_fft_shifted)
+            noise_phases = torch.angle(noise_fft_shifted)
+        else:
+            noise_phases = (
+                torch.rand(size=image_magnitudes.shape, device=device) * 2 * torch.pi
+                - torch.pi
+            )
+    else:
+        raise ValueError(f"Unknown sampling method: {sampling_method}")
+
+    noise_magnitudes = clip_frequency_magnitude(noise_magnitudes)
+
+    # Scale noise magnitude by standard deviation
+    noise_magnitudes = noise_magnitudes * noise_std
+
+    # Apply frequency soft cutoff to mix phases
+    # Low frequencies (within cutoff) use image phase, high frequencies use noise phase
+    mixed_phases = (
+        freq_mask.unsqueeze(0).unsqueeze(0) * image_phases
+        + (1 - freq_mask.unsqueeze(0).unsqueeze(0)) * noise_phases
+    )
+
+    # Combine magnitude and mixed phase for all images
+    fft_combined = noise_magnitudes * torch.exp(1j * mixed_phases)
+    # Shift zero frequency back to corner
+    fft_unshifted = torch.fft.ifftshift(fft_combined, dim=(-2, -1))
+    # Apply inverse FFT
+    structured_noise_padded = torch.fft.ifft2(fft_unshifted, dim=(-2, -1))
+    # Take real part
+    structured_noise_padded = torch.real(structured_noise_padded)
+
+    clamp_mask = (structured_noise_padded < -5) + (structured_noise_padded > 5)
+    clamp_mask = (clamp_mask > 0).float()
+
+    structured_noise_padded = (
+        structured_noise_padded * (1 - clamp_mask) + noise_batch * clamp_mask
+    )
+
+    # Crop back to original size (remove padding)
+    structured_noise_batch = structured_noise_padded[
+        :, :, pad_h // 2 : pad_h // 2 + height, pad_w // 2 : pad_w // 2 + width
+    ]
+    return structured_noise_batch.to(dtype)
 
 
 def log_validation(
@@ -89,15 +316,23 @@ def log_validation(
 ):
     logger.info("Running validation...")
     pipeline = pipeline.to(dtype=torch_dtype)
+    # Use float16 for VAE to avoid BFloat16/Half mismatches and satisfy 16-bit preference
+    # The error indicated Bias was Half, so we align everything to Half for VAE.
+    vae_dtype = torch.float16
+    pipeline.vae.to(dtype=vae_dtype)
     pipeline.enable_model_cpu_offload()
     pipeline.set_progress_bar_config(disable=True)
 
+    # run inference
     # run inference
     generator = (
         torch.Generator(device=accelerator.device).manual_seed(args.seed)
         if args.seed is not None
         else None
     )
+    # Ensure validation uses the same structural noise logic if enabled
+    structural_noise_radius = getattr(args, "structural_noise_radius", None)
+
     autocast_ctx = (
         torch.autocast(accelerator.device.type)
         if not is_final_validation
@@ -129,6 +364,12 @@ def log_validation(
         # prompt = example[caption_column] # Ignored
         target_image = example[image_column]
 
+        # Convert to RGB to ensure 3 channels
+        if not control_image.mode == "RGB":
+            control_image = control_image.convert("RGB")
+        if not target_image.mode == "RGB":
+            target_image = target_image.convert("RGB")
+
         # Helper validation transform
         validation_transform = transforms.Compose(
             [
@@ -144,10 +385,49 @@ def log_validation(
         target_image = validation_transform(target_image)
 
         with autocast_ctx:
+            # Generate structural noise if required
+            latents = None
+            if structural_noise_radius is not None and structural_noise_radius > 0:
+                # Encode control/source image for structural noise reference
+                # We need to replicate what happens in training: VAE encode -> Structure Noise
+                # We assume pipeline.vae is available
+                with torch.no_grad():
+                    # Transform control image to tensor [-1, 1]
+                    # Note: validation_transform creates PIL, need to convert to tensor
+                    # But wait, validation_transform calls transforms.CenterCrop which returns PIL
+                    # Then we immediately pass it to pipeline? No, we need latents.
+                    # We can use `control_image` (which is already valid_transformed PIL)
+                    pass
+                    
+                # Need to match VAE device/dtype (VAE might be on CPU due to offloading)
+                img_tensor = transforms.ToTensor()(control_image)
+                img_tensor = (img_tensor - 0.5) / 0.5
+                img_tensor = img_tensor.unsqueeze(0)
+                # Use strict vae_dtype (float16) and accelerator device (GPU)
+                # pipeline.vae.device might be CPU if offloaded, but forward pass happens on GPU
+                img_tensor = img_tensor.to(device=accelerator.device, dtype=vae_dtype)
+                
+                # Encode
+                z_source = pipeline.vae.encode(img_tensor).latent_dist.mode()
+                
+                # Generate noise (perform on GPU for speed, usually)
+                # Cast back to torch_dtype (bf16) for structure noise and pipeline
+                z_source = z_source.to(device=accelerator.device, dtype=torch_dtype)
+                
+                # Generate noise
+                noise_spatial = generate_structured_noise_batch_vectorized(
+                    z_source,
+                    cutoff_radius=structural_noise_radius,
+                ).to(dtype=torch_dtype, device=accelerator.device)
+                
+                # Patchify latents to match pipeline expectations
+                latents = pipeline._patchify_latents(noise_spatial)
+
             # We strictly use the pre-computed prompt embeddings
             image = pipeline(
                 prompt_embeds=prompt_embeds,
                 image=control_image,
+                latents=latents,
                 num_inference_steps=30,  # Use reasonable steps for validation
                 generator=generator,
                 guidance_scale=args.guidance_scale,
@@ -190,14 +470,40 @@ def log_validation(
         control_image = example[args.cond_image_column]
         target_image = example[args.image_column]
 
+        # Convert to RGB to ensure 3 channels
+        if not control_image.mode == "RGB":
+            control_image = control_image.convert("RGB")
+        if not target_image.mode == "RGB":
+            target_image = target_image.convert("RGB")
+
         # Reuse same transform
         control_image = validation_transform(control_image)
         target_image = validation_transform(target_image)
 
         with autocast_ctx:
+            # Generate structural noise if required (Same logic as above)
+            latents = None
+            if structural_noise_radius is not None and structural_noise_radius > 0:
+                img_tensor = transforms.ToTensor()(control_image)
+                img_tensor = (img_tensor - 0.5) / 0.5
+                img_tensor = img_tensor.unsqueeze(0)
+                img_tensor = img_tensor.to(device=accelerator.device, dtype=vae_dtype)
+                
+                z_source = pipeline.vae.encode(img_tensor).latent_dist.mode()
+                z_source = z_source.to(device=accelerator.device, dtype=torch_dtype)
+                
+                noise_spatial = generate_structured_noise_batch_vectorized(
+                    z_source,
+                    cutoff_radius=structural_noise_radius,
+                ).to(dtype=torch_dtype, device=accelerator.device)
+                
+                # Patchify latents
+                latents = pipeline._patchify_latents(noise_spatial)
+
             image = pipeline(
                 prompt_embeds=prompt_embeds,
                 image=control_image,
+                latents=latents,
                 num_inference_steps=30,
                 generator=generator,
                 guidance_scale=args.guidance_scale,
@@ -235,6 +541,7 @@ def log_validation(
     free_memory()
 
     return images
+
 
 
 def module_filter_fn(mod: torch.nn.Module, fqn: str):
@@ -318,6 +625,12 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help="Column in the dataset containing the condition image. Must be specified when performing I2I fine-tuning",
+    )
+    parser.add_argument(
+        "--structural_noise_radius",
+        type=float,
+        default=None,
+        help="Radius for structural noise soft cutoff. If not set, standard Gaussian noise is used.",
     )
 
     parser.add_argument(
@@ -1172,7 +1485,7 @@ def main(args):
 
     # Force single prompt logic
     # Hardcoded prompt as per user request
-    args.instance_prompt = "make this image photorealistic NFS_2008"
+    args.instance_prompt = "make this image photorealistic"
 
     # We encode the instance prompt once and reuse it.
     with offload_models(
@@ -1345,14 +1658,15 @@ def main(args):
 
                 # VAE Encoder: получаем сжатые латентные представления для таргета и кондишна
                 model_input = vae.encode(pixel_values).latent_dist.mode()
-                cond_model_input = vae.encode(cond_pixel_values).latent_dist.mode()
-
+                # Capture spatial latents for structural noise
+                cond_model_input_spatial = vae.encode(cond_pixel_values).latent_dist.mode()
+                
                 # "Патчификация" латентов и нормализация статистиками VAE
                 model_input = Flux2KleinPipeline._patchify_latents(model_input)
                 model_input = (model_input - latents_bn_mean) / latents_bn_std
 
                 cond_model_input = Flux2KleinPipeline._patchify_latents(
-                    cond_model_input
+                    cond_model_input_spatial
                 )
                 cond_model_input = (cond_model_input - latents_bn_mean) / latents_bn_std
 
@@ -1372,7 +1686,22 @@ def main(args):
                 )
 
                 # Генерируем случайный шум той же размерности, что и вход
-                noise = torch.randn_like(model_input)
+                if args.structural_noise_radius is not None and args.structural_noise_radius > 0:
+                    # Generate structural noise using condition latents (spatial)
+                    noise_spatial = generate_structured_noise_batch_vectorized(
+                        cond_model_input_spatial,
+                        cutoff_radius=args.structural_noise_radius,
+                    ).to(dtype=model_input.dtype, device=model_input.device)
+                    
+                    # Patchify structural noise
+                    noise = Flux2KleinPipeline._patchify_latents(noise_spatial)
+                    # Note: Noise should NOT be normalized by BN stats, it should be Gaussian-like.
+                    # generate_structured_noise returns noise with std=1 (by default).
+                    # Standard Flux noise is just Unit Gaussian.
+                    # So we just patchify.
+                else:
+                    noise = torch.randn_like(model_input)
+                
                 bsz = model_input.shape[0]
 
                 # Сэмплируем временные шаги t (timesteps) для Flow Matching
