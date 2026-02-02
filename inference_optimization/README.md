@@ -1,5 +1,4 @@
 - https://github.com/microsoft/onnxruntime/tree/main/onnxruntime/python/tools/transformers/models/stable_diffusion
-- https://github.com/gnobitab/InstaFlow?tab=readme-ov-file
 - https://blog.cerebrium.ai/improve-stable-diffusion-inference-by-50-with-tensorrt-or-aitemplate-429aa95b1709
 - https://github.com/facebookincubator/AITemplate/tree/main/examples/05_stable_diffusion
 - https://github.com/leejet/stable-diffusion.cpp
