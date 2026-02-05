@@ -44,12 +44,26 @@ bool ScreenCapture::AcquireFrame(ComPtr<ID3D11Texture2D>& captured_texture, UINT
     }
     
     if (FAILED(hr)) {
-        // Handle device lost or other errors? For now just throw/log via macro
-        // But invalid call can happen if we didn't release previous frame?
         if (hr == DXGI_ERROR_ACCESS_LOST) {
-            // Re-initialization needed usually, throw for now to crash and restart or handle in main
-             std::cerr << "DXGI Access Lost. Re-initialization required." << std::endl;
+            // Access Lost (e.g., resolution change, fullscreen exclusive switch, alt-tab)
+            // We need to release the current duplication interface and re-create it.
+            std::cerr << "[ScreenCapture] DXGI Access Lost (0x887a0026). Re-initializing..." << std::endl;
+            
+            // Release current
+            duplication_.Reset();
+             
+            // Wait a moment for mode switch to settle (optional but recommended)
+            Sleep(100);
+
+            // Re-initialize (creates new DuplicateOutput)
+            // Note: Initialize() throws on failure, which will be caught by main loop if persistent.
+            Initialize(); 
+            
+            // Return false so we skip processing this frame and retry next loop
+            return false;
         }
+        
+        // Use macro for other fatal errors
         DX_CHECK(hr);
     }
     
