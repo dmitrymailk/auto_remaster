@@ -71,8 +71,8 @@ int main() {
         int HEIGHT = dm.dmPelsHeight;
         std::cout << "Screen Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
-        // 1. Create Window (Client area 512x512 initially)
-        CreateNativeWindow(GetModuleHandle(NULL), 512, 512);
+        // 1. Create Window (Client area MODEL_SIZE x MODEL_SIZE initially)
+        CreateNativeWindow(GetModuleHandle(NULL), MODEL_SIZE, MODEL_SIZE);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
@@ -130,10 +130,10 @@ int main() {
         ComPtr<ID3D11Texture2D> d3d_input_texture;
         DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
 
-        // Output Texture (Fixed 512x512) - for Inference Output
+        // Output Texture (Fixed MODEL_SIZE x MODEL_SIZE) - for Inference Output
         D3D11_TEXTURE2D_DESC outputDesc = inputDesc;
-        outputDesc.Width = 512;
-        outputDesc.Height = 512;
+        outputDesc.Width = MODEL_SIZE;
+        outputDesc.Height = MODEL_SIZE;
         
         ComPtr<ID3D11Texture2D> d3d_output_texture;
         DX_CHECK(device->CreateTexture2D(&outputDesc, NULL, &d3d_output_texture));
@@ -143,10 +143,10 @@ int main() {
         cudaGraphicsResource* cuda_tex_out = register_d3d11_resource(d3d_output_texture.Get());
         if (!cuda_tex_in || !cuda_tex_out) throw std::runtime_error("Failed to register textures with CUDA");
 
-        // 6. Allocate Tensor Memory (512x512)
+        // 6. Allocate Tensor Memory (MODEL_SIZE x MODEL_SIZE)
         // Format: NCHW FP16 (2 bytes per element)
         void *d_input, *d_output;
-        size_t tensor_elements = 3 * 512 * 512;
+        size_t tensor_elements = 3 * MODEL_SIZE * MODEL_SIZE;
         size_t tensor_bytes = tensor_elements * 2; 
         
         CUDA_CHECK(cudaMalloc(&d_input, tensor_bytes));
@@ -224,14 +224,14 @@ int main() {
                     launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
                     
                     if (save_requested) {
-                        launch_debug_tensor_dump(d_input, d_debug_img, 512, 512, stream);
+                        launch_debug_tensor_dump(d_input, d_debug_img, MODEL_SIZE, MODEL_SIZE, stream);
                         CUDA_CHECK(cudaStreamSynchronize(stream));
                         
-                        std::vector<unsigned char> h_debug(512 * 512 * 3);
+                        std::vector<unsigned char> h_debug(MODEL_SIZE * MODEL_SIZE * 3);
                         CUDA_CHECK(cudaMemcpy(h_debug.data(), d_debug_img, debug_size, cudaMemcpyDeviceToHost));
                         
                         std::ofstream ppm("debug_input.ppm", std::ios::binary);
-                        ppm << "P6\n512 512\n255\n";
+                        ppm << "P6\n" << MODEL_SIZE << " " << MODEL_SIZE << "\n255\n";
                         ppm.write((char*)h_debug.data(), h_debug.size());
                         ppm.close();
                         std::cout << "Saved debug_input.ppm!" << std::endl;
@@ -254,8 +254,8 @@ int main() {
                     cudaSurfaceObject_t surfObj = 0;
                     CUDA_CHECK(cudaCreateSurfaceObject(&surfObj, &surfResDesc));
                     
-                    // Always render to 512x512 fixed output
-                    launch_postprocess_kernel(d_output, surfObj, 512, 512, stream);
+                    // Always render to MODEL_SIZE x MODEL_SIZE fixed output
+                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, stream);
                     
                     CUDA_CHECK(cudaStreamSynchronize(stream)); // Finish writing to surface logic
                     CUDA_CHECK(cudaDestroySurfaceObject(surfObj));
@@ -273,13 +273,13 @@ int main() {
                     context->ClearRenderTargetView(rtv.Get(), black);
                     
                     // Calculate Center Offset
-                    int tgt_x = (win_w - 512) / 2;
-                    int tgt_y = (win_h - 512) / 2;
+                    int tgt_x = (win_w - MODEL_SIZE) / 2;
+                    int tgt_y = (win_h - MODEL_SIZE) / 2;
                     
-                    // Clip if window is smaller than 512
+                    // Clip if window is smaller than MODEL_SIZE
                     int src_x = 0, src_y = 0;
                     int dst_x = tgt_x, dst_y = tgt_y;
-                    int copy_w = 512, copy_h = 512;
+                    int copy_w = MODEL_SIZE, copy_h = MODEL_SIZE;
                     
                     if (tgt_x < 0) { src_x = -tgt_x; dst_x = 0; copy_w = win_w; }
                     if (tgt_y < 0) { src_y = -tgt_y; dst_y = 0; copy_h = win_h; }

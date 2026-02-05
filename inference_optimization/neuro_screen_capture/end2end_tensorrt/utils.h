@@ -12,7 +12,7 @@
 using Microsoft::WRL::ComPtr;
 
 // Helper macros for error checking
-#define MODEL_SIZE 512
+#include "config.h"
 
 #define DX_CHECK(hr) \
     if (FAILED(hr)) { \
