@@ -2,28 +2,19 @@
 #include <vector>
 #include <chrono>
 #include <fstream>
+#include <algorithm>
 
 #include "utils.h"
 #include "capture_dxgi.h"
 #include "pipeline.h"
 #include "cuda_utils.h"
-
-// cuda_interop.h was in previous but we moved kernel wrappers to cuda_utils.h
-// We still need registration functions. 
-// Ah, I missed copying `register_d3d11_resource` etc implementation.
-// They were in `cuda_interop.cu` in the original.
-// I should add them to `cuda_utils.cu` or separate file. 
-// I'll add them to `cuda_utils.cu` and declarations to `cuda_utils.h` to avoid another file.
-// Or I can just write them inline here if simple? No, reuse or clean code.
-// I'll update `cuda_utils` after `main` or correct it now?
-// I'll write `main` assuming they exist in `cuda_utils.h`. I will update `cuda_utils` next.
+#include <cuda_d3d11_interop.h>
 
 // Forward decls for interop (will be in header)
 cudaGraphicsResource* register_d3d11_resource(ID3D11Texture2D* texture);
 void unregister_d3d11_resource(cudaGraphicsResource* resource);
 cudaArray_t map_d3d11_resource(cudaGraphicsResource* resource);
 void unmap_d3d11_resource(cudaGraphicsResource* resource);
-
 
 // Window dimensions (initial)
 HWND g_hwnd = nullptr;
@@ -50,9 +41,14 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
 
     RegisterClass(&wc);
 
+    // Adjust window size to client area
+    RECT rect = { 0, 0, width, height };
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+
     g_hwnd = CreateWindowEx(
         0, CLASS_NAME, "Neuro Screen Capture (TensorRT VAE)",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 
+        rect.right - rect.left, rect.bottom - rect.top,
         NULL, NULL, hInstance, NULL
     );
 
@@ -75,14 +71,14 @@ int main() {
         int HEIGHT = dm.dmPelsHeight;
         std::cout << "Screen Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
-        // 1. Create Window
-        CreateNativeWindow(GetModuleHandle(NULL), WIDTH, HEIGHT);
+        // 1. Create Window (Client area 512x512 initially)
+        CreateNativeWindow(GetModuleHandle(NULL), 512, 512);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
         scd.BufferCount = 2;
-        scd.BufferDesc.Width = WIDTH;
-        scd.BufferDesc.Height = HEIGHT;
+        scd.BufferDesc.Width = 0; // Use window size
+        scd.BufferDesc.Height = 0;
         scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         scd.BufferDesc.RefreshRate.Numerator = 60;
         scd.BufferDesc.RefreshRate.Denominator = 1;
@@ -95,8 +91,7 @@ int main() {
 
         ComPtr<ID3D11Device> device;
         ComPtr<ID3D11DeviceContext> context;
-        ComPtr<IDXGISwapChain> swap_chain; // IDXGISwapChain1? 
-        // Using standard swapchain for simplicity
+        ComPtr<IDXGISwapChain> swap_chain; 
         
         UINT createDeviceFlags = 0;
         #ifdef _DEBUG
@@ -114,41 +109,45 @@ int main() {
         capture.Initialize();
 
         // 4. TensorRT Pipeline
-        // Hardcoded paths for now - adjust as needed
-        // Assuming running from build directory, and models in a known relative path
-        // Or simply absolute paths if known.
-        // Let's assume adjacent to executable or CWD.
         std::string enc_path = "vae_encoder.plan";
         std::string dec_path = "vae_decoder.plan";
         
         TensorRTPipeline pipeline;
         pipeline.LoadEngines(enc_path, dec_path);
 
-        // 5. Shared Texture (Backbuffer target for CUDA)
-        D3D11_TEXTURE2D_DESC sharedTexDesc = {0};
-        sharedTexDesc.Width = WIDTH;
-        sharedTexDesc.Height = HEIGHT;
-        sharedTexDesc.MipLevels = 1;
-        sharedTexDesc.ArraySize = 1;
-        sharedTexDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        sharedTexDesc.SampleDesc.Count = 1;
-        sharedTexDesc.Usage = D3D11_USAGE_DEFAULT;
-        sharedTexDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; 
+        // 5. Textures
+        // Input Texture (Screen Resolution) - for Capture Copy
+        D3D11_TEXTURE2D_DESC inputDesc = {0};
+        inputDesc.Width = WIDTH;
+        inputDesc.Height = HEIGHT;
+        inputDesc.MipLevels = 1;
+        inputDesc.ArraySize = 1;
+        inputDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        inputDesc.SampleDesc.Count = 1;
+        inputDesc.Usage = D3D11_USAGE_DEFAULT;
+        inputDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET; 
         
-        ComPtr<ID3D11Texture2D> shared_texture;
-        DX_CHECK(device->CreateTexture2D(&sharedTexDesc, NULL, &shared_texture));
+        ComPtr<ID3D11Texture2D> d3d_input_texture;
+        DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
+
+        // Output Texture (Fixed 512x512) - for Inference Output
+        D3D11_TEXTURE2D_DESC outputDesc = inputDesc;
+        outputDesc.Width = 512;
+        outputDesc.Height = 512;
+        
+        ComPtr<ID3D11Texture2D> d3d_output_texture;
+        DX_CHECK(device->CreateTexture2D(&outputDesc, NULL, &d3d_output_texture));
 
         // Register with CUDA
-        cudaGraphicsResource* cuda_res = register_d3d11_resource(shared_texture.Get());
-        if (!cuda_res) throw std::runtime_error("Failed to register shared texture with CUDA");
+        cudaGraphicsResource* cuda_tex_in = register_d3d11_resource(d3d_input_texture.Get());
+        cudaGraphicsResource* cuda_tex_out = register_d3d11_resource(d3d_output_texture.Get());
+        if (!cuda_tex_in || !cuda_tex_out) throw std::runtime_error("Failed to register textures with CUDA");
 
         // 6. Allocate Tensor Memory (512x512)
         // Format: NCHW FP16 (2 bytes per element)
-        // Engine expects FP16, so we must provide FP16 buffers.
-        
         void *d_input, *d_output;
         size_t tensor_elements = 3 * 512 * 512;
-        size_t tensor_bytes = tensor_elements * 2; // 2 bytes for half
+        size_t tensor_bytes = tensor_elements * 2; 
         
         CUDA_CHECK(cudaMalloc(&d_input, tensor_bytes));
         CUDA_CHECK(cudaMalloc(&d_output, tensor_bytes));
@@ -177,130 +176,123 @@ int main() {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             } else {
+                RECT clientRect;
+                GetClientRect(g_hwnd, &clientRect);
+                int win_w = clientRect.right - clientRect.left;
+                int win_h = clientRect.bottom - clientRect.top;
+                
+                // Ensure swapchain matches window size
+                static int prev_win_w = 0;
+                static int prev_win_h = 0;
+                
+                if (win_w != prev_win_w || win_h != prev_win_h) {
+                    if (win_w > 0 && win_h > 0) {
+                        context->OMSetRenderTargets(0, 0, 0);
+                        swap_chain->ResizeBuffers(0, win_w, win_h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
+                        prev_win_w = win_w;
+                        prev_win_h = win_h;
+                    }
+                }
+
                 ComPtr<ID3D11Texture2D> current_frame;
                 if (capture.AcquireFrame(current_frame, 10)) {
                     
-                    // Copy to Shared Texture (Or map directly? Map directly is better if possible)
-                    // If we map 'current_frame', it must be created with D3D11_BIND_SHADER_RESOURCE? 
-                    // Capture texture usually isn't. So Copy is needed.
-                    // Copy to 'shared_texture' first? 
-                    // Wait, 'shared_texture' is our Output target.
-                    // We need an Input staging texture? 
-                    // Actually, we can reuse 'shared_texture' as Input staging if we want, 
-                    // but we overwrite it with Output later.
-                    // If Preprocess finishes before Postprocess starts, safe.
-                    // Let's use 'shared_texture' for both? 
-                    // 1. Copy Capture -> Shared.
-                    // 2. Map Shared (Read). Preprocess -> TensorIn. Unmap.
-                    // 3. Infer.
-                    // 4. Map Shared (Write). Postprocess TensorOut -> Shared. Unmap.
-                    // 5. Present (Copy Shared -> Backbuffer).
-                    // Yes, valid reuse.
+                    // 1. Copy Capture -> Input Texture (Screen Size)
                     
-                    // CopySubresourceRegion to handle resolution mismatch if any
-                    D3D11_TEXTURE2D_DESC desc;
-                    current_frame->GetDesc(&desc);
-                    
-                    D3D11_BOX sourceRegion;
-                    sourceRegion.left = 0;
-                    sourceRegion.right = std::min<UINT>(desc.Width, WIDTH);
-                    sourceRegion.top = 0;
-                    sourceRegion.bottom = std::min<UINT>(desc.Height, HEIGHT);
-                    sourceRegion.front = 0;
-                    sourceRegion.back = 1;
-                    
-                    context->CopySubresourceRegion(shared_texture.Get(), 0, 0, 0, 0, current_frame.Get(), 0, &sourceRegion);
-                    capture.ReleaseFrame(); // Release early to unblock capture
+                    // Simple full copy as sizes match (Screen Resolution)
+                    context->CopyResource(d3d_input_texture.Get(), current_frame.Get());
+                    capture.ReleaseFrame();
 
-                    // CUDA Map
-                    cudaArray_t mapped_array = map_d3d11_resource(cuda_res);
+                    // 2. Preprocess (Input Texture -> Tensor)
+                    // Map Input
+                    cudaArray_t arr_in = map_d3d11_resource(cuda_tex_in);
                     
-                    // Create Texture Object (Read)
                     cudaResourceDesc resDesc = {};
                     resDesc.resType = cudaResourceTypeArray;
-                    resDesc.res.array.array = mapped_array;
+                    resDesc.res.array.array = arr_in;
                     
                     cudaTextureDesc texDesc = {};
                     texDesc.addressMode[0] = cudaAddressModeClamp;
                     texDesc.addressMode[1] = cudaAddressModeClamp;
-                    texDesc.filterMode = cudaFilterModeLinear; // Better quality for resizing
+                    texDesc.filterMode = cudaFilterModeLinear;
                     texDesc.readMode = cudaReadModeNormalizedFloat;
-                    texDesc.normalizedCoords = 0; // Use pixel coords
+                    texDesc.normalizedCoords = 0;
                     
                     cudaTextureObject_t texObj = 0;
                     CUDA_CHECK(cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL));
                     
-                    // Create Surface Object (Write) - for later
-                    // Be careful creating surface on same array while reading as texture?
-                    // Safe if read/write hazards managed. We read then write different pixels? 
-                    // No, we write different pass.
-                    // Preprocess kernel reads.
-                    
-                    // 1. Preprocess
                     launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
                     
                     if (save_requested) {
                         launch_debug_tensor_dump(d_input, d_debug_img, 512, 512, stream);
-                        CUDA_CHECK(cudaStreamSynchronize(stream)); // Wait for dump
+                        CUDA_CHECK(cudaStreamSynchronize(stream));
                         
                         std::vector<unsigned char> h_debug(512 * 512 * 3);
                         CUDA_CHECK(cudaMemcpy(h_debug.data(), d_debug_img, debug_size, cudaMemcpyDeviceToHost));
                         
-                        // Save PPM
                         std::ofstream ppm("debug_input.ppm", std::ios::binary);
                         ppm << "P6\n512 512\n255\n";
                         ppm.write((char*)h_debug.data(), h_debug.size());
                         ppm.close();
-                        
                         std::cout << "Saved debug_input.ppm!" << std::endl;
                         save_requested = false;
                     }
 
-                    CUDA_CHECK(cudaDestroyTextureObject(texObj)); // Destroy after launch (async?) 
-                    
-                    // 2. Inference
+                    CUDA_CHECK(cudaDestroyTextureObject(texObj));
+                    unmap_d3d11_resource(cuda_tex_in); // Unmap Input immediately
+
+                    // 3. Inference
                     pipeline.Inference(stream, d_input, d_output);
                     
-                    // 3. Postprocess
+                    // 4. Postprocess (Tensor -> Output Texture 512x512)
+                    cudaArray_t arr_out = map_d3d11_resource(cuda_tex_out);
+                    
                     cudaResourceDesc surfResDesc = {};
                     surfResDesc.resType = cudaResourceTypeArray;
-                    surfResDesc.res.array.array = mapped_array;
+                    surfResDesc.res.array.array = arr_out;
                     
                     cudaSurfaceObject_t surfObj = 0;
                     CUDA_CHECK(cudaCreateSurfaceObject(&surfObj, &surfResDesc));
                     
-                    launch_postprocess_kernel(d_output, surfObj, WIDTH, HEIGHT, stream);
+                    // Always render to 512x512 fixed output
+                    launch_postprocess_kernel(d_output, surfObj, 512, 512, stream);
                     
-                    // Destroy objects
-                    // We need to wait for stream before destroying objects? 
-                    // documentation says "The texture object is defined by... The state is captured... except for the resource..."
-                    // "The resource... must not be freed...". mapped_array is valid until unmap.
-                    // TextureObject handle itself? 
-                    // "cudaDestroyTextureObject() ... destroys the texture object."
-                    // If specific hardware state is tied, it might need to wait.
-                    // To be safe, verify. But usually destruction is host-side handle release.
-                    // Let's defer destruction or Sync.
-                    // Syncing every frame is bad for pipelining but okay for latency-sensitive loop?
-                    // Actually, let's just destroy at end.
-                    
-                    // Unmap
-                    // Unmap implies synchronization for graphics? 
-                    // "Unmap... implicitly synchronizes...?" No.
-                    // "Subsequent usage by D3D... will see..."
-                    // We must ensure CUDA is done before Unmap? 
-                    // Usually yes, or use semaphores.
-                    // Simple way: cudaStreamSynchronize(stream).
-                    CUDA_CHECK(cudaStreamSynchronize(stream));
-                    
-                    CUDA_CHECK(cudaDestroyTextureObject(texObj));
+                    CUDA_CHECK(cudaStreamSynchronize(stream)); // Finish writing to surface logic
                     CUDA_CHECK(cudaDestroySurfaceObject(surfObj));
-                    
-                    unmap_d3d11_resource(cuda_res);
+                    unmap_d3d11_resource(cuda_tex_out);
 
-                    // Present
+                    // 5. Present (Copy Output Texture -> Backbuffer Center)
                     ComPtr<ID3D11Texture2D> back_buffer;
                     DX_CHECK(swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), &back_buffer));
-                    context->CopyResource(back_buffer.Get(), shared_texture.Get());
+                    
+                    ComPtr<ID3D11RenderTargetView> rtv;
+                    DX_CHECK(device->CreateRenderTargetView(back_buffer.Get(), NULL, &rtv));
+                    
+                    // Clear Background (Black)
+                    float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
+                    context->ClearRenderTargetView(rtv.Get(), black);
+                    
+                    // Calculate Center Offset
+                    int tgt_x = (win_w - 512) / 2;
+                    int tgt_y = (win_h - 512) / 2;
+                    
+                    // Clip if window is smaller than 512
+                    int src_x = 0, src_y = 0;
+                    int dst_x = tgt_x, dst_y = tgt_y;
+                    int copy_w = 512, copy_h = 512;
+                    
+                    if (tgt_x < 0) { src_x = -tgt_x; dst_x = 0; copy_w = win_w; }
+                    if (tgt_y < 0) { src_y = -tgt_y; dst_y = 0; copy_h = win_h; }
+                    
+                    D3D11_BOX srcBox;
+                    srcBox.left = src_x;
+                    srcBox.top = src_y;
+                    srcBox.front = 0;
+                    srcBox.right = src_x + copy_w;
+                    srcBox.bottom = src_y + copy_h;
+                    srcBox.back = 1;
+
+                    context->CopySubresourceRegion(back_buffer.Get(), 0, dst_x, dst_y, 0, d3d_output_texture.Get(), 0, &srcBox);
                     
                     DX_CHECK(swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
                     
@@ -321,7 +313,9 @@ int main() {
         cudaFree(d_input);
         cudaFree(d_output);
         cudaFree(d_debug_img);
-        unregister_d3d11_resource(cuda_res);
+        
+        if (cuda_tex_in) unregister_d3d11_resource(cuda_tex_in);
+        if (cuda_tex_out) unregister_d3d11_resource(cuda_tex_out);
         
     } catch (const std::exception& e) {
         MessageBox(NULL, e.what(), "Error", MB_OK | MB_ICONERROR);
@@ -329,3 +323,4 @@ int main() {
     }
     return 0;
 }
+

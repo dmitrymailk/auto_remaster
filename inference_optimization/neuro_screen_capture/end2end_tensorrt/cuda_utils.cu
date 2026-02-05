@@ -109,12 +109,7 @@ __global__ void postprocess_kernel(const __half* in_tensor, cudaSurfaceObject_t 
             int idx11 = y1 * MODEL_SIZE + x1;
             int area = MODEL_SIZE * MODEL_SIZE;
             
-            auto get_channel = [&](int val_idx) {
-                float v00 = __half2float(in_tensor[val_idx]);
-                float v10 = __half2float(in_tensor[idx10 + (val_idx - idx00)]); // Offset trick? No, idx is absolute.
-                // Just use full arithmetic
-                return 0.0f; 
-            };
+
             
             // Read R
             float r00 = __half2float(in_tensor[idx00]);
