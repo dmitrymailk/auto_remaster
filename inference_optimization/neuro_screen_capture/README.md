@@ -1,0 +1,1 @@
+- https://download.pytorch.org/libtorch/cu128/libtorch-win-shared-with-deps-2.9.1%2Bcu128.zip

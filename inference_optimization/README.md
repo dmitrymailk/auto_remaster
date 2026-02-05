@@ -37,4 +37,10 @@ pip install -r inference_optimization\requirements_win.txt
 - [A Library to Quantize and Compress Deep Learning Models for Optimized Inference on Native Windows RTX GPUs](https://github.com/NVIDIA/Model-Optimizer/tree/main/examples/windows)
 - [AI Model Optimization Toolkit for the ONNX Runtime](https://github.com/microsoft/Olive)
 - [This demo application ("demoDiffusion") showcases the acceleration of Stable Diffusion and ControlNet pipeline using TensorRT.](https://github.com/NVIDIA/TensorRT/tree/main/demo/Diffusion)
-- 
+- [AI Model Efficiency Toolkit (AIMET)](https://github.com/quic/aimet)
+- [AI Model Efficiency Toolkit Model Optimization for Snapdragon Devices](https://docs.qualcomm.com/doc/80-64748-1/topic/model_updates.html)
+
+### Screen capture
+- [How to render Direct3D scene to texture, process it with CUDA and render result to screen?](https://stackoverflow.com/questions/77237723/how-to-render-direct3d-scene-to-texture-process-it-with-cuda-and-render-result)
+- [Screen capture sample, clarified](https://windowsasusual.blogspot.com/2020/12/screen-capture-sample-clarified-few.html)
+- [DXcam A Python high-performance screen capture library for Windows using Desktop Duplication API](https://github.com/ra1nty/DXcam)
