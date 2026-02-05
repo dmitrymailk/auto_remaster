@@ -22,8 +22,11 @@ public:
 
     void LoadEngines(const std::string& enc_path, const std::string& dec_path);
     
-    // Run VAE: Image (512x512) -> Hidden Latents -> Image (512x512)
+    // Run VAE: Image -> Hidden Latents -> [UNet] -> Image
     void Inference(cudaStream_t stream, void* d_input_image, void* d_output_image);
+
+    // Optional: Load UNet
+    void LoadUNet(const std::string& unet_path);
 
 private:
     struct Model {
@@ -41,12 +44,11 @@ private:
 
     Model encoder_;
     Model decoder_;
+    Model unet_;
 
-    // Internal Buffer for Latents
-    // VAE Tiny: 512x512 image -> 64x64 latent? Or 32x32? 
-    // Python script said: 128 channels, 32x32 for standard VAE?
-    // "Tiny AutoEncoder" might be different.
-    // We will query engine for size.
+    // Internal Buffers
     void* d_latents_ = nullptr;
+    void* d_latents_2_ = nullptr; // Ping-pong buffer for UNet
+    void* d_timestep_ = nullptr; // For UNet timestep input
     size_t latents_size_ = 0;
 };

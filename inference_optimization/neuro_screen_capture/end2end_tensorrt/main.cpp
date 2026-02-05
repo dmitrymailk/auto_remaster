@@ -111,11 +111,14 @@ int main() {
         // 4. TensorRT Pipeline
         std::string enc_path = "vae_encoder.plan";
         std::string dec_path = "vae_decoder.plan";
-        
+        // 5. Load TensorRT Models
         TensorRTPipeline pipeline;
-        pipeline.LoadEngines(enc_path, dec_path);
+        pipeline.LoadEngines("vae_encoder.plan", "vae_decoder.plan");
+        #if ENABLE_UNET
+        pipeline.LoadUNet("unet.plan");
+        #endif
 
-        // 5. Textures
+        // 6. Textures
         // Input Texture (Screen Resolution) - for Capture Copy
         D3D11_TEXTURE2D_DESC inputDesc = {0};
         inputDesc.Width = WIDTH;
