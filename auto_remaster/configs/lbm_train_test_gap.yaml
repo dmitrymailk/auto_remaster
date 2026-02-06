@@ -12,7 +12,7 @@ dataset_config: null
 seed: 2025
 
 # Output configuration
-output_dir: checkpoints/auto_remaster/lbm_train_test_gap
+output_dir: checkpoints/auto_remaster/lbm_train_test_gap_tiny
 logging_dir: logs
 
 # Training optimization parameters

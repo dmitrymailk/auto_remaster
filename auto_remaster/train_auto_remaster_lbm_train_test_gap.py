@@ -37,6 +37,7 @@ from diffusers import (
     AutoencoderTiny,
     UNet2DModel,
     FlowMatchEulerDiscreteScheduler,
+    AutoModel,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
@@ -109,14 +110,17 @@ class DiffusionTrainingArguments:
 
 
 unet2d_config = {
-    "sample_size": 64,
+    # "sample_size": 64,
+    "sample_size": 32,
     # "in_channels": 4,
     # "in_channels": 16,
     # "in_channels": 32,
-    "in_channels": 32 * 2,
+    # "in_channels": 32 * 2,
+    "in_channels": 128 * 2,
     # "out_channels": 4,
     # "out_channels": 16,
-    "out_channels": 32,
+    # "out_channels": 32,
+    "out_channels": 128,
     "center_input_sample": False,
     "time_embedding_type": "positional",
     "freq_shift": 0,
@@ -162,18 +166,19 @@ def log_validation(
     noise_scheduler = FlowMatchEulerDiscreteScheduler()
 
     # 1. Загрузка VAE (Tiny Autoencoder для скорости и экономии памяти)
-    # vae_val = AutoencoderTiny.from_pretrained(
-    #     "madebyollin/taesd",
-    #     torch_device="cuda",
-    #     torch_dtype=weight_dtype,
-    # ).to(accelerator.device)
+    vae_name = "fal/FLUX.2-Tiny-AutoEncoder"
+    vae_val = (
+        AutoModel.from_pretrained(vae_name, trust_remote_code=True)
+        .to(accelerator.device)
+        .to(weight_dtype)
+    )
     # vae_val.decoder.ignore_skip = False
-    vae_val = AutoencoderKL.from_pretrained(
-        # "black-forest-labs/FLUX.1-dev",
-        "black-forest-labs/FLUX.2-dev",
-        subfolder="vae",
-        torch_device="cuda",
-    ).to(accelerator.device)
+    # vae_val = AutoencoderKL.from_pretrained(
+    #     # "black-forest-labs/FLUX.1-dev",
+    #     "black-forest-labs/FLUX.2-dev",
+    #     subfolder="vae",
+    #     torch_device="cuda",
+    # ).to(accelerator.device)
     vae_val.eval()
 
     # 2. Загрузка UNet из чекпоинта
@@ -225,7 +230,8 @@ def log_validation(
     # ---------------------------------------------------------
     # НАСТРОЙКА ШЕДУЛЕРА
     # ---------------------------------------------------------
-    num_steps = diffusion_args.num_inference_steps
+    # num_steps = diffusion_args.num_inference_steps
+    num_steps = 1
 
     sigmas = np.linspace(1.0, 1 / num_steps, num_steps)
 
@@ -255,7 +261,11 @@ def log_validation(
             # Encode source image
             z_source = (
                 # vae_val.encode(c_t, return_dict=False)[0]
-                vae_val.encode(c_t, return_dict=False)[0].sample()
+                vae_val.encode(
+                    c_t,
+                    #     return_dict=False,
+                    # )[0].sample()
+                ).latent
                 * vae_val.config.scaling_factor
             )
 
@@ -321,7 +331,8 @@ def log_validation(
                 vae_val.decode(
                     sample / vae_val.config.scaling_factor,
                     return_dict=False,
-                )[0]
+                )
+                # )[0]
             ).clamp(-1, 1)
 
             pred_image_pil = transforms.ToPILImage()(
@@ -461,10 +472,15 @@ def main():
     #     torch_dtype=weight_dtype,
     # )
     # vae.decoder.ignore_skip = False
-    vae = AutoencoderKL.from_pretrained(
-        # "black-forest-labs/FLUX.1-dev",
-        "black-forest-labs/FLUX.2-dev",
-        subfolder="vae",
+    # vae = AutoencoderKL.from_pretrained(
+    #     # "black-forest-labs/FLUX.1-dev",
+    #     "black-forest-labs/FLUX.2-dev",
+    #     subfolder="vae",
+    #     torch_dtype=weight_dtype,
+    # )
+    vae = AutoModel.from_pretrained(
+        "fal/FLUX.2-Tiny-AutoEncoder",
+        trust_remote_code=True,
         torch_dtype=weight_dtype,
     )
 
@@ -658,7 +674,9 @@ def main():
     # Remove discriminator and GAN-related components (not needed for LBM)
     # Only keep LPIPS for optional pixel loss if needed
     net_lpips = lpips.LPIPS(net="vgg").cuda()
+    net_lpips_alex = lpips.LPIPS(net="alex").cuda()
     net_lpips.requires_grad_(False)
+    net_lpips_alex.requires_grad_(False)
 
     # Only optimize UNet parameters (VAE is frozen)
     layers_to_opt = []
@@ -819,18 +837,24 @@ def main():
             with accelerator.accumulate(*l_acc):
                 # Convert images to latent space (Bridge Matching approach)
                 with torch.no_grad():
+                    # z_source = vae.encode(
+                    #     batch["source_images"].to(weight_dtype),
+                    #     return_dict=False,
+                    #     # )[0]
+                    # )[0].sample()
                     z_source = vae.encode(
-                        batch["source_images"].to(weight_dtype),
-                        return_dict=False,
-                        # )[0]
-                    )[0].sample()
+                        batch["source_images"].to(weight_dtype)
+                    ).latent
                     z_source = z_source * vae.config.scaling_factor
 
+                    # z_target = vae.encode(
+                    #     batch["target_images"].to(weight_dtype),
+                    #     return_dict=False,
+                    #     # )[0]
+                    # )[0].sample()
                     z_target = vae.encode(
                         batch["target_images"].to(weight_dtype),
-                        return_dict=False,
-                        # )[0]
-                    )[0].sample()
+                    ).latent
                     z_target = z_target * vae.config.scaling_factor
 
                 # Sample timesteps (Bridge Matching)
@@ -1016,44 +1040,53 @@ def main():
                 )[0]
 
                 # Target is the direction from z_source to z_target
-                target = z_source - z_target
+                # target = z_source - z_target
 
                 # Compute loss in latent space
-                if diffusion_args.latent_loss_type == "l2":
-                    loss = F.mse_loss(
-                        model_pred,
-                        target.detach(),
-                        reduction="mean",
-                    )
-                elif diffusion_args.latent_loss_type == "l1":
-                    loss = F.l1_loss(
-                        model_pred,
-                        target.detach(),
-                        reduction="mean",
-                    )
-                else:
-                    raise ValueError(
-                        f"Unknown latent_loss_type: {diffusion_args.latent_loss_type}"
-                    )
+                # if diffusion_args.latent_loss_type == "l2":
+                #     loss = F.mse_loss(
+                #         model_pred,
+                #         target.detach(),
+                #         reduction="mean",
+                #     )
+                # elif diffusion_args.latent_loss_type == "l1":
+                #     loss = F.l1_loss(
+                #         model_pred,
+                #         target.detach(),
+                #         reduction="mean",
+                #     )
+                # else:
+                #     raise ValueError(
+                #         f"Unknown latent_loss_type: {diffusion_args.latent_loss_type}"
+                #     )
 
                 denoised_sample = noisy_sample - model_pred * sigmas
                 denoised_sample = vae.decode(
                     denoised_sample / vae.config.scaling_factor,
                     return_dict=False,
-                )[0].clamp(-1, 1)
+                ).clamp(-1, 1)
+                # )[0].clamp(-1, 1)
 
                 x_tgt = batch["target_images"].float()
                 loss_lpips = net_lpips(denoised_sample, x_tgt.to(weight_dtype)).mean()
+                loss_lpips_alex = net_lpips_alex(
+                    denoised_sample, x_tgt.to(weight_dtype)
+                ).mean()
                 # pixel_loss = F.l1_loss(
                 #     denoised_sample.float(),
                 #     x_tgt.to(weight_dtype),
                 #     reduction="mean",
                 # )
 
+                # loss = (
+                #     loss * diffusion_args.latent_loss_weight
+                #     + loss_lpips * diffusion_args.lpips_factor
+                #     + loss_lpips_alex * diffusion_args.lpips_factor
+                #     # + pixel_loss
+                # )
                 loss = (
-                    loss * diffusion_args.latent_loss_weight
-                    + loss_lpips * diffusion_args.lpips_factor
-                    # + pixel_loss
+                    loss_lpips * diffusion_args.lpips_factor
+                    + loss_lpips_alex * diffusion_args.lpips_factor
                 )
 
                 accelerator.backward(loss)
