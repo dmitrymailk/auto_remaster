@@ -47,7 +47,7 @@ private:
     std::atomic<bool> stop_worker_{false};
     
     // Ring Buffer Resources
-    static const int POOL_SIZE = 60; // Enough for ~2.5 seconds of buffering at 24 FPS
+    static const int POOL_SIZE = 120; // Enough for ~5 seconds of buffering at 24 FPS
     std::vector<FrameBuffer> buffer_pool_;
     
     std::queue<int> free_indices_;

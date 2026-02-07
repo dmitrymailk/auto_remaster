@@ -218,7 +218,8 @@ int main() {
         CUDA_CHECK(cudaMalloc(&d_record_buffer, record_buffer_size));
         
         // Recording State
-        auto last_record_time = std::chrono::steady_clock::now();
+        auto next_record_time = std::chrono::steady_clock::now();
+        bool was_recording = false;
         double record_interval = 1.0 / 24.0; 
 
         // Debug Buffer (RGB 512x512)
@@ -390,21 +391,37 @@ int main() {
                     if (save_requested) save_requested = false;
 
                     // 4. Recording Logic (Post-Inference to capture Input + Output)
-                    auto now_steady = std::chrono::steady_clock::now();
-                    std::chrono::duration<double> time_since_record = now_steady - last_record_time;
-                    if (recorder.IsRecording() && (time_since_record.count() >= record_interval)) {
-                        last_record_time = now_steady;
+                    bool is_rec = recorder.IsRecording();
+                    if (is_rec && !was_recording) {
+                        next_record_time = std::chrono::steady_clock::now();
+                    }
+                    was_recording = is_rec;
+
+                    if (is_rec) {
+                        auto now_steady = std::chrono::steady_clock::now();
                         
-                        // Concatenate or Convert to RGB
-                        if (is_split) {
-                            launch_concat_tensors_kernel(d_input, d_output, d_record_buffer, MODEL_SIZE, stream);
-                        } else {
-                            // Capture Output (Processed)
-                            launch_tensor_to_u8_rgb_kernel(d_output, d_record_buffer, MODEL_SIZE, stream);
+                        if (now_steady >= next_record_time) {
+                            // Advance target time by interval (perfect pacing)
+                            next_record_time += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                std::chrono::duration<double>(record_interval)
+                            );
+                            
+                            // Prevent falling too far behind (e.g. stalled for > 1 second)
+                            if (now_steady > next_record_time + std::chrono::seconds(1)) {
+                                next_record_time = now_steady;
+                            }
+
+                            // Concatenate or Convert to RGB
+                            if (is_split) {
+                                launch_concat_tensors_kernel(d_input, d_output, d_record_buffer, MODEL_SIZE, stream);
+                            } else {
+                                // Capture Output (Processed)
+                                launch_tensor_to_u8_rgb_kernel(d_output, d_record_buffer, MODEL_SIZE, stream);
+                            }
+                            
+                            // Schedule write
+                            recorder.Capture(d_record_buffer, stream);
                         }
-                        
-                        // Schedule write
-                        recorder.Capture(d_record_buffer, stream);
                     }
                     
                     // 5. Postprocess (Tensor -> Output Texture)
