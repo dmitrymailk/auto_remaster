@@ -29,6 +29,8 @@ find_package(Torch REQUIRED)
 set(SOURCES
     main.cpp
     capture_dxgi.cpp
+    capture_wgc.cpp
+    window_helper.cpp
     pipeline.cpp
     cuda_utils.cu
 )
@@ -57,6 +59,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     d3d11
     dxgi
     d3dcompiler
+    dwmapi
+    windowsapp
 )
 
 if (MSVC)

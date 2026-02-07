@@ -3,9 +3,13 @@
 #include <chrono>
 #include <fstream>
 #include <algorithm>
+#include <memory> 
 
 #include "utils.h"
+#include "capture_interface.h"
 #include "capture_dxgi.h"
+#include "capture_wgc.h" 
+#include "window_helper.h"
 #include "pipeline.h"
 #include "cuda_utils.h"
 #include <cuda_d3d11_interop.h>
@@ -59,20 +63,37 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
 
 int main() {
     try {
+        // Initializes COM for WGC
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+
         std::cout << "Initializing Neuro Screen Capture (TensorRT VAE)..." << std::endl;
         
-        // 0. Display Settings
-        DEVMODE dm = { 0 };
-        dm.dmSize = sizeof(dm);
-        if (!EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
-             throw std::runtime_error("Failed to enum display settings");
+        // --- Capture Mode Selection ---
+        std::cout << "Select Capture Mode:\n"
+                  << "[0] Full Screen (Monitor 1)\n"
+                  << "[1] Specific Window\n"
+                  << "Enter mode: ";
+        int mode = 0;
+        if (!(std::cin >> mode)) {
+            mode = 0; // Default
+            std::cin.clear();
+            std::cin.ignore(10000, '\n');
         }
-        int WIDTH = dm.dmPelsWidth;
-        int HEIGHT = dm.dmPelsHeight;
-        std::cout << "Screen Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
+        HWND target_window = nullptr;
+        if (mode == 1) {
+             while (true) {
+                auto windows = EnumerateWindows();
+                target_window = SelectWindow(windows);
+                if (target_window) break;
+                
+                std::cout << "Retry? (y/n): ";
+                char c; std::cin >> c;
+                if (c != 'y') return 0;
+             }
+        }
+        
         // 1. Create Window (Client area MODEL_SIZE x MODEL_SIZE initially)
-        // 1. Create Window
         int window_width = MODEL_SIZE;
         #if SPLIT_SCREEN
         window_width = MODEL_SIZE * 2;
@@ -110,14 +131,26 @@ int main() {
             &swap_chain, &device, NULL, &context
         ));
 
-        // 3. Screen Capture
-        ScreenCapture capture(device.Get(), context.Get());
-        capture.Initialize();
+        // 3. Screen Capture Setup
+        std::unique_ptr<ICapture> capture;
+
+        if (mode == 1 && target_window) {
+            auto wgc = std::make_unique<WindowCapture>(device.Get(), context.Get());
+            wgc->Start(target_window);
+            capture = std::move(wgc);
+        } else {
+            auto dxgi = std::make_unique<ScreenCapture>(device.Get(), context.Get());
+            dxgi->Initialize();
+            capture = std::move(dxgi);
+        }
+
+        // Get actual capture dimensions
+        UINT WIDTH = capture->GetWidth();
+        UINT HEIGHT = capture->GetHeight();
+        std::cout << "Capture Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
         // 4. TensorRT Pipeline
-        std::string enc_path = "vae_encoder.plan";
-        std::string dec_path = "vae_decoder.plan";
-        // 5. Load TensorRT Models
+        // Load TensorRT Models... 
         TensorRTPipeline pipeline;
         pipeline.LoadEngines("vae_encoder.plan", "vae_decoder.plan");
         #if ENABLE_UNET
@@ -125,7 +158,7 @@ int main() {
         #endif
 
         // 6. Textures
-        // Input Texture (Screen Resolution) - for Capture Copy
+        // Input Texture (Capture Resolution)
         D3D11_TEXTURE2D_DESC inputDesc = {0};
         inputDesc.Width = WIDTH;
         inputDesc.Height = HEIGHT;
@@ -207,13 +240,39 @@ int main() {
                 }
 
                 ComPtr<ID3D11Texture2D> current_frame;
-                if (capture.AcquireFrame(current_frame, 10)) {
+                if (capture->AcquireFrame(current_frame, 10)) {
                     
-                    // 1. Copy Capture -> Input Texture (Screen Size)
-                    
-                    // Simple full copy as sizes match (Screen Resolution)
+                    D3D11_TEXTURE2D_DESC frameDesc;
+                    current_frame->GetDesc(&frameDesc);
+
+                    if (frameDesc.Width != WIDTH || frameDesc.Height != HEIGHT) {
+                        // Handle Resize
+                        std::cout << "Resize Detected: " << WIDTH << "x" << HEIGHT << " -> " << frameDesc.Width << "x" << frameDesc.Height << std::endl;
+                        
+                        // 1. Unregister old resource
+                        if (cuda_tex_in) {
+                            unregister_d3d11_resource(cuda_tex_in);
+                            cuda_tex_in = nullptr;
+                        }
+                        
+                        // 2. Update Dimensions
+                        WIDTH = frameDesc.Width;
+                        HEIGHT = frameDesc.Height;
+                        
+                        // 3. Recreate D3D Texture
+                        inputDesc.Width = WIDTH;
+                        inputDesc.Height = HEIGHT;
+                        d3d_input_texture.Reset(); // Release old
+                        DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
+                        
+                        // 4. Register new resource
+                        cuda_tex_in = register_d3d11_resource(d3d_input_texture.Get());
+                        if (!cuda_tex_in) throw std::runtime_error("Failed to register resized texture with CUDA");
+                    }
+
+                    // 1. Copy Capture -> Input Texture
                     context->CopyResource(d3d_input_texture.Get(), current_frame.Get());
-                    capture.ReleaseFrame();
+                    capture->ReleaseFrame();
 
                     // 2. Preprocess (Input Texture -> Tensor)
                     // Map Input
