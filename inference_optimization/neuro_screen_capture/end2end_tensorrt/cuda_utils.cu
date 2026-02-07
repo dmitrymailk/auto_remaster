@@ -76,10 +76,10 @@ __global__ void postprocess_kernel(const __half* in_tensor, cudaSurfaceObject_t 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x < screen_w && y < screen_h) {
-        // Check if inside destination ROI
-        int rel_x = x - dst_off_x;
-        int rel_y = y - dst_off_y;
+    if (x < dst_w && y < dst_h) {
+        // x, y are relative to the destination box (0..dst_w, 0..dst_h)
+        int rel_x = x;
+        int rel_y = y;
         
         if (rel_x >= 0 && rel_x < dst_w && rel_y >= 0 && rel_y < dst_h) {
              // Map Dest (rel_x, rel_y) -> Source (sx, sy in 0..511)
@@ -143,11 +143,19 @@ __global__ void postprocess_kernel(const __half* in_tensor, cudaSurfaceObject_t 
             pixel.x = (unsigned char)(__saturatef(b) * 255.0f);
             pixel.w = 255;
             
-            surf2Dwrite(pixel, surfObj, x * sizeof(uchar4), y);
+            
+            surf2Dwrite(pixel, surfObj, (x + dst_off_x) * sizeof(uchar4), (y + dst_off_y));
         } else {
-            // Draw Black Background
-            uchar4 black = make_uchar4(0, 0, 0, 255);
-            surf2Dwrite(black, surfObj, x * sizeof(uchar4), y);
+            // Draw Black Background only if we are responsible for this pixel
+            // In split screen, we might be drawing twice, so we should be careful not to overwrite?
+            // Actually, for simplicity, let's assume the caller clears the screen or we just overwrite.
+            // But if we want to support drawing two frames side-by-side without clearing each other...
+            // Each kernel call covers the FULL screen grid.
+            // So if we run it twice, the second run will overwrite the first if we write black.
+            
+            // To fix this: We only write black if we are NOT in the destination box? 
+            // Better: Don't write black in the kernel. Let the host clear the screen via ClearRenderTargetView.
+            // Removing the black background writing from kernel to allow multi-pass rendering.
         }
     }
 }
@@ -173,13 +181,42 @@ void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int s
     CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, cudaStream_t stream) {
-    // Draw fixed 512x512 center square (No upscaling)
+void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream) {
+    // Draw fixed 512x512 square at specific offset
     int dst_size = MODEL_SIZE;
-    int offset_x = (screen_width - dst_size) / 2;
-    int offset_y = (screen_height - dst_size) / 2;
 
-    // Run threads over the FULL SCREEN to allow clearing background
+    // Run threads over the FULL SCREEN? 
+    // If we removed the background clearing, we only need to run over the destination area to save perf!
+    // Let's optimize: Only launch threads for the 512x512 area.
+    
+    // Actually, postprocess_kernel logic uses x,y as Screen Coordinates.
+    // If we only launch for 512x512, we need to adjust the kernel to add offset to x,y?
+    // Current kernel:
+    // int x = ...; int y = ...;
+    // if (x < screen_w && y < screen_h) ...
+    // int rel_x = x - dst_off_x;
+    
+    // Let's keep the kernel logic simple for now and just launch over the specific ROI.
+    // We will change the Grid construction.
+    
+    // Wait, if we change grid to only cover the ROI, then global x,y will start from 0,0 relative to grid?
+    // No, blockIdx * blockDim is absolute.
+    // So we can invoke it such that it covers the ROI window?
+    // But standard CUDA grid starts at 0. We'd need to add offset inside kernel.
+    
+    // EASIEST FIX with minimal kernel change:
+    // Keep kernel expecting screen absolute coords.
+    // But launch grid only big enough for screen? No.
+    // Launch grid large enough? Yes.
+    
+    // Optimization:
+    // We want threads (x,y) such that x in [offset_x, offset_x + dst_size].
+    // We can't easily offset blockIdx.
+    // So we'll pass an extra "grid_offset_x/y" to kernel? 
+    // Or just revert to full screen launch but return early? 
+    // Full screen launch is fine for 1920x1080 (2M threads), barely costs anything compared to inference.
+    // And we removed the "else { write black }" so it's safe to run multiple times.
+
     dim3 block(16, 16);
     dim3 grid((screen_width + block.x - 1) / block.x, (screen_height + block.y - 1) / block.y);
     

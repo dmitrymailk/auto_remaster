@@ -72,7 +72,13 @@ int main() {
         std::cout << "Screen Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
         // 1. Create Window (Client area MODEL_SIZE x MODEL_SIZE initially)
-        CreateNativeWindow(GetModuleHandle(NULL), MODEL_SIZE, MODEL_SIZE);
+        // 1. Create Window
+        int window_width = MODEL_SIZE;
+        #if SPLIT_SCREEN
+        window_width = MODEL_SIZE * 2;
+        std::cout << "Split Screen Enabled. Window Width: " << window_width << std::endl;
+        #endif
+        CreateNativeWindow(GetModuleHandle(NULL), window_width, MODEL_SIZE);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
@@ -133,9 +139,12 @@ int main() {
         ComPtr<ID3D11Texture2D> d3d_input_texture;
         DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
 
-        // Output Texture (Fixed MODEL_SIZE x MODEL_SIZE) - for Inference Output
+        // Output Texture (Matches Window Size for Split Screen) - for Inference Output
         D3D11_TEXTURE2D_DESC outputDesc = inputDesc;
         outputDesc.Width = MODEL_SIZE;
+        #if SPLIT_SCREEN
+        outputDesc.Width = MODEL_SIZE * 2;
+        #endif
         outputDesc.Height = MODEL_SIZE;
         
         ComPtr<ID3D11Texture2D> d3d_output_texture;
@@ -248,7 +257,11 @@ int main() {
                     pipeline.Inference(stream, d_input, d_output, save_requested);
                     if (save_requested) save_requested = false;
                     
-                    // 4. Postprocess (Tensor -> Output Texture 512x512)
+                    // 5. Postprocess (Tensor -> Output Texture)
+                    // If SPLIT_SCREEN:
+                    //   Left (0): Processed (d_output)
+                    //   Right (MODEL_SIZE): Original (d_input)
+
                     cudaArray_t arr_out = map_d3d11_resource(cuda_tex_out);
                     
                     cudaResourceDesc surfResDesc = {};
@@ -259,7 +272,16 @@ int main() {
                     CUDA_CHECK(cudaCreateSurfaceObject(&surfObj, &surfResDesc));
                     
                     // Always render to MODEL_SIZE x MODEL_SIZE fixed output
-                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, stream);
+                    int processed_off_x = 0;
+                    
+                    #if SPLIT_SCREEN
+                    processed_off_x = MODEL_SIZE; // Right side
+                    // Draw Original to Left (0)
+                    launch_postprocess_kernel(d_input, surfObj, MODEL_SIZE, MODEL_SIZE, 0, 0, stream);
+                    #endif
+
+                    // Draw Processed
+                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, processed_off_x, 0, stream);
                     
                     CUDA_CHECK(cudaStreamSynchronize(stream)); // Finish writing to surface logic
                     CUDA_CHECK(cudaDestroySurfaceObject(surfObj));
@@ -276,24 +298,29 @@ int main() {
                     float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
                     context->ClearRenderTargetView(rtv.Get(), black);
                     
-                    // Calculate Center Offset
-                    int tgt_x = (win_w - MODEL_SIZE) / 2;
+                    // Recalculate copy params for correct width
+                    int tex_w = MODEL_SIZE;
+                    #if SPLIT_SCREEN
+                    tex_w = MODEL_SIZE * 2;
+                    #endif
+                    
+                    int tgt_x = (win_w - tex_w) / 2;
                     int tgt_y = (win_h - MODEL_SIZE) / 2;
                     
-                    // Clip if window is smaller than MODEL_SIZE
-                    int src_x = 0, src_y = 0;
-                    int dst_x = tgt_x, dst_y = tgt_y;
-                    int copy_w = MODEL_SIZE, copy_h = MODEL_SIZE;
-                    
+                    int src_x = 0; int src_y = 0;
+                    int dst_x = tgt_x; int dst_y = tgt_y;
+                    int copy_w = tex_w; 
+                    int copy_h = MODEL_SIZE;
+
                     if (tgt_x < 0) { src_x = -tgt_x; dst_x = 0; copy_w = win_w; }
                     if (tgt_y < 0) { src_y = -tgt_y; dst_y = 0; copy_h = win_h; }
-                    
+
                     D3D11_BOX srcBox;
                     srcBox.left = src_x;
-                    srcBox.top = src_y;
-                    srcBox.front = 0;
                     srcBox.right = src_x + copy_w;
+                    srcBox.top = src_y;
                     srcBox.bottom = src_y + copy_h;
+                    srcBox.front = 0;
                     srcBox.back = 1;
 
                     context->CopySubresourceRegion(back_buffer.Get(), 0, dst_x, dst_y, 0, d3d_output_texture.Get(), 0, &srcBox);

@@ -141,6 +141,7 @@ void TensorRTPipeline::Inference(cudaStream_t stream, void* d_input_image, void*
         std::cout << "  Saved debug_cpp_z_source.bin" << std::endl;
     }
 
+
     void* current_latents = d_z_source_;
 
 #if ENABLE_UNET
