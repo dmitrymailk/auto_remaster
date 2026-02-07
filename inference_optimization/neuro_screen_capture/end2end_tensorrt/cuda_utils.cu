@@ -4,7 +4,7 @@
 #include <cuda_fp16.h>
 
 
-__global__ void preprocess_kernel(cudaTextureObject_t texObj, __half* out_tensor, int crop_w, int crop_h, int offset_x, int offset_y) {
+__global__ void preprocess_kernel(cudaTextureObject_t texObj, __half* out_tensor, int crop_w, int crop_h, int offset_x, int offset_y, unsigned char* out_u8_rgb) {
     // Grid matches MODEL_SIZE x MODEL_SIZE
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -53,19 +53,32 @@ __global__ void preprocess_kernel(cudaTextureObject_t texObj, __half* out_tensor
             }
         }
         
-        // Average
         float num_samples = (float)(samples_x * samples_y);
-        float r = (r_acc / num_samples) * 2.0f - 1.0f; // [0,1] -> [-1,1]
-        float g = (g_acc / num_samples) * 2.0f - 1.0f;
-        float b = (b_acc / num_samples) * 2.0f - 1.0f;
+        // Normalize to [0, 1] range first
+        float r_n = r_acc / num_samples;
+        float g_n = g_acc / num_samples;
+        float b_n = b_acc / num_samples;
+
+        // 1. Write to FP16 Tensor (NCHW Planar, [-1, 1])
+        float r_norm = r_n * 2.0f - 1.0f; // [0,1] -> [-1,1]
+        float g_norm = g_n * 2.0f - 1.0f;
+        float b_norm = b_n * 2.0f - 1.0f;
 
         // Write to Output Tensor (NCHW Planar) - FP16
         int area = MODEL_SIZE * MODEL_SIZE;
         int idx = y * MODEL_SIZE + x;
         
-        out_tensor[idx] = __float2half(r);
-        out_tensor[area + idx] = __float2half(g);
-        out_tensor[2 * area + idx] = __float2half(b);
+        out_tensor[idx] = __float2half(r_norm);
+        out_tensor[area + idx] = __float2half(g_norm);
+        out_tensor[2 * area + idx] = __float2half(b_norm);
+
+        // 2. Write to Uint8 RGB Buffer (Interleaved, [0, 255])
+        if (out_u8_rgb) {
+            int out_idx = (y * MODEL_SIZE + x) * 3;
+            out_u8_rgb[out_idx]     = (unsigned char)(__saturatef(r_n) * 255.0f);
+            out_u8_rgb[out_idx + 1] = (unsigned char)(__saturatef(g_n) * 255.0f);
+            out_u8_rgb[out_idx + 2] = (unsigned char)(__saturatef(b_n) * 255.0f);
+        }
     }
 }
 
@@ -160,7 +173,7 @@ __global__ void postprocess_kernel(const __half* in_tensor, cudaSurfaceObject_t 
     }
 }
 
-void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int screen_width, int screen_height, cudaStream_t stream) {
+void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int screen_width, int screen_height, cudaStream_t stream, unsigned char* out_u8_rgb) {
     // Crop logic: Take largest center square
     int crop_size = std::min(screen_width, screen_height);
     int offset_x = (screen_width - crop_size) / 2;
@@ -177,7 +190,7 @@ void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int s
     dim3 block(16, 16);
     dim3 grid((MODEL_SIZE + block.x - 1) / block.x, (MODEL_SIZE + block.y - 1) / block.y);
 
-    preprocess_kernel<<<grid, block, 0, stream>>>(tex_obj, (__half*)d_output, crop_size, crop_size, offset_x, offset_y);
+    preprocess_kernel<<<grid, block, 0, stream>>>(tex_obj, (__half*)d_output, crop_size, crop_size, offset_x, offset_y, out_u8_rgb);
     CUDA_CHECK(cudaGetLastError());
 }
 

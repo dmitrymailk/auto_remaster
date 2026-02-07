@@ -32,6 +32,7 @@ set(SOURCES
     capture_wgc.cpp
     window_helper.cpp
     pipeline.cpp
+    recorder.cpp
     cuda_utils.cu
 )
 

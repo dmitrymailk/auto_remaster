@@ -5,8 +5,8 @@
 #define MODEL_SIZE 512
 
 // Enable Split Screen (Parallel Rendering: Original | Processed)
-#define SPLIT_SCREEN 0
-// #define SPLIT_SCREEN 1
+// #define SPLIT_SCREEN 0
+#define SPLIT_SCREEN 1
 
 // VAE Scaling Factor (from diffusers/FLUX.2-Tiny-AutoEncoder)
 // Applied after encoder output, divided before decoder input

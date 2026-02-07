@@ -13,6 +13,7 @@
 #include "pipeline.h"
 #include "cuda_utils.h"
 #include <cuda_d3d11_interop.h>
+#include "recorder.h" // Added Recorder
 
 // Forward decls for interop (will be in header)
 cudaGraphicsResource* register_d3d11_resource(ID3D11Texture2D* texture);
@@ -202,8 +203,19 @@ int main() {
         auto start_time = std::chrono::high_resolution_clock::now();
         int frames = 0;
         
+
         cudaStream_t stream;
         CUDA_CHECK(cudaStreamCreate(&stream));
+
+        // Recorder Setup
+        Recorder recorder(MODEL_SIZE, MODEL_SIZE, 24);
+        void* d_record_buffer = nullptr;
+        size_t record_buffer_size = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned char);
+        CUDA_CHECK(cudaMalloc(&d_record_buffer, record_buffer_size));
+        
+        // Recording State
+        auto last_record_time = std::chrono::steady_clock::now();
+        double record_interval = 1.0 / 24.0; 
 
         // Debug Buffer (RGB 512x512)
         unsigned char* d_debug_img = nullptr;
@@ -213,6 +225,7 @@ int main() {
 
         bool is_overlay_mode = false;
         bool f9_pressed_last = false; // Debounce F9
+        bool f10_pressed_last = false; // Debounce F10
 
         auto ToggleOverlay = [&](bool enable) {
             is_overlay_mode = enable;
@@ -232,7 +245,7 @@ int main() {
             }
         };
 
-        std::cout << "Starting Loop... \nPress 'S' to save debugging image.\nPress 'F9' to toggle Overlay Mode." << std::endl;
+        std::cout << "Starting Loop... \nPress 'S' to save debugging image.\nPress 'F9' to toggle Overlay Mode.\nPress 'F10' to toggle Recording." << std::endl;
 
         while (msg.message != WM_QUIT) {
             if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -248,6 +261,18 @@ int main() {
                     ToggleOverlay(!is_overlay_mode);
                 }
                 f9_pressed_last = f9_down;
+
+                // F10 Recording Toggle
+                bool f10_down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+                if (f10_down && !f10_pressed_last) {
+                    if (recorder.IsRecording()) {
+                        recorder.Stop();
+                    } else {
+                        std::string prog = (mode == 1 && target_window) ? "Window" : "Desktop"; // Simplified, ideally get window title
+                        recorder.Start(prog);
+                    }
+                }
+                f10_pressed_last = f10_down;
 
                 // --- Overlay Tracking Logic ---
                 if (is_overlay_mode && mode == 1 && target_window && IsWindow(target_window)) {
@@ -335,8 +360,23 @@ int main() {
                     cudaTextureObject_t texObj = 0;
                     CUDA_CHECK(cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL));
                     
-                    launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
+                    // Recording Logic: Decide if we need to capture this frame
+                    auto now_steady = std::chrono::steady_clock::now();
+                    std::chrono::duration<double> time_since_record = now_steady - last_record_time;
+                    bool do_record = recorder.IsRecording() && (time_since_record.count() >= record_interval);
                     
+                    unsigned char* d_record_target = do_record ? (unsigned char*)d_record_buffer : nullptr;
+                    if (do_record) {
+                        last_record_time = now_steady;
+                    }
+
+                    // Launch Preprocess (Computes FP16 Tensor + optional Uint8 RGB)
+                    launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream, d_record_target);
+                    
+                    if (do_record) {
+                        recorder.Capture(d_record_buffer, stream);
+                    }
+
                     if (save_requested) {
                         // Save Raw FP16 Tensor (NCHW)
                         size_t tensor_size_bytes = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned short); // half = 2 bytes
@@ -446,6 +486,7 @@ int main() {
         cudaFree(d_input);
         cudaFree(d_output);
         cudaFree(d_debug_img);
+        cudaFree(d_record_buffer); // Free Record Buffer
         
         if (cuda_tex_in) unregister_d3d11_resource(cuda_tex_in);
         if (cuda_tex_out) unregister_d3d11_resource(cuda_tex_out);

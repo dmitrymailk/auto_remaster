@@ -34,8 +34,9 @@ cudaArray_t map_d3d11_resource(cudaGraphicsResource* resource);
 void unmap_d3d11_resource(cudaGraphicsResource* resource);
 
 // Kernels
-// d_output is half* (FP16) internally
-void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int screen_width, int screen_height, cudaStream_t stream);
+// Launch preprocessing (Texture -> FP16 Tensor)
+// Optional: out_u8_rgb for recording (3 channels, interleaved, 0-255)
+void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int screen_width, int screen_height, cudaStream_t stream, unsigned char* out_u8_rgb = nullptr);
 
 // d_input is half* (FP16) internally
 void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream);
