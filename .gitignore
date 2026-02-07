@@ -225,3 +225,4 @@ model_lcm
 dim
 models
 TensorRT-*
+RTX_Video_SDK*
