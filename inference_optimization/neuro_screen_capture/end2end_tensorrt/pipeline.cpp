@@ -170,29 +170,11 @@ void TensorRTPipeline::Inference(cudaStream_t stream, void* d_input_image, void*
             float sigma = sigmas[s];
             float sigma_next = sigmas[s + 1];
             
-            launch_float_to_half(d_timestep_, sigma, stream);
+            launch_float_to_half(d_timestep_, sigma * 1000.0f, stream);
             
-            // Concatenate [sample, z_source] -> unet_input (8 channels)
+            // Concatenate [sample, z_source] -> unet_input (256 channels)
             launch_concat_latents(sample_buf, d_z_source_, d_unet_input_,
                                   1, LATENT_CHANNELS, LATENT_SIZE, LATENT_SIZE, stream);
-            
-            if (dump_debug && s == 0) {
-                 CUDA_CHECK(cudaStreamSynchronize(stream));
-                 
-                 // Dump UNet Input
-                 std::vector<char> h_in(latents_size_ * 2);
-                 CUDA_CHECK(cudaMemcpy(h_in.data(), d_unet_input_, latents_size_ * 2, cudaMemcpyDeviceToHost));
-                 std::ofstream f1("debug_cpp_unet_input.bin", std::ios::binary);
-                 f1.write(h_in.data(), latents_size_ * 2);
-                 f1.close();
-                 
-                 // Dump Timestep
-                 unsigned short h_t;
-                 CUDA_CHECK(cudaMemcpy(&h_t, d_timestep_, 2, cudaMemcpyDeviceToHost));
-                 std::cout << "  Timestep (FP16 bits): " << h_t << std::endl;
-
-                 std::cout << "  Saved debug_cpp_unet_input.bin" << std::endl;
-            }
 
             // Run UNet
             auto* unet_ctx = unet_.GetContext();
@@ -211,25 +193,14 @@ void TensorRTPipeline::Inference(cudaStream_t stream, void* d_input_image, void*
                     ptr = output_buf;
                 }
                 unet_ctx->setTensorAddress(name, ptr);
+
             }
-            
+
             if (!unet_ctx->enqueueV3(stream)) {
                 std::cerr << "UNet Inference Failed at step " << s << std::endl;
                 return;
             }
 
-            if (dump_debug && s == 0) {
-                 CUDA_CHECK(cudaStreamSynchronize(stream));
-                 
-                 // Dump UNet Output
-                 std::vector<char> h_out(latents_size_);
-                 CUDA_CHECK(cudaMemcpy(h_out.data(), output_buf, latents_size_, cudaMemcpyDeviceToHost));
-                 std::ofstream f2("debug_cpp_unet_output.bin", std::ios::binary);
-                 f2.write(h_out.data(), latents_size_);
-                 f2.close();
-                 std::cout << "  Saved debug_cpp_unet_output.bin" << std::endl;
-            }
-            
             // Scheduler step...
             launch_scheduler_step(sample_buf, output_buf, sigma, sigma_next, latents_elements_, stream);
         }
