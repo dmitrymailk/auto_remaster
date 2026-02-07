@@ -41,6 +41,12 @@ void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int s
 // d_input is half* (FP16) internally
 void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream);
 
+// New split-screen recording kernel
+void launch_concat_tensors_kernel(const void* in_tensor, const void* out_tensor, void* out_u8_rgb, int model_size, cudaStream_t stream);
+
+// New single-screen recording kernel
+void launch_tensor_to_u8_rgb_kernel(const void* in_tensor, void* out_u8_rgb, int model_size, cudaStream_t stream);
+
 // ========== NEW: Pipeline support kernels ==========
 // Scale latents (FP16): data[i] *= scale
 void launch_scale_latents(void* d_data, float scale, size_t count, cudaStream_t stream);

@@ -5,7 +5,8 @@ import glob
 import math
 
 # Configuration
-RESOLUTION = 512
+RESOLUTION_W = 1024
+RESOLUTION_H = 512
 CHANNELS = 3
 RECORDINGS_DIR = "recordings"
 
@@ -28,6 +29,19 @@ def inspect_recording():
 
     print(f"Inspecting newest recording: {latest_file}")
     
+    # Parse resolution from filename (format: ..._WxH.raw)
+    try:
+        base = os.path.basename(latest_file)
+        res_part = base.split('_')[-1].split('.')[0]
+        w_str, h_str = res_part.split('x')
+        width = int(w_str)
+        height = int(h_str)
+        print(f"Detected resolution from filename: {width}x{height}")
+    except Exception as e:
+        print(f"Could not parse resolution from filename, using default {RESOLUTION_W}x{RESOLUTION_H}. Error: {e}")
+        width = RESOLUTION_W
+        height = RESOLUTION_H
+    
     # Load Raw Uint8 Data
     try:
         data = np.fromfile(latest_file, dtype=np.uint8)
@@ -35,7 +49,7 @@ def inspect_recording():
         print(f"Error reading file: {e}")
         return
     
-    frame_size = RESOLUTION * RESOLUTION * CHANNELS
+    frame_size = width * height * CHANNELS
     total_frames = data.size // frame_size
     
     print(f"Total size: {data.size} bytes")
@@ -49,11 +63,11 @@ def inspect_recording():
     # Reshape to (N, H, W, C)
     # The C++ recorder saves interleaved RGB
     try:
-        video_data = data.reshape((total_frames, RESOLUTION, RESOLUTION, CHANNELS))
+        video_data = data.reshape((total_frames, height, width, CHANNELS))
     except ValueError:
         print("Warning: Data size is not a perfect multiple of frame size. Truncating...")
         valid_size = total_frames * frame_size
-        video_data = data[:valid_size].reshape((total_frames, RESOLUTION, RESOLUTION, CHANNELS))
+        video_data = data[:valid_size].reshape((total_frames, height, width, CHANNELS))
 
     # Save first, middle, and last frame
     indices_to_save = [0, total_frames // 2, total_frames - 1]

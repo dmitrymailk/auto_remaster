@@ -82,6 +82,89 @@ __global__ void preprocess_kernel(cudaTextureObject_t texObj, __half* out_tensor
     }
 }
 
+// Concatenate Input (Left) and Output (Right) tensors into a single Uint8 RGB buffer
+// Grid: (MODEL_SIZE * 2, MODEL_SIZE)
+__global__ void concat_tensors_kernel(const __half* in_tensor, const __half* out_tensor, unsigned char* out_u8_rgb, int model_size) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int width = model_size * 2;
+    int height = model_size;
+
+    if (x < width && y < height) {
+        float r, g, b;
+        
+        if (x < model_size) {
+            // Left Half: Input Tensor
+            int src_idx = y * model_size + x;
+            int area = model_size * model_size;
+            
+            // FP16 NCHW -> Float
+            r = __half2float(in_tensor[src_idx]);
+            g = __half2float(in_tensor[area + src_idx]);
+            b = __half2float(in_tensor[2 * area + src_idx]);
+        } else {
+            // Right Half: Output Tensor
+            int src_x = x - model_size;
+            int src_idx = y * model_size + src_x;
+            int area = model_size * model_size;
+            
+            r = __half2float(out_tensor[src_idx]);
+            g = __half2float(out_tensor[area + src_idx]);
+            b = __half2float(out_tensor[2 * area + src_idx]);
+        }
+        
+        // Denormalize: [-1, 1] -> [0, 1]
+        r = r * 0.5f + 0.5f;
+        g = g * 0.5f + 0.5f;
+        b = b * 0.5f + 0.5f;
+        
+        // Write to Interleaved Uint8 RGB
+        int out_idx = (y * width + x) * 3;
+        out_u8_rgb[out_idx]     = (unsigned char)(__saturatef(r) * 255.0f);
+        out_u8_rgb[out_idx + 1] = (unsigned char)(__saturatef(g) * 255.0f);
+        out_u8_rgb[out_idx + 2] = (unsigned char)(__saturatef(b) * 255.0f);
+    }
+}
+
+void launch_concat_tensors_kernel(const void* in_tensor, const void* out_tensor, void* out_u8_rgb, int model_size, cudaStream_t stream) {
+    dim3 block(16, 16);
+    dim3 grid((model_size * 2 + block.x - 1) / block.x, (model_size + block.y - 1) / block.y);
+    
+    concat_tensors_kernel<<<grid, block, 0, stream>>>((const __half*)in_tensor, (const __half*)out_tensor, (unsigned char*)out_u8_rgb, model_size);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void tensor_to_u8_rgb_kernel(const __half* in_tensor, unsigned char* out_u8_rgb, int model_size) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < model_size && y < model_size) {
+        int src_idx = y * model_size + x;
+        int area = model_size * model_size;
+        
+        float r = __half2float(in_tensor[src_idx]);
+        float g = __half2float(in_tensor[area + src_idx]);
+        float b = __half2float(in_tensor[2 * area + src_idx]);
+        
+        r = r * 0.5f + 0.5f;
+        g = g * 0.5f + 0.5f;
+        b = b * 0.5f + 0.5f;
+        
+        int out_idx = (y * model_size + x) * 3;
+        out_u8_rgb[out_idx]     = (unsigned char)(__saturatef(r) * 255.0f);
+        out_u8_rgb[out_idx + 1] = (unsigned char)(__saturatef(g) * 255.0f);
+        out_u8_rgb[out_idx + 2] = (unsigned char)(__saturatef(b) * 255.0f);
+    }
+}
+
+void launch_tensor_to_u8_rgb_kernel(const void* in_tensor, void* out_u8_rgb, int model_size, cudaStream_t stream) {
+    dim3 block(16, 16);
+    dim3 grid((model_size + block.x - 1) / block.x, (model_size + block.y - 1) / block.y);
+    tensor_to_u8_rgb_kernel<<<grid, block, 0, stream>>>((const __half*)in_tensor, (unsigned char*)out_u8_rgb, model_size);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 // Draw the 512x512 tensor back to the screen center
 // Input: Tensor (FP16 NCHW)
 // Output: Surface (uchar4)

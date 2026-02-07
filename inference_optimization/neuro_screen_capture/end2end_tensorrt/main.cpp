@@ -208,9 +208,13 @@ int main() {
         CUDA_CHECK(cudaStreamCreate(&stream));
 
         // Recorder Setup
-        Recorder recorder(MODEL_SIZE, MODEL_SIZE, 24);
+        bool is_split = SPLIT_SCREEN;
+        int rec_w = is_split ? MODEL_SIZE * 2 : MODEL_SIZE;
+        int rec_h = MODEL_SIZE;
+        Recorder recorder(rec_w, rec_h, 24);
+        
         void* d_record_buffer = nullptr;
-        size_t record_buffer_size = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned char);
+        size_t record_buffer_size = rec_w * rec_h * 3 * sizeof(unsigned char);
         CUDA_CHECK(cudaMalloc(&d_record_buffer, record_buffer_size));
         
         // Recording State
@@ -360,23 +364,9 @@ int main() {
                     cudaTextureObject_t texObj = 0;
                     CUDA_CHECK(cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL));
                     
-                    // Recording Logic: Decide if we need to capture this frame
-                    auto now_steady = std::chrono::steady_clock::now();
-                    std::chrono::duration<double> time_since_record = now_steady - last_record_time;
-                    bool do_record = recorder.IsRecording() && (time_since_record.count() >= record_interval);
+                    // Launch Preprocess (Computes FP16 Tensor)
+                    launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
                     
-                    unsigned char* d_record_target = do_record ? (unsigned char*)d_record_buffer : nullptr;
-                    if (do_record) {
-                        last_record_time = now_steady;
-                    }
-
-                    // Launch Preprocess (Computes FP16 Tensor + optional Uint8 RGB)
-                    launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream, d_record_target);
-                    
-                    if (do_record) {
-                        recorder.Capture(d_record_buffer, stream);
-                    }
-
                     if (save_requested) {
                         // Save Raw FP16 Tensor (NCHW)
                         size_t tensor_size_bytes = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned short); // half = 2 bytes
@@ -398,6 +388,24 @@ int main() {
                     // 3. Inference
                     pipeline.Inference(stream, d_input, d_output, save_requested);
                     if (save_requested) save_requested = false;
+
+                    // 4. Recording Logic (Post-Inference to capture Input + Output)
+                    auto now_steady = std::chrono::steady_clock::now();
+                    std::chrono::duration<double> time_since_record = now_steady - last_record_time;
+                    if (recorder.IsRecording() && (time_since_record.count() >= record_interval)) {
+                        last_record_time = now_steady;
+                        
+                        // Concatenate or Convert to RGB
+                        if (is_split) {
+                            launch_concat_tensors_kernel(d_input, d_output, d_record_buffer, MODEL_SIZE, stream);
+                        } else {
+                            // Capture Output (Processed)
+                            launch_tensor_to_u8_rgb_kernel(d_output, d_record_buffer, MODEL_SIZE, stream);
+                        }
+                        
+                        // Schedule write
+                        recorder.Capture(d_record_buffer, stream);
+                    }
                     
                     // 5. Postprocess (Tensor -> Output Texture)
                     // If SPLIT_SCREEN:
