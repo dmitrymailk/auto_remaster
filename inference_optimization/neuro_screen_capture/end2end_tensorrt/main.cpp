@@ -211,7 +211,28 @@ int main() {
         CUDA_CHECK(cudaMalloc(&d_debug_img, debug_size));
         bool save_requested = false;
 
-        std::cout << "Starting Loop... Press 'S' to save debugging image (debug_input.ppm)." << std::endl;
+        bool is_overlay_mode = false;
+        bool f9_pressed_last = false; // Debounce F9
+
+        auto ToggleOverlay = [&](bool enable) {
+            is_overlay_mode = enable;
+            if (is_overlay_mode) {
+                // Overlay Mode: Borderless, TopMost, Transparent to Input
+                SetWindowLong(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+                SetWindowLong(g_hwnd, GWL_EXSTYLE, WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST);
+                // 255 = Opaque (Visuals visible), but EX_TRANSPARENT makes input fall through
+                SetLayeredWindowAttributes(g_hwnd, 0, 255, LWA_ALPHA);
+                std::cout << "[Overlay] Enabled. Press F9 to disable." << std::endl;
+            } else {
+                // Normal Mode: Windowed, Borders, Interactive
+                SetWindowLong(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+                SetWindowLong(g_hwnd, GWL_EXSTYLE, 0);
+                SetWindowPos(g_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+                std::cout << "[Overlay] Disabled." << std::endl;
+            }
+        };
+
+        std::cout << "Starting Loop... \nPress 'S' to save debugging image.\nPress 'F9' to toggle Overlay Mode." << std::endl;
 
         while (msg.message != WM_QUIT) {
             if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -221,6 +242,28 @@ int main() {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             } else {
+                // --- Hotkey Handling ---
+                bool f9_down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+                if (f9_down && !f9_pressed_last) {
+                    ToggleOverlay(!is_overlay_mode);
+                }
+                f9_pressed_last = f9_down;
+
+                // --- Overlay Tracking Logic ---
+                if (is_overlay_mode && mode == 1 && target_window && IsWindow(target_window)) {
+                    RECT targetRect;
+                    GetWindowRect(target_window, &targetRect);
+                    
+                    int target_w = targetRect.right - targetRect.left;
+                    int target_h = targetRect.bottom - targetRect.top;
+                    
+                    // Match the target window size exactly
+                    // The rendering logic will automatically center the 512x512 content
+                    // and fill the rest with black (ClearRenderTargetView).
+                    
+                    SetWindowPos(g_hwnd, HWND_TOPMOST, targetRect.left, targetRect.top, target_w, target_h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                }
+
                 RECT clientRect;
                 GetClientRect(g_hwnd, &clientRect);
                 int win_w = clientRect.right - clientRect.left;
