@@ -38,3 +38,20 @@ void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int s
 
 // d_input is half* (FP16) internally
 void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, cudaStream_t stream);
+
+// ========== NEW: Pipeline support kernels ==========
+// Scale latents (FP16): data[i] *= scale
+void launch_scale_latents(void* d_data, float scale, size_t count, cudaStream_t stream);
+
+// Concatenate two latent tensors along channel dimension
+// src1 (N,C,H,W) + src2 (N,C,H,W) -> dst (N,2C,H,W)
+void launch_concat_latents(const void* src1, const void* src2, void* dst,
+                           int batch, int channels, int height, int width, cudaStream_t stream);
+
+// FlowMatchEulerDiscreteScheduler step
+// sample = sample + model_output * (sigma_next - sigma)
+void launch_scheduler_step(void* sample, const void* model_output,
+                           float sigma, float sigma_next, size_t count, cudaStream_t stream);
+
+// Convert float to FP16 and write to device buffer
+void launch_float_to_half(void* d_output, float value, cudaStream_t stream);

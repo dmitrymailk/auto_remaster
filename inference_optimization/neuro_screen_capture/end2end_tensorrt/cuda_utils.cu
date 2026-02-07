@@ -226,6 +226,105 @@ void launch_debug_tensor_dump(const void* d_input, void* d_debug_output, int wid
 }
 
 // =========================================================================
+// NEW: Pipeline Support Kernels
+// =========================================================================
+
+// Scale latents by a factor (FP16)
+__global__ void scale_latents_kernel(__half* data, float scale, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) {
+        float val = __half2float(data[idx]);
+        data[idx] = __float2half(val * scale);
+    }
+}
+
+void launch_scale_latents(void* d_data, float scale, size_t count, cudaStream_t stream) {
+    int block_size = 256;
+    int num_blocks = (count + block_size - 1) / block_size;
+    scale_latents_kernel<<<num_blocks, block_size, 0, stream>>>((__half*)d_data, scale, count);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// Concatenate two latent tensors along channel dimension (FP16)
+// Input: src1 (N,C,H,W), src2 (N,C,H,W)
+// Output: dst (N,2C,H,W)
+__global__ void concat_latents_kernel(const __half* src1, const __half* src2, __half* dst, 
+                                       int batch, int channels, int height, int width) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int spatial = height * width;
+    int total = batch * channels * 2 * spatial;
+    
+    if (idx < total) {
+        int b = idx / (channels * 2 * spatial);
+        int remainder = idx % (channels * 2 * spatial);
+        int c = remainder / spatial;
+        int hw = remainder % spatial;
+        
+        if (c < channels) {
+            // First half: from src1
+            int src_idx = b * channels * spatial + c * spatial + hw;
+            dst[idx] = src1[src_idx];
+        } else {
+            // Second half: from src2
+            int src_idx = b * channels * spatial + (c - channels) * spatial + hw;
+            dst[idx] = src2[src_idx];
+        }
+    }
+}
+
+void launch_concat_latents(const void* src1, const void* src2, void* dst,
+                           int batch, int channels, int height, int width, cudaStream_t stream) {
+    int total = batch * channels * 2 * height * width;
+    int block_size = 256;
+    int num_blocks = (total + block_size - 1) / block_size;
+    concat_latents_kernel<<<num_blocks, block_size, 0, stream>>>(
+        (const __half*)src1, (const __half*)src2, (__half*)dst,
+        batch, channels, height, width);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// FlowMatchEulerDiscreteScheduler step (FP16)
+// sample = sample + model_output * (sigma_next - sigma)
+__global__ void scheduler_step_kernel(__half* sample, const __half* model_output,
+                                       float sigma, float sigma_next, size_t count) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < count) {
+        float s = __half2float(sample[idx]);
+        float velocity = __half2float(model_output[idx]);
+        
+        // FlowMatchEulerDiscreteScheduler step:
+        // In flow matching, model directly predicts velocity
+        // sample = sample + velocity * dt
+        float dt = sigma_next - sigma;  // negative because sigma decreases
+        s = s + velocity * dt;
+        // s = s + velocity * -1.0f;
+        
+        sample[idx] = __float2half(s);
+    }
+}
+
+void launch_scheduler_step(void* sample, const void* model_output,
+                           float sigma, float sigma_next, size_t count, cudaStream_t stream) {
+    int block_size = 256;
+    int num_blocks = (count + block_size - 1) / block_size;
+    scheduler_step_kernel<<<num_blocks, block_size, 0, stream>>>(
+        (__half*)sample, (const __half*)model_output, sigma, sigma_next, count);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// Float to FP16 conversion kernel
+__global__ void float_to_half_kernel(__half* output, float value) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        output[0] = __float2half(value);
+    }
+}
+
+void launch_float_to_half(void* d_output, float value, cudaStream_t stream) {
+    float_to_half_kernel<<<1, 1, 0, stream>>>((__half*)d_output, value);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// =========================================================================
 // Interop Helpers
 // =========================================================================
 #include <cuda_d3d11_interop.h>

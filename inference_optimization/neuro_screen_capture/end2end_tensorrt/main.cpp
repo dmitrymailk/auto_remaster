@@ -227,25 +227,26 @@ int main() {
                     launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
                     
                     if (save_requested) {
-                        launch_debug_tensor_dump(d_input, d_debug_img, MODEL_SIZE, MODEL_SIZE, stream);
+                        // Save Raw FP16 Tensor (NCHW)
+                        size_t tensor_size_bytes = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned short); // half = 2 bytes
+                        std::vector<char> h_tensor(tensor_size_bytes);
+                        
+                        CUDA_CHECK(cudaMemcpy(h_tensor.data(), d_input, tensor_size_bytes, cudaMemcpyDeviceToHost));
                         CUDA_CHECK(cudaStreamSynchronize(stream));
                         
-                        std::vector<unsigned char> h_debug(MODEL_SIZE * MODEL_SIZE * 3);
-                        CUDA_CHECK(cudaMemcpy(h_debug.data(), d_debug_img, debug_size, cudaMemcpyDeviceToHost));
+                        std::ofstream bin("capture_input_fp16.bin", std::ios::binary);
+                        bin.write(h_tensor.data(), tensor_size_bytes);
+                        bin.close();
                         
-                        std::ofstream ppm("debug_input.ppm", std::ios::binary);
-                        ppm << "P6\n" << MODEL_SIZE << " " << MODEL_SIZE << "\n255\n";
-                        ppm.write((char*)h_debug.data(), h_debug.size());
-                        ppm.close();
-                        std::cout << "Saved debug_input.ppm!" << std::endl;
-                        save_requested = false;
+                        std::cout << "Saved capture_input_fp16.bin (" << tensor_size_bytes << " bytes)" << std::endl;
                     }
 
                     CUDA_CHECK(cudaDestroyTextureObject(texObj));
                     unmap_d3d11_resource(cuda_tex_in); // Unmap Input immediately
 
                     // 3. Inference
-                    pipeline.Inference(stream, d_input, d_output);
+                    pipeline.Inference(stream, d_input, d_output, save_requested);
+                    if (save_requested) save_requested = false;
                     
                     // 4. Postprocess (Tensor -> Output Texture 512x512)
                     cudaArray_t arr_out = map_d3d11_resource(cuda_tex_out);

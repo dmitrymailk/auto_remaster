@@ -59,9 +59,18 @@ Write-Host "Copying Model Files..." -ForegroundColor Cyan
 $modelDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\flux_vae_tiny_trt"
 if (Test-Path $modelDir) {
     Copy-Item "$modelDir\*.plan" $destDir -Force
-    Write-Host "Model files copied." -ForegroundColor Green
+    Write-Host "VAE model files copied." -ForegroundColor Green
 } else {
-    Write-Warning "Model directory not found at $modelDir. Please manually copy .plan files."
+    Write-Warning "VAE model directory not found at $modelDir. Please manually copy .plan files."
+}
+
+# Copy UNet Model
+$unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt"
+if (Test-Path $unetDir) {
+    Copy-Item "$unetDir\*.plan" $destDir -Force
+    Write-Host "UNet model files copied." -ForegroundColor Green
+} else {
+    Write-Warning "UNet model directory not found at $unetDir. Please manually copy unet.plan file."
 }
 
 Write-Host "Build Complete!" -ForegroundColor Green
