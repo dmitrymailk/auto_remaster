@@ -61,6 +61,7 @@ if (Test-Path $modelDir) {
 # Copy UNet Model
 # $unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt_v6_upscale_2x"
 $unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt_v6"
+# $unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt"
 if (Test-Path $unetDir) {
     Copy-Item "$unetDir\*.plan" $destDir -Force
     Write-Host "UNet model files copied." -ForegroundColor Green

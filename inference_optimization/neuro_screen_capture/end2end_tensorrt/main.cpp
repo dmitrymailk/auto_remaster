@@ -113,17 +113,25 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
 
-    RegisterClass(&wc);
+    RegisterClass(&wc); // winapi function
 
     // Adjust window size to client area
     RECT rect = { 0, 0, width, height };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
     g_hwnd = CreateWindowEx(
-        0, CLASS_NAME, "Neuro Screen Capture (TensorRT VAE + VSR)",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 
-        rect.right - rect.left, rect.bottom - rect.top,
-        NULL, NULL, hInstance, NULL
+        0, 
+        CLASS_NAME, 
+        "Neuro Screen Capture (TensorRT VAE + VSR)", // Текст, который будет отображаться в заголовке окна
+        WS_OVERLAPPEDWINDOW, 
+        CW_USEDEFAULT, // initial horizontal position of the window
+        CW_USEDEFAULT, 
+        rect.right - rect.left, // Specifies the width, in device units
+        rect.bottom - rect.top,
+        NULL, 
+        NULL, 
+        hInstance, // Handle to the instance of the module to be associated with the window.
+        NULL
     );
 
     if (g_hwnd == NULL) throw std::runtime_error("Failed to create window");
@@ -134,11 +142,13 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
 int main() {
     try {
         // Initializes COM for WGC
+        // это инициализатор для работы с библиотеками захвата экрана и окон
         winrt::init_apartment(winrt::apartment_type::single_threaded);
 
         std::cout << "Initializing Neuro Screen Capture (TensorRT VAE)..." << std::endl;
         
         // --- Capture Mode Selection ---
+        // это выбор режима захвата экрана через консоль
         std::cout << "Select Capture Mode:\n"
                   << "[0] Full Screen (Monitor 1)\n"
                   << "[1] Specific Window\n"
@@ -153,7 +163,10 @@ int main() {
         HWND target_window = nullptr;
         if (mode == 1) {
              while (true) {
+                // содержит вектор состоящий из указателей на окна и их названия
+                // названия просто нужны для того чтобы было удобно их отрисовать в консоли
                 auto windows = EnumerateWindows();
+                // возвращает указатель на необходимое нам окно
                 target_window = SelectWindow(windows);
                 if (target_window) break;
                 
@@ -165,6 +178,9 @@ int main() {
         
         // 1. Create Window
         // Calculate Base Window Width (Inference Resolution)
+        // текущая простая логика подразумевает что в режиме SPLIT_SCREEN
+        // мы будем рисовать два квадрата рядом. первый квадрат оригинал, второй квадрат
+        // рендер нейросети
         int base_width = MODEL_SIZE;
         #if SPLIT_SCREEN
         base_width = MODEL_SIZE * 2;
@@ -177,6 +193,8 @@ int main() {
         int display_height_scaled = MODEL_SIZE;
 
         #if ENABLE_VSR
+        // если мы используем VSR то мы просто скалируем разрешение на константу
+        // например 1.5х
         std::cout << "VSR Available. Target Scale: " << VSR_SCALE << "x" << std::endl;
         display_width_scaled = static_cast<int>(base_width * VSR_SCALE);
         display_height_scaled = static_cast<int>(MODEL_SIZE * VSR_SCALE);
@@ -185,16 +203,22 @@ int main() {
         // Start with base resolution (VSR starts DISABLED)
         std::cout << "Initial Display Resolution: " << base_width << "x" << MODEL_SIZE << std::endl;
         std::cout << "VSR Scaled Resolution: " << display_width_scaled << "x" << display_height_scaled << std::endl;
+        // создаем окно без всего. базовый объект в который будет накидываться функционал
         CreateNativeWindow(GetModuleHandle(NULL), base_width, MODEL_SIZE);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
+        // Используем 2 буфера (Double Buffering). Пока один показывается, 
+        // во второй рисуем.
         scd.BufferCount = 2;
+        // Автоматически взять размеры из окна
         scd.BufferDesc.Width = 0; // Use window size
         scd.BufferDesc.Height = 0;
+        // Blue, Green, Red, Alpha, 8 бит на канал
         scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         scd.BufferDesc.RefreshRate.Numerator = 60;
         scd.BufferDesc.RefreshRate.Denominator = 1;
+        // Говорим DirectX, что мы будем рисовать в этот буфер (а не просто читать)
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         scd.OutputWindow = g_hwnd;
         scd.SampleDesc.Count = 1;
@@ -219,6 +243,10 @@ int main() {
         ComPtr<IDXGIAdapter1> selectedAdapter;
         DXGI_ADAPTER_DESC1 selectedDesc;
 
+        // ищем среди адаптеров те, у которых в названии есть nvidia. остальные встройки 
+        // игнорируем
+        // мы допускаем что у пользователя всего одна карточка и сразу выбираем ее
+        // потому что обычно у человека всего одна карта
         for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
@@ -240,9 +268,18 @@ int main() {
         D3D_DRIVER_TYPE driverType = selectedAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
 
         DX_CHECK(D3D11CreateDeviceAndSwapChain(
-            selectedAdapter.Get(), driverType, NULL, createDeviceFlags,
-            NULL, 0, D3D11_SDK_VERSION, &scd,
-            &swap_chain, &device, NULL, &context
+            selectedAdapter.Get(), 
+            driverType, 
+            NULL, 
+            createDeviceFlags,
+            NULL, 
+            0, 
+            D3D11_SDK_VERSION, 
+            &scd,
+            &swap_chain, 
+            &device, 
+            NULL, 
+            &context
         ));
 
         // 3. Screen Capture Setup
@@ -352,15 +389,6 @@ int main() {
         bool is_split = SPLIT_SCREEN;
         int rec_w = is_split ? MODEL_SIZE * 2 : MODEL_SIZE;
         int rec_h = MODEL_SIZE;
-        
-        // If VSR is enabled, do we record the VSR output?
-        // User request: "апскелинг результата... дополнительного апскейла результата"
-        // Usually recording is done on the native internal resolution to avoid large files, 
-        // but if VSR is part of the "look", maybe record it?
-        // For now, let's keep recording at inference resolution as implemented before 
-        // (logic below uses rec_w/rec_h which are based on MODEL_SIZE).
-        // Modifying recorder to support VSR resolution requires resizing buffers.
-        // Let's stick to inference resolution for recording to keep it performant.
 
         Recorder recorder(rec_w, rec_h, 24);
         
