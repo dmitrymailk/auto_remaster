@@ -168,155 +168,82 @@ void launch_tensor_to_u8_rgb_kernel(const void* in_tensor, void* out_u8_rgb, int
 // Draw the 512x512 tensor back to the screen center
 // Input: Tensor (FP16 NCHW)
 // Output: Surface (uchar4)
-__global__ void postprocess_kernel(const __half* in_tensor, cudaSurfaceObject_t surfObj, int screen_w, int screen_h, int dst_w, int dst_h, int dst_off_x, int dst_off_y) {
+// Draw the tensor back to the screen center with scaling
+// Input: Tensor (FP16 NCHW)
+// Output: Surface (uchar4)
+__global__ void postprocess_kernel(const __half* in_tensor, cudaSurfaceObject_t surfObj, int dst_w, int dst_h, int dst_off_x, int dst_off_y) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x < dst_w && y < dst_h) {
-        // x, y are relative to the destination box (0..dst_w, 0..dst_h)
-        int rel_x = x;
-        int rel_y = y;
+        // Map Dest (x, y) -> Source (src_x, src_y in 0..MODEL_SIZE-1)
+        // Bilinear Interpolation
+        float src_x = (x / (float)dst_w) * MODEL_SIZE;
+        float src_y = (y / (float)dst_h) * MODEL_SIZE;
         
-        if (rel_x >= 0 && rel_x < dst_w && rel_y >= 0 && rel_y < dst_h) {
-             // Map Dest (rel_x, rel_y) -> Source (sx, sy in 0..511)
-            // Bilinear Interpolation
-            float src_x = (rel_x / (float)dst_w) * MODEL_SIZE;
-            float src_y = (rel_y / (float)dst_h) * MODEL_SIZE;
-            
-            // Coordinates of top-left pixel
-            int x0 = (int)src_x;
-            int y0 = (int)src_y;
-            int x1 = min(x0 + 1, MODEL_SIZE - 1);
-            int y1 = min(y0 + 1, MODEL_SIZE - 1);
-            
-            // Weights
-            float dx = src_x - x0;
-            float dy = src_y - y0;
-            float w00 = (1.0f - dx) * (1.0f - dy);
-            float w10 = dx * (1.0f - dy);
-            float w01 = (1.0f - dx) * dy;
-            float w11 = dx * dy;
-            
-            // Function to read a pixel (helper lambda not avail here, macro or inline?)
-            // Inline reading:
-            int idx00 = y0 * MODEL_SIZE + x0;
-            int idx10 = y0 * MODEL_SIZE + x1;
-            int idx01 = y1 * MODEL_SIZE + x0;
-            int idx11 = y1 * MODEL_SIZE + x1;
-            int area = MODEL_SIZE * MODEL_SIZE;
-            
+        // Coordinates of top-left pixel
+        int x0 = (int)src_x;
+        int y0 = (int)src_y;
+        int x1 = min(x0 + 1, MODEL_SIZE - 1);
+        int y1 = min(y0 + 1, MODEL_SIZE - 1);
+        
+        // Weights
+        float dx = src_x - x0;
+        float dy = src_y - y0;
+        float w00 = (1.0f - dx) * (1.0f - dy);
+        float w10 = dx * (1.0f - dy);
+        float w01 = (1.0f - dx) * dy;
+        float w11 = dx * dy;
+        
+        // Function to read a pixel (helper lambda not avail here, macro or inline?)
+        // Inline reading:
+        int idx00 = y0 * MODEL_SIZE + x0;
+        int idx10 = y0 * MODEL_SIZE + x1;
+        int idx01 = y1 * MODEL_SIZE + x0;
+        int idx11 = y1 * MODEL_SIZE + x1;
+        int area = MODEL_SIZE * MODEL_SIZE;
+        
+        // Read R
+        float r00 = __half2float(in_tensor[idx00]);
+        float r10 = __half2float(in_tensor[idx10]);
+        float r01 = __half2float(in_tensor[idx01]);
+        float r11 = __half2float(in_tensor[idx11]);
+        float r = w00 * r00 + w10 * r10 + w01 * r01 + w11 * r11;
+        
+        // Read G (Area offset)
+        float g00 = __half2float(in_tensor[area + idx00]);
+        float g10 = __half2float(in_tensor[area + idx10]);
+        float g01 = __half2float(in_tensor[area + idx01]);
+        float g11 = __half2float(in_tensor[area + idx11]);
+        float g = w00 * g00 + w10 * g10 + w01 * g01 + w11 * g11;
 
-            
-            // Read R
-            float r00 = __half2float(in_tensor[idx00]);
-            float r10 = __half2float(in_tensor[idx10]);
-            float r01 = __half2float(in_tensor[idx01]);
-            float r11 = __half2float(in_tensor[idx11]);
-            float r = w00 * r00 + w10 * r10 + w01 * r01 + w11 * r11;
-            
-            // Read G (Area offset)
-            float g00 = __half2float(in_tensor[area + idx00]);
-            float g10 = __half2float(in_tensor[area + idx10]);
-            float g01 = __half2float(in_tensor[area + idx01]);
-            float g11 = __half2float(in_tensor[area + idx11]);
-            float g = w00 * g00 + w10 * g10 + w01 * g01 + w11 * g11;
+        // Read B (2*Area offset)
+        float b00 = __half2float(in_tensor[2 * area + idx00]);
+        float b10 = __half2float(in_tensor[2 * area + idx10]);
+        float b01 = __half2float(in_tensor[2 * area + idx01]);
+        float b11 = __half2float(in_tensor[2 * area + idx11]);
+        float b = w00 * b00 + w10 * b10 + w01 * b01 + w11 * b11;
 
-            // Read B (2*Area offset)
-            float b00 = __half2float(in_tensor[2 * area + idx00]);
-            float b10 = __half2float(in_tensor[2 * area + idx10]);
-            float b01 = __half2float(in_tensor[2 * area + idx01]);
-            float b11 = __half2float(in_tensor[2 * area + idx11]);
-            float b = w00 * b00 + w10 * b10 + w01 * b01 + w11 * b11;
-
-            // Denormalize [-1, 1] -> [0, 1]
-            r = r * 0.5f + 0.5f;
-            g = g * 0.5f + 0.5f;
-            b = b * 0.5f + 0.5f;
-            
-            uchar4 pixel;
-            pixel.z = (unsigned char)(__saturatef(r) * 255.0f);
-            pixel.y = (unsigned char)(__saturatef(g) * 255.0f);
-            pixel.x = (unsigned char)(__saturatef(b) * 255.0f);
-            pixel.w = 255;
-            
-            
-            surf2Dwrite(pixel, surfObj, (x + dst_off_x) * sizeof(uchar4), (y + dst_off_y));
-        } else {
-            // Draw Black Background only if we are responsible for this pixel
-            // In split screen, we might be drawing twice, so we should be careful not to overwrite?
-            // Actually, for simplicity, let's assume the caller clears the screen or we just overwrite.
-            // But if we want to support drawing two frames side-by-side without clearing each other...
-            // Each kernel call covers the FULL screen grid.
-            // So if we run it twice, the second run will overwrite the first if we write black.
-            
-            // To fix this: We only write black if we are NOT in the destination box? 
-            // Better: Don't write black in the kernel. Let the host clear the screen via ClearRenderTargetView.
-            // Removing the black background writing from kernel to allow multi-pass rendering.
-        }
+        // Denormalize [-1, 1] -> [0, 1]
+        r = r * 0.5f + 0.5f;
+        g = g * 0.5f + 0.5f;
+        b = b * 0.5f + 0.5f;
+        
+        uchar4 pixel;
+        pixel.z = (unsigned char)(__saturatef(r) * 255.0f);
+        pixel.y = (unsigned char)(__saturatef(g) * 255.0f);
+        pixel.x = (unsigned char)(__saturatef(b) * 255.0f);
+        pixel.w = 255;
+        
+        surf2Dwrite(pixel, surfObj, (x + dst_off_x) * sizeof(uchar4), (y + dst_off_y));
     }
 }
 
-void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int screen_width, int screen_height, cudaStream_t stream, unsigned char* out_u8_rgb) {
-    // Crop logic: Take largest center square
-    int crop_size = std::min(screen_width, screen_height);
-    int offset_x = (screen_width - crop_size) / 2;
-    int offset_y = (screen_height - crop_size) / 2;
-    
-    static int frame_count = 0;
-    if (frame_count++ % 300 == 0) { // Print every 300 frames (~5 sec)
-        std::cout << "[Preprocess] Screen: " << screen_width << "x" << screen_height 
-                  << " Crop: " << crop_size << "x" << crop_size 
-                  << " Offset: " << offset_x << "," << offset_y 
-                  << " Step: " << (float)crop_size / MODEL_SIZE << std::endl;
-    }
-
+void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int dst_width, int dst_height, int offset_x, int offset_y, cudaStream_t stream) {
     dim3 block(16, 16);
-    dim3 grid((MODEL_SIZE + block.x - 1) / block.x, (MODEL_SIZE + block.y - 1) / block.y);
-
-    preprocess_kernel<<<grid, block, 0, stream>>>(tex_obj, (__half*)d_output, crop_size, crop_size, offset_x, offset_y, out_u8_rgb);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream) {
-    // Draw fixed 512x512 square at specific offset
-    int dst_size = MODEL_SIZE;
-
-    // Run threads over the FULL SCREEN? 
-    // If we removed the background clearing, we only need to run over the destination area to save perf!
-    // Let's optimize: Only launch threads for the 512x512 area.
+    dim3 grid((dst_width + block.x - 1) / block.x, (dst_height + block.y - 1) / block.y);
     
-    // Actually, postprocess_kernel logic uses x,y as Screen Coordinates.
-    // If we only launch for 512x512, we need to adjust the kernel to add offset to x,y?
-    // Current kernel:
-    // int x = ...; int y = ...;
-    // if (x < screen_w && y < screen_h) ...
-    // int rel_x = x - dst_off_x;
-    
-    // Let's keep the kernel logic simple for now and just launch over the specific ROI.
-    // We will change the Grid construction.
-    
-    // Wait, if we change grid to only cover the ROI, then global x,y will start from 0,0 relative to grid?
-    // No, blockIdx * blockDim is absolute.
-    // So we can invoke it such that it covers the ROI window?
-    // But standard CUDA grid starts at 0. We'd need to add offset inside kernel.
-    
-    // EASIEST FIX with minimal kernel change:
-    // Keep kernel expecting screen absolute coords.
-    // But launch grid only big enough for screen? No.
-    // Launch grid large enough? Yes.
-    
-    // Optimization:
-    // We want threads (x,y) such that x in [offset_x, offset_x + dst_size].
-    // We can't easily offset blockIdx.
-    // So we'll pass an extra "grid_offset_x/y" to kernel? 
-    // Or just revert to full screen launch but return early? 
-    // Full screen launch is fine for 1920x1080 (2M threads), barely costs anything compared to inference.
-    // And we removed the "else { write black }" so it's safe to run multiple times.
-
-    dim3 block(16, 16);
-    dim3 grid((screen_width + block.x - 1) / block.x, (screen_height + block.y - 1) / block.y);
-    
-    postprocess_kernel<<<grid, block, 0, stream>>>((const __half*)d_input, surf_obj, screen_width, screen_height, dst_size, dst_size, offset_x, offset_y);
+    postprocess_kernel<<<grid, block, 0, stream>>>((const __half*)d_input, surf_obj, dst_width, dst_height, offset_x, offset_y);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -481,6 +408,16 @@ cudaArray_t map_d3d11_resource(cudaGraphicsResource* resource) {
     return array;
 }
 
+
 void unmap_d3d11_resource(cudaGraphicsResource* resource) {
     CUDA_CHECK(cudaGraphicsUnmapResources(1, &resource));
+}
+
+void launch_preprocess_kernel(cudaTextureObject_t texObj, void* d_output, int crop_w, int crop_h, int offset_x, int offset_y, cudaStream_t stream, unsigned char* out_u8_rgb) {
+    dim3 block(16, 16);
+    dim3 grid((MODEL_SIZE + block.x - 1) / block.x, (MODEL_SIZE + block.y - 1) / block.y);
+
+    // Call preprocess_kernel with the crop window and offsets
+    preprocess_kernel<<<grid, block, 0, stream>>>(texObj, (__half*)d_output, crop_w, crop_h, offset_x, offset_y, out_u8_rgb);
+    CUDA_CHECK(cudaGetLastError());
 }

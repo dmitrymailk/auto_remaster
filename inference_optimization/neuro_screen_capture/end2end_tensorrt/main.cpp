@@ -4,6 +4,7 @@
 #include <fstream>
 #include <algorithm>
 #include <memory> 
+#include <string>
 
 #include "utils.h"
 #include "capture_interface.h"
@@ -13,7 +14,13 @@
 #include "pipeline.h"
 #include "cuda_utils.h"
 #include <cuda_d3d11_interop.h>
-#include "recorder.h" // Added Recorder
+#include "recorder.h" 
+
+#include "config.h" // Ensure config is included for ENABLE_VSR
+
+#if ENABLE_VSR
+#include "vsr_upscaler.h"
+#endif
 
 // Forward decls for interop (will be in header)
 cudaGraphicsResource* register_d3d11_resource(ID3D11Texture2D* texture);
@@ -51,7 +58,7 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
     g_hwnd = CreateWindowEx(
-        0, CLASS_NAME, "Neuro Screen Capture (TensorRT VAE)",
+        0, CLASS_NAME, "Neuro Screen Capture (TensorRT VAE + VSR)",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 
         rect.right - rect.left, rect.bottom - rect.top,
         NULL, NULL, hInstance, NULL
@@ -94,13 +101,26 @@ int main() {
              }
         }
         
-        // 1. Create Window (Client area MODEL_SIZE x MODEL_SIZE initially)
-        int window_width = MODEL_SIZE;
+        // 1. Create Window
+        // Calculate Base Window Width (Inference Resolution)
+        int base_width = MODEL_SIZE;
         #if SPLIT_SCREEN
-        window_width = MODEL_SIZE * 2;
-        std::cout << "Split Screen Enabled. Window Width: " << window_width << std::endl;
+        base_width = MODEL_SIZE * 2;
+        std::cout << "Split Screen Enabled." << std::endl;
         #endif
-        CreateNativeWindow(GetModuleHandle(NULL), window_width, MODEL_SIZE);
+
+        // Calculate Check VSR Scale
+        int display_width = base_width;
+        int display_height = MODEL_SIZE;
+
+        #if ENABLE_VSR
+        std::cout << "VSR Enabled. Target Scale: " << VSR_SCALE << "x" << std::endl;
+        display_width *= VSR_SCALE;
+        display_height *= VSR_SCALE;
+        #endif
+
+        std::cout << "Display Resolution: " << display_width << "x" << display_height << std::endl;
+        CreateNativeWindow(GetModuleHandle(NULL), display_width, display_height);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
@@ -121,13 +141,41 @@ int main() {
         ComPtr<ID3D11DeviceContext> context;
         ComPtr<IDXGISwapChain> swap_chain; 
         
-        UINT createDeviceFlags = 0;
+        UINT createDeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         #ifdef _DEBUG
         createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
         #endif
 
+        // Create Factory to enumerate adapters
+        ComPtr<IDXGIFactory1> factory;
+        CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory);
+
+        ComPtr<IDXGIAdapter1> adapter;
+        ComPtr<IDXGIAdapter1> selectedAdapter;
+        DXGI_ADAPTER_DESC1 selectedDesc;
+
+        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+            std::wstring name(desc.Description);
+            if (name.find(L"NVIDIA") != std::wstring::npos) {
+                selectedAdapter = adapter;
+                selectedDesc = desc;
+                break;
+            }
+        }
+
+        if (selectedAdapter) {
+            std::wcout << L"[Main] Selected Adapter: " << selectedDesc.Description << std::endl;
+        } else {
+            std::cerr << "[Main] WARNING: NVIDIA Adapter not found! Using default." << std::endl;
+        }
+
+        // Use UNKNOWN driver type when adapter is specified
+        D3D_DRIVER_TYPE driverType = selectedAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+
         DX_CHECK(D3D11CreateDeviceAndSwapChain(
-            NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, createDeviceFlags,
+            selectedAdapter.Get(), driverType, NULL, createDeviceFlags,
             NULL, 0, D3D11_SDK_VERSION, &scd,
             &swap_chain, &device, NULL, &context
         ));
@@ -157,6 +205,22 @@ int main() {
         #if ENABLE_UNET
         pipeline.LoadUNet("unet.plan");
         #endif
+        
+        // 4.1. VSR Init
+        #if ENABLE_VSR
+        std::cout << "[Main] Initializing VSR..." << std::endl;
+        std::unique_ptr<VSRUpscaler> vsr = std::make_unique<VSRUpscaler>(device.Get(), context.Get());
+        // Initialize for Base -> Scaled
+        // Ensure dimensions are valid
+        std::cout << "[Main] VSR Init Params: Base=" << base_width << "x" << MODEL_SIZE << " Display=" << display_width << "x" << display_height << std::endl;
+        
+        if (!vsr->Initialize(base_width, MODEL_SIZE, display_width, display_height)) {
+            std::cerr << "VSR Initialization Failed! Falling back to standard display." << std::endl;
+            // Handle fallback or exit? For now proceeded but vsr will do nothing.
+        } else {
+             std::cout << "[Main] VSR Initialized successfully." << std::endl;
+        }
+        #endif
 
         // 6. Textures
         // Input Texture (Capture Resolution)
@@ -173,16 +237,28 @@ int main() {
         ComPtr<ID3D11Texture2D> d3d_input_texture;
         DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
 
-        // Output Texture (Matches Window Size for Split Screen) - for Inference Output
+        // Inference Output Texture (Base Resolution)
+        // Matches Window Size for Split Screen
         D3D11_TEXTURE2D_DESC outputDesc = inputDesc;
-        outputDesc.Width = MODEL_SIZE;
-        #if SPLIT_SCREEN
-        outputDesc.Width = MODEL_SIZE * 2;
-        #endif
+        outputDesc.Width = base_width;
         outputDesc.Height = MODEL_SIZE;
+        // Make sure it can be used by VSR (Shader Resource) and by CUDA (Render Target not strictly needed for CUDA write, but UAV might be)
+        // D3D11: CUDA interop usually works with default usage.
         
         ComPtr<ID3D11Texture2D> d3d_output_texture;
         DX_CHECK(device->CreateTexture2D(&outputDesc, NULL, &d3d_output_texture));
+        
+        #if ENABLE_VSR
+        // VSR Output Texture (Display Resolution)
+        D3D11_TEXTURE2D_DESC vsrOutDesc = outputDesc;
+        vsrOutDesc.Width = display_width;
+        vsrOutDesc.Height = display_height;
+        vsrOutDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET; 
+        // Note: NGX writes via UAV usually.
+        
+        ComPtr<ID3D11Texture2D> d3d_vsr_output_texture;
+        DX_CHECK(device->CreateTexture2D(&vsrOutDesc, NULL, &d3d_vsr_output_texture));
+        #endif
 
         // Register with CUDA
         cudaGraphicsResource* cuda_tex_in = register_d3d11_resource(d3d_input_texture.Get());
@@ -211,6 +287,16 @@ int main() {
         bool is_split = SPLIT_SCREEN;
         int rec_w = is_split ? MODEL_SIZE * 2 : MODEL_SIZE;
         int rec_h = MODEL_SIZE;
+        
+        // If VSR is enabled, do we record the VSR output?
+        // User request: "апскелинг результата... дополнительного апскейла результата"
+        // Usually recording is done on the native internal resolution to avoid large files, 
+        // but if VSR is part of the "look", maybe record it?
+        // For now, let's keep recording at inference resolution as implemented before 
+        // (logic below uses rec_w/rec_h which are based on MODEL_SIZE).
+        // Modifying recorder to support VSR resolution requires resizing buffers.
+        // Let's stick to inference resolution for recording to keep it performant.
+
         Recorder recorder(rec_w, rec_h, 24);
         
         void* d_record_buffer = nullptr;
@@ -278,6 +364,17 @@ int main() {
                     }
                 }
                 f10_pressed_last = f10_down;
+
+                // F11 Button Handling (VSR Toggle)
+                static bool f11_pressed_last = false;
+                bool f11_down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+                static bool vsr_enabled_runtime = true;
+
+                if (f11_down && !f11_pressed_last) {
+                    vsr_enabled_runtime = !vsr_enabled_runtime;
+                    std::cout << "[VSR] Runtime Toggle: " << (vsr_enabled_runtime ? "ENABLED" : "DISABLED (Bilinear Fallback)") << std::endl;
+                }
+                f11_pressed_last = f11_down;
 
                 // --- Overlay Tracking Logic ---
                 if (is_overlay_mode && mode == 1 && target_window && IsWindow(target_window)) {
@@ -365,8 +462,16 @@ int main() {
                     cudaTextureObject_t texObj = 0;
                     CUDA_CHECK(cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL));
                     
+                    // Preprocessing Logic: Center Crop Square + Downscale
+                    // 1. Determine shortest side
+                    int crop_size = min(WIDTH, HEIGHT);
+                    // 2. Center the crop
+                    int crop_off_x = (WIDTH - crop_size) / 2;
+                    int crop_off_y = (HEIGHT - crop_size) / 2;
+
                     // Launch Preprocess (Computes FP16 Tensor)
-                    launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
+                    // Maps the [crop_size x crop_size] region at (crop_off_x, crop_off_y) to the 512x512 Network Input
+                    launch_preprocess_kernel(texObj, d_input, crop_size, crop_size, crop_off_x, crop_off_y, stream);
                     
                     if (save_requested) {
                         // Save Raw FP16 Tensor (NCHW)
@@ -424,12 +529,68 @@ int main() {
                         }
                     }
                     
-                    // 5. Postprocess (Tensor -> Output Texture)
-                    // If SPLIT_SCREEN:
-                    //   Left (0): Processed (d_output)
-                    //   Right (MODEL_SIZE): Original (d_input)
+                    // 5. Postprocess (Tensor -> Buffer)
+                    
+                    // Logic switch:
+                    // If VSR Enabled & Supported & Runtime ON:
+                    //    -> Postprocess to Base Resolution (MODEL_SIZE) to d3d_output_texture 
+                    //    -> VSR Process to d3d_vsr_output_texture (High Res)
+                    //    -> Present High Res
+                    // Else:
+                    //    -> Postprocess to High Res directly (Bilinear) to d3d_vsr_output_texture (Reuse this texture as target!)
+                    //    -> Present High Res
+                    
+                    bool use_vsr = false;
+                    
+                    #if ENABLE_VSR
+                    if (vsr && vsr->IsSupported() && vsr_enabled_runtime) {
+                        use_vsr = true;
+                    }
+                    #endif
+                    
+                    ID3D11Texture2D* pTargetTexture = d3d_output_texture.Get(); // Default target if VSR off (base res)
+                    // Wait, if VSR is off (or unavailable), we want to behave as if we are scaling bilinearly to window size?
+                    // Or just output at base res and let CopySubresource region handle it (1:1 center)?
+                    // User wants to compare "Upscale" vs "No Upscale" (or "Naive Upscale").
+                    // If I scale bilinearly to 2x, that is "Naive Upscale".
+                    // If I keep 1x, that is "No Upscale".
+                    // Let's implement Bilinear Upscale if VSR is OFF but the window is large.
+                    
+                    bool use_bilinear_fallback = !use_vsr && (display_width > MODEL_SIZE); 
+                    
+                    cudaGraphicsResource* cuda_target_tex = cuda_tex_out; // Default: Output Texture (Base Res)
+                    ID3D11Texture2D* pFinalForPresent = d3d_output_texture.Get();
 
-                    cudaArray_t arr_out = map_d3d11_resource(cuda_tex_out);
+                    #if ENABLE_VSR
+                    // If we have a VSR texture allocated (which is High Res), we can use it for bilinear target too!
+                    if (d3d_vsr_output_texture) {
+                         if (use_vsr) {
+                             // Case A: VSR
+                             // 1. Postprocess -> Base Res (cuda_tex_out)
+                             // 2. VSR -> High Res
+                             pFinalForPresent = d3d_vsr_output_texture.Get();
+                         } else if (use_bilinear_fallback) {
+                             // Case B: Bilinear
+                             // 1. Postprocess -> High Res directly (we need to map High Res texture to CUDA!)
+                            // We didn't register d3d_vsr_output_texture with CUDA yet.
+                         }
+                    }
+                    #endif
+                    
+                    // To support Case B efficiently, we should register d3d_vsr_output_texture with CUDA too.
+                    static cudaGraphicsResource* cuda_tex_vsr = nullptr;
+                    #if ENABLE_VSR
+                    if (d3d_vsr_output_texture && !cuda_tex_vsr) {
+                        cuda_tex_vsr = register_d3d11_resource(d3d_vsr_output_texture.Get());
+                    }
+                    #endif
+
+                    if (use_bilinear_fallback && cuda_tex_vsr) {
+                        cuda_target_tex = cuda_tex_vsr;
+                        pFinalForPresent = d3d_vsr_output_texture.Get();
+                    }
+
+                    cudaArray_t arr_out = map_d3d11_resource(cuda_target_tex);
                     
                     cudaResourceDesc surfResDesc = {};
                     surfResDesc.resType = cudaResourceTypeArray;
@@ -438,23 +599,64 @@ int main() {
                     cudaSurfaceObject_t surfObj = 0;
                     CUDA_CHECK(cudaCreateSurfaceObject(&surfObj, &surfResDesc));
                     
-                    // Always render to MODEL_SIZE x MODEL_SIZE fixed output
                     int processed_off_x = 0;
+                    int dst_w, dst_h;
                     
-                    #if SPLIT_SCREEN
-                    processed_off_x = MODEL_SIZE; // Right side
-                    // Draw Original to Left (0)
-                    launch_postprocess_kernel(d_input, surfObj, MODEL_SIZE, MODEL_SIZE, 0, 0, stream);
-                    #endif
-
-                    // Draw Processed
-                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, processed_off_x, 0, stream);
+                    if (use_bilinear_fallback && cuda_tex_vsr) {
+                        // Target is High Res
+                         dst_w = display_width;
+                         dst_h = display_height;
+                         // If split screen, we split the high res buffer
+                         int half_w = dst_w;
+                         #if SPLIT_SCREEN
+                         half_w /= 2;
+                         processed_off_x = half_w;
+                         #endif
+                         
+                         // Launch Scaled Postprocess
+                         #if SPLIT_SCREEN
+                         launch_postprocess_kernel(d_input, surfObj, half_w, dst_h, 0, 0, stream);
+                         #endif
+                         launch_postprocess_kernel(d_output, surfObj, half_w, dst_h, processed_off_x, 0, stream);
+                         
+                    } else {
+                        // Target is Base Res (for VSR input)
+                        dst_w = MODEL_SIZE;
+                        dst_h = MODEL_SIZE;
+                        int half_w = dst_w;
+                         #if SPLIT_SCREEN
+                         dst_w *= 2;
+                         processed_off_x = MODEL_SIZE;
+                         #endif
+                         
+                         // Launch 1:1 Postprocess
+                         #if SPLIT_SCREEN
+                         launch_postprocess_kernel(d_input, surfObj, MODEL_SIZE, MODEL_SIZE, 0, 0, stream);
+                         #endif
+                         launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, processed_off_x, 0, stream);
+                    }
                     
-                    CUDA_CHECK(cudaStreamSynchronize(stream)); // Finish writing to surface logic
+                    CUDA_CHECK(cudaStreamSynchronize(stream)); 
                     CUDA_CHECK(cudaDestroySurfaceObject(surfObj));
-                    unmap_d3d11_resource(cuda_tex_out);
+                    unmap_d3d11_resource(cuda_target_tex);
 
-                    // 5. Present (Copy Output Texture -> Backbuffer Center)
+                    // 6. VSR Pass (if enabled)
+                    // Logic check: use_vsr is runtime toggle, vsr_enabled is compile time flag (represented by pointer existence)
+                    if (use_vsr && vsr) {
+                        static int vsr_log_counter = 0;
+                        if (vsr->Process(d3d_output_texture.Get(), d3d_vsr_output_texture.Get())) {
+                            pFinalForPresent = d3d_vsr_output_texture.Get();
+                            if (vsr_log_counter++ % 60 == 0) std::cout << "[Main] VSR Applied to frame." << std::endl;
+                        } else {
+                            if (vsr_log_counter++ % 60 == 0) std::cerr << "[Main] VSR Process Failed!" << std::endl;
+                        }
+                    } else if (vsr) {
+                         // VSR exists but runtime disabled
+                         static int fallback_log_counter = 0;
+                         if (fallback_log_counter++ % 60 == 0) std::cout << "[Main] VSR Disabled (Runtime). Using Bilinear." << std::endl;
+                    }
+
+                    // 7. Present (Copy Final Texture -> Backbuffer Center)
                     ComPtr<ID3D11Texture2D> back_buffer;
                     DX_CHECK(swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), &back_buffer));
                     
@@ -465,32 +667,35 @@ int main() {
                     float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
                     context->ClearRenderTargetView(rtv.Get(), black);
                     
-                    // Recalculate copy params for correct width
-                    int tex_w = MODEL_SIZE;
-                    #if SPLIT_SCREEN
-                    tex_w = MODEL_SIZE * 2;
-                    #endif
+                    // Recalculate copy params based on final texture size
+                    D3D11_TEXTURE2D_DESC finalDesc;
+                    pFinalForPresent->GetDesc(&finalDesc);
+                    
+                    int tex_w = finalDesc.Width;
+                    int tex_h = finalDesc.Height;
                     
                     int tgt_x = (win_w - tex_w) / 2;
-                    int tgt_y = (win_h - MODEL_SIZE) / 2;
+                    int tgt_y = (win_h - tex_h) / 2;
                     
                     int src_x = 0; int src_y = 0;
                     int dst_x = tgt_x; int dst_y = tgt_y;
                     int copy_w = tex_w; 
-                    int copy_h = MODEL_SIZE;
+                    int copy_h = tex_h;
 
                     if (tgt_x < 0) { src_x = -tgt_x; dst_x = 0; copy_w = win_w; }
                     if (tgt_y < 0) { src_y = -tgt_y; dst_y = 0; copy_h = win_h; }
 
-                    D3D11_BOX srcBox;
-                    srcBox.left = src_x;
-                    srcBox.right = src_x + copy_w;
-                    srcBox.top = src_y;
-                    srcBox.bottom = src_y + copy_h;
-                    srcBox.front = 0;
-                    srcBox.back = 1;
+                    if (copy_w > 0 && copy_h > 0) {
+                        D3D11_BOX srcBox;
+                        srcBox.left = src_x;
+                        srcBox.right = src_x + copy_w;
+                        srcBox.top = src_y;
+                        srcBox.bottom = src_y + copy_h;
+                        srcBox.front = 0;
+                        srcBox.back = 1;
 
-                    context->CopySubresourceRegion(back_buffer.Get(), 0, dst_x, dst_y, 0, d3d_output_texture.Get(), 0, &srcBox);
+                        context->CopySubresourceRegion(back_buffer.Get(), 0, dst_x, dst_y, 0, pFinalForPresent, 0, &srcBox);
+                    }
                     
                     DX_CHECK(swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
                     

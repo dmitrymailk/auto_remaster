@@ -73,5 +73,20 @@ if (Test-Path $unetDir) {
     Write-Warning "UNet model directory not found at $unetDir. Please manually copy unet.plan file."
 }
 
+# Copy RTX Video SDK DLLs
+$rtxSdkBin = "C:\programming\auto_remaster\inference_optimization\RTX_Video_SDK_v1.1.0\bin\Windows\x64\dev" 
+# Use 'dev' folders for development/debugging, 'rel' for release. 'dev' usually has valid signatures for development.
+# But guide says regular driver installation puts them in System32. 
+# However, to be safe and ensure they are found if not in path, copy them.
+# Research suggested 'rel' or 'dev'. Let's check if 'dev' exists in the previous file listing? 
+# The listing showed: bin\Windows\x64\dev\nvngx_vsr.dll
+if (Test-Path $rtxSdkBin) {
+    Copy-Item "$rtxSdkBin\nvngx_vsr.dll" $destDir -Force
+    Copy-Item "$rtxSdkBin\nvngx_truehdr.dll" $destDir -Force # Just in case
+    Write-Host "RTX Video SDK DLLs copied." -ForegroundColor Green
+} else {
+    Write-Warning "RTX Video SDK bin directory not found at $rtxSdkBin."
+}
+
 Write-Host "Build Complete!" -ForegroundColor Green
 Write-Host "Executable is located at: $destDir\end2end_tensorrt.exe"

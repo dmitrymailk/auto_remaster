@@ -9,20 +9,17 @@
 // input: Texture object (Screen)
 // output: Float ptr (NCHW, 3x512x512)
 // original_width, original_height: Screen dims
-void launch_preprocess_kernel(
-    cudaTextureObject_t tex_obj, 
-    float* d_output, 
-    int screen_width, 
-    int screen_height, 
-    cudaStream_t stream = 0
-);
+// Launch params: 
+// input: Texture object (Screen)
+// output: Float ptr (NCHW, 3x512x512)
+// original_width, original_height: Screen dims
 
 // Launch params:
 // input: Float ptr (NCHW, 3x512x512)
 // output: Surface object (Screen)
 // screen_width, screen_height: Screen dims
 // offset_x, offset_y: Destination top-left
-void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream);
+void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int dst_width, int dst_height, int offset_x, int offset_y, cudaStream_t stream);
 
 // Debug
 void launch_debug_tensor_dump(const void* d_input, void* d_debug_output, int width, int height, cudaStream_t stream);
@@ -36,10 +33,10 @@ void unmap_d3d11_resource(cudaGraphicsResource* resource);
 // Kernels
 // Launch preprocessing (Texture -> FP16 Tensor)
 // Optional: out_u8_rgb for recording (3 channels, interleaved, 0-255)
-void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int screen_width, int screen_height, cudaStream_t stream, unsigned char* out_u8_rgb = nullptr);
+void launch_preprocess_kernel(cudaTextureObject_t tex_obj, void* d_output, int crop_w, int crop_h, int offset_x, int offset_y, cudaStream_t stream, unsigned char* out_u8_rgb = nullptr);
 
 // d_input is half* (FP16) internally
-void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream);
+// void launch_postprocess_kernel(const void* d_input, cudaSurfaceObject_t surf_obj, int screen_width, int screen_height, int offset_x, int offset_y, cudaStream_t stream); (Removed duplicate)
 
 // New split-screen recording kernel
 void launch_concat_tensors_kernel(const void* in_tensor, const void* out_tensor, void* out_u8_rgb, int model_size, cudaStream_t stream);
