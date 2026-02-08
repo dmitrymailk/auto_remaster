@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <memory> 
 #include <string>
+#include <sstream>
+#include <filesystem>
 
 #include "utils.h"
 #include "capture_interface.h"
@@ -16,11 +18,71 @@
 #include <cuda_d3d11_interop.h>
 #include "recorder.h" 
 
+// GDI+ for PNG saving
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
+
 #include "config.h" // Ensure config is included for ENABLE_VSR
 
 #if ENABLE_VSR
 #include "vsr_upscaler.h"
 #endif
+
+namespace fs = std::filesystem;
+
+// GDI+ CLSID helper
+int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (size == 0) return -1;
+    
+    std::vector<BYTE> buffer(size);
+    Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)buffer.data();
+    Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+    
+    for (UINT j = 0; j < num; ++j) {
+        if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
+            *pClsid = pImageCodecInfo[j].Clsid;
+            return j;
+        }
+    }
+    return -1;
+}
+
+// Save RGB buffer as PNG using GDI+
+bool SavePNG(const unsigned char* rgb_data, int width, int height, const std::string& filepath) {
+    Gdiplus::Bitmap bitmap(width, height, PixelFormat24bppRGB);
+    
+    Gdiplus::BitmapData bmpData;
+    Gdiplus::Rect rect(0, 0, width, height);
+    
+    if (bitmap.LockBits(&rect, Gdiplus::ImageLockModeWrite, PixelFormat24bppRGB, &bmpData) != Gdiplus::Ok) {
+        return false;
+    }
+    
+    // Copy RGB data to bitmap (GDI+ uses BGR, need to swap)
+    unsigned char* dst = (unsigned char*)bmpData.Scan0;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int src_idx = (y * width + x) * 3;
+            int dst_idx = y * bmpData.Stride + x * 3;
+            dst[dst_idx + 0] = rgb_data[src_idx + 2]; // B
+            dst[dst_idx + 1] = rgb_data[src_idx + 1]; // G
+            dst[dst_idx + 2] = rgb_data[src_idx + 0]; // R
+        }
+    }
+    
+    bitmap.UnlockBits(&bmpData);
+    
+    CLSID pngClsid;
+    if (GetEncoderClsid(L"image/png", &pngClsid) < 0) {
+        return false;
+    }
+    
+    // Convert to wide string
+    std::wstring wpath(filepath.begin(), filepath.end());
+    return bitmap.Save(wpath.c_str(), &pngClsid, NULL) == Gdiplus::Ok;
+}
 
 // Forward decls for interop (will be in header)
 cudaGraphicsResource* register_d3d11_resource(ID3D11Texture2D* texture);
@@ -311,15 +373,31 @@ int main() {
         bool was_recording = false;
         double record_interval = 1.0 / 24.0; 
 
-        // Debug Buffer (RGB 512x512)
-        unsigned char* d_debug_img = nullptr;
-        size_t debug_size = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned char);
-        CUDA_CHECK(cudaMalloc(&d_debug_img, debug_size));
+        // Screenshot Buffer (RGB, output resolution)
+        // For split screen: MODEL_SIZE*2 x MODEL_SIZE, else MODEL_SIZE x MODEL_SIZE
+        int screenshot_width = is_split ? MODEL_SIZE * 2 : MODEL_SIZE;
+        int screenshot_height = MODEL_SIZE;
+        size_t screenshot_size = screenshot_width * screenshot_height * 3 * sizeof(unsigned char);
+        unsigned char* d_screenshot_buffer = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_screenshot_buffer, screenshot_size));
+        std::vector<unsigned char> h_screenshot_buffer(screenshot_size);
+        
+        // Initialize GDI+
+        Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+        ULONG_PTR gdiplusToken;
+        Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+        
+        // Create screenshots directory
+        if (!fs::exists("screenshots")) {
+            fs::create_directory("screenshots");
+        }
+        
         bool save_requested = false;
 
         bool is_overlay_mode = false;
         bool f9_pressed_last = false; // Debounce F9
         bool f10_pressed_last = false; // Debounce F10
+        bool f12_pressed_last = false; // Debounce F12 (Screenshot)
         bool f11_pressed_last = false; // Debounce F11
         bool vsr_enabled_runtime = false; // Start with VSR DISABLED
 
@@ -355,7 +433,7 @@ int main() {
             }
         };
 
-        std::cout << "Starting Loop... \nPress 'S' to save debugging image.\nPress 'F9' to toggle Overlay Mode.\nPress 'F10' to toggle Recording.\nPress 'F11' to toggle VSR (RTX Video Super Resolution)." << std::endl;
+        std::cout << "Starting Loop... \nPress 'S' or 'F12' to save screenshot (PNG).\nPress 'F9' to toggle Overlay Mode.\nPress 'F10' to toggle Recording.\nPress 'F11' to toggle VSR (RTX Video Super Resolution)." << std::endl;
 
         while (msg.message != WM_QUIT) {
             if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -402,6 +480,13 @@ int main() {
                     #endif
                 }
                 f11_pressed_last = f11_down;
+
+                // F12 Screenshot
+                bool f12_down = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+                if (f12_down && !f12_pressed_last) {
+                    save_requested = true;
+                }
+                f12_pressed_last = f12_down;
 
                 // --- Overlay Tracking Logic ---
                 if (is_overlay_mode && mode == 1 && target_window && IsWindow(target_window)) {
@@ -499,28 +584,44 @@ int main() {
                     // Launch Preprocess (Computes FP16 Tensor)
                     // Maps the [crop_size x crop_size] region at (crop_off_x, crop_off_y) to the 512x512 Network Input
                     launch_preprocess_kernel(texObj, d_input, crop_size, crop_size, crop_off_x, crop_off_y, stream);
-                    
-                    if (save_requested) {
-                        // Save Raw FP16 Tensor (NCHW)
-                        size_t tensor_size_bytes = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned short); // half = 2 bytes
-                        std::vector<char> h_tensor(tensor_size_bytes);
-                        
-                        CUDA_CHECK(cudaMemcpy(h_tensor.data(), d_input, tensor_size_bytes, cudaMemcpyDeviceToHost));
-                        CUDA_CHECK(cudaStreamSynchronize(stream));
-                        
-                        std::ofstream bin("capture_input_fp16.bin", std::ios::binary);
-                        bin.write(h_tensor.data(), tensor_size_bytes);
-                        bin.close();
-                        
-                        std::cout << "Saved capture_input_fp16.bin (" << tensor_size_bytes << " bytes)" << std::endl;
-                    }
 
                     CUDA_CHECK(cudaDestroyTextureObject(texObj));
                     unmap_d3d11_resource(cuda_tex_in); // Unmap Input immediately
 
                     // 3. Inference
-                    pipeline.Inference(stream, d_input, d_output, save_requested);
-                    if (save_requested) save_requested = false;
+                    pipeline.Inference(stream, d_input, d_output, false);
+
+                    // 3.5 Screenshot Logic (Save PNG after inference)
+                    if (save_requested) {
+                        save_requested = false;
+                        
+                        // Convert tensor(s) to RGB
+                        if (is_split) {
+                            launch_concat_tensors_kernel(d_input, d_output, d_screenshot_buffer, MODEL_SIZE, stream);
+                        } else {
+                            launch_tensor_to_u8_rgb_kernel(d_output, d_screenshot_buffer, MODEL_SIZE, stream);
+                        }
+                        
+                        // Copy to host
+                        CUDA_CHECK(cudaMemcpyAsync(h_screenshot_buffer.data(), d_screenshot_buffer, screenshot_size, cudaMemcpyDeviceToHost, stream));
+                        CUDA_CHECK(cudaStreamSynchronize(stream));
+                        
+                        // Generate unique filename with timestamp
+                        auto now = std::chrono::system_clock::now();
+                        auto duration = now.time_since_epoch();
+                        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+                        
+                        std::stringstream ss;
+                        ss << "screenshots/screenshot_" << millis << "_" << screenshot_width << "x" << screenshot_height << ".png";
+                        std::string filename = ss.str();
+                        
+                        // Save PNG
+                        if (SavePNG(h_screenshot_buffer.data(), screenshot_width, screenshot_height, filename)) {
+                            std::cout << "[Screenshot] Saved: " << filename << std::endl;
+                        } else {
+                            std::cerr << "[Screenshot] Failed to save: " << filename << std::endl;
+                        }
+                    }
 
                     // 4. Recording Logic (Post-Inference to capture Input + Output)
                     bool is_rec = recorder.IsRecording();
@@ -682,10 +783,11 @@ int main() {
         }
         
         // Cleanup
+        Gdiplus::GdiplusShutdown(gdiplusToken);
         cudaStreamDestroy(stream);
         cudaFree(d_input);
         cudaFree(d_output);
-        cudaFree(d_debug_img);
+        cudaFree(d_screenshot_buffer);
         cudaFree(d_record_buffer); // Free Record Buffer
         
         if (cuda_tex_in) unregister_d3d11_resource(cuda_tex_in);
