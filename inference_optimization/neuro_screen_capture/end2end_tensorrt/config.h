@@ -22,4 +22,4 @@
 
 // RTX Video Super Resolution (VSR) Configuration
 #define ENABLE_VSR 1 // 0 = Disable, 1 = Enable
-#define VSR_SCALE 2  // Scale factor (e.g., 2 for 2x upscale)
+#define VSR_SCALE 1.5  // Scale factor (e.g., 2 for 2x upscale, 1.5 for 1.5x)

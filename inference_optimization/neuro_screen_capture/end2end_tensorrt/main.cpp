@@ -646,7 +646,7 @@ int main() {
                         static int vsr_log_counter = 0;
                         if (vsr->Process(d3d_output_texture.Get(), d3d_vsr_output_texture.Get())) {
                             pFinalForPresent = d3d_vsr_output_texture.Get();
-                            if (vsr_log_counter++ % 60 == 0) std::cout << "[Main] VSR Applied to frame." << std::endl;
+                            // if (vsr_log_counter++ % 60 == 0) std::cout << "[Main] VSR Applied to frame." << std::endl;
                         } else {
                             if (vsr_log_counter++ % 60 == 0) std::cerr << "[Main] VSR Process Failed!" << std::endl;
                         }

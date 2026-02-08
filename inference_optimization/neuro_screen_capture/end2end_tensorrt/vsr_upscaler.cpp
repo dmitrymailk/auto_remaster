@@ -97,17 +97,13 @@ bool VSRUpscaler::Initialize(int inputWidth, int inputHeight, int outputWidth, i
     // Wait, NVSDK_NGX_D3D11_CreateFeature takes 'InParameters' and returns handle.
     // We need to Setup the parameters before calling Create.
     
-    // Common Setup
     m_pNgxParameters->Set(NVSDK_NGX_Parameter_Width, inputWidth);
     m_pNgxParameters->Set(NVSDK_NGX_Parameter_Height, inputHeight);
     m_pNgxParameters->Set(NVSDK_NGX_Parameter_OutWidth, outputWidth);
     m_pNgxParameters->Set(NVSDK_NGX_Parameter_OutHeight, outputHeight);
-    m_pNgxParameters->Set(NVSDK_NGX_Parameter_VSR_QualityLevel, NVSDK_NGX_VSR_Quality_High); // 1-4. 4 is Ultra? defined as 4 in header.
+    m_pNgxParameters->Set(NVSDK_NGX_Parameter_VSR_QualityLevel, NVSDK_NGX_VSR_Quality_Medium); 
 
-    // Hint: VSR expects sRGB/Gamma content usually, or at least we should specify.
-    // But for "RGB only" use case, we just pass the textures.
-
-    std::cout << "[VSR] Creating Feature... Params: " << inputWidth << "x" << inputHeight << " -> " << outputWidth << "x" << outputHeight << std::endl;
+    std::cout << "[VSR] Creating Feature... Params: " << inputWidth << "x" << inputHeight << " -> " << outputWidth << "x" << outputHeight << " (Quality: Medium)" << std::endl;
     if (!m_pNgxParameters) {
         std::cerr << "[VSR] Error: m_pNgxParameters is NULL!" << std::endl;
         return false;
@@ -169,9 +165,11 @@ bool VSRUpscaler::Process(ID3D11Texture2D* input, ID3D11Texture2D* output) {
     );
 
     if (NVSDK_NGX_FAILED(result)) {
-        std::cerr << "[VSR] EvaluateFeature failed. Result: " << std::hex << result << std::dec << std::endl;
-        std::cerr << "[VSR] Debug: Input " << inDesc.Width << "x" << inDesc.Height << " Format: " << inDesc.Format << std::endl;
-        std::cerr << "[VSR] Debug: Output " << outDesc.Width << "x" << outDesc.Height << " Format: " << outDesc.Format << std::endl;
+        // Only log once per error type to avoid spam
+        static int errorCount = 0;
+        if (errorCount++ < 3) {
+             std::cerr << "[VSR] EvaluateFeature failed. Result: " << std::hex << result << std::dec << std::endl;
+        }
         return false;
     }
     
