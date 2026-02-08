@@ -21,11 +21,7 @@ endif()
 include_directories(${TRT_ROOT}/include)
 link_directories(${TRT_ROOT}/lib)
 
-# --- Configuration ---
-# Look for LibTorch in the parent directory
-set(CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../libtorch" ${CMAKE_PREFIX_PATH})
 
-find_package(Torch REQUIRED)
 set(SOURCES
     main.cpp
     capture_dxgi.cpp

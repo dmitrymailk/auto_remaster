@@ -23,38 +23,32 @@ if ($LASTEXITCODE -ne 0) { throw "Build Failed" }
 Write-Host "Copying Dependencies..." -ForegroundColor Cyan
 $destDir = Join-Path $PSScriptRoot "build\Release"
 
-# LibTorch DLLs
-$torchLib = Join-Path $PSScriptRoot "..\libtorch\lib"
-if (Test-Path $torchLib) {
-    Copy-Item "$torchLib\*.dll" $destDir -Force
-    Write-Host "LibTorch DLLs copied." -ForegroundColor Green
-} else {
-    Write-Warning "LibTorch lib directory not found at $torchLib."
-}
+
 
 # TensorRT DLLs
 # Using the path we identified
 $trtRoot = "C:\programming\auto_remaster\inference_optimization\TensorRT-10.15.1.29"
 $trtLib = Join-Path $trtRoot "lib" 
-# Check if DLLs are in lib or bin. Usually lib for these zips? 
-# If previous listing showed only .lib in lib, they might be in lib (and ls just missed them? No, ls shows all).
-# Or they are in bin.
-# I will check 'bin' in the script or assume 'lib' based on Windows conventions for some packages, 
-# but TRT often puts DLLs in lib.
-# Actually, let's copy from both just in case, or check.
-# The list_dir output for 'lib' previously showed only .lib. I am invoking check on bin now.
-# I will write the script to copy from 'lib' AND 'bin' if they exist.
-
 $trtBin = Join-Path $trtRoot "bin" -ErrorAction SilentlyContinue
 
-if (Test-Path $trtLib) {
-    Copy-Item "$trtLib\*.dll" $destDir -Force -ErrorAction SilentlyContinue
-}
+# Only copy essential runtime DLLs to avoid huge builder resources
+$requiredTrtDlls = @(
+    "nvinfer_10.dll", 
+    "nvinfer_plugin_10.dll", 
+    "nvonnxparser_10.dll", 
+    "nvinfer_dispatch_10.dll"
+)
+
 if (Test-Path $trtBin) {
-    Copy-Item "$trtBin\*.dll" $destDir -Force -ErrorAction SilentlyContinue
+    foreach ($dll in $requiredTrtDlls) {
+        $srcPath = Join-Path $trtBin $dll
+        if (Test-Path $srcPath) {
+            Copy-Item $srcPath $destDir -Force
+        }
+    }
 }
 
-# 5. Copy Models
+
 Write-Host "Copying Model Files..." -ForegroundColor Cyan
 $modelDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\flux_vae_tiny_trt"
 if (Test-Path $modelDir) {
@@ -65,7 +59,8 @@ if (Test-Path $modelDir) {
 }
 
 # Copy UNet Model
-$unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt"
+# $unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt_v6_upscale_2x"
+$unetDir = Join-Path $PSScriptRoot "..\..\Model_Optimizer\examples\diffusers\quantization\unet_trt_v6"
 if (Test-Path $unetDir) {
     Copy-Item "$unetDir\*.plan" $destDir -Force
     Write-Host "UNet model files copied." -ForegroundColor Green
