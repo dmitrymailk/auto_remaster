@@ -109,18 +109,21 @@ int main() {
         std::cout << "Split Screen Enabled." << std::endl;
         #endif
 
-        // Calculate Check VSR Scale
-        int display_width = base_width;
-        int display_height = MODEL_SIZE;
+        // VSR scales are calculated but window starts at base resolution
+        // VSR will be enabled dynamically via F11
+        int display_width_scaled = base_width;
+        int display_height_scaled = MODEL_SIZE;
 
         #if ENABLE_VSR
-        std::cout << "VSR Enabled. Target Scale: " << VSR_SCALE << "x" << std::endl;
-        display_width *= VSR_SCALE;
-        display_height *= VSR_SCALE;
+        std::cout << "VSR Available. Target Scale: " << VSR_SCALE << "x" << std::endl;
+        display_width_scaled = static_cast<int>(base_width * VSR_SCALE);
+        display_height_scaled = static_cast<int>(MODEL_SIZE * VSR_SCALE);
         #endif
 
-        std::cout << "Display Resolution: " << display_width << "x" << display_height << std::endl;
-        CreateNativeWindow(GetModuleHandle(NULL), display_width, display_height);
+        // Start with base resolution (VSR starts DISABLED)
+        std::cout << "Initial Display Resolution: " << base_width << "x" << MODEL_SIZE << std::endl;
+        std::cout << "VSR Scaled Resolution: " << display_width_scaled << "x" << display_height_scaled << std::endl;
+        CreateNativeWindow(GetModuleHandle(NULL), base_width, MODEL_SIZE);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
@@ -212,9 +215,9 @@ int main() {
         std::unique_ptr<VSRUpscaler> vsr = std::make_unique<VSRUpscaler>(device.Get(), context.Get());
         // Initialize for Base -> Scaled
         // Ensure dimensions are valid
-        std::cout << "[Main] VSR Init Params: Base=" << base_width << "x" << MODEL_SIZE << " Display=" << display_width << "x" << display_height << std::endl;
+        std::cout << "[Main] VSR Init Params: Base=" << base_width << "x" << MODEL_SIZE << " Display=" << display_width_scaled << "x" << display_height_scaled << std::endl;
         
-        if (!vsr->Initialize(base_width, MODEL_SIZE, display_width, display_height)) {
+        if (!vsr->Initialize(base_width, MODEL_SIZE, display_width_scaled, display_height_scaled)) {
             std::cerr << "VSR Initialization Failed! Falling back to standard display." << std::endl;
             // Handle fallback or exit? For now proceeded but vsr will do nothing.
         } else {
@@ -249,10 +252,10 @@ int main() {
         DX_CHECK(device->CreateTexture2D(&outputDesc, NULL, &d3d_output_texture));
         
         #if ENABLE_VSR
-        // VSR Output Texture (Display Resolution)
+        // VSR Output Texture (Scaled Resolution)
         D3D11_TEXTURE2D_DESC vsrOutDesc = outputDesc;
-        vsrOutDesc.Width = display_width;
-        vsrOutDesc.Height = display_height;
+        vsrOutDesc.Width = display_width_scaled;
+        vsrOutDesc.Height = display_height_scaled;
         vsrOutDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET; 
         // Note: NGX writes via UAV usually.
         
@@ -317,6 +320,16 @@ int main() {
         bool is_overlay_mode = false;
         bool f9_pressed_last = false; // Debounce F9
         bool f10_pressed_last = false; // Debounce F10
+        bool f11_pressed_last = false; // Debounce F11
+        bool vsr_enabled_runtime = false; // Start with VSR DISABLED
+
+        auto ResizeWindow = [&](int new_w, int new_h) {
+            if (!is_overlay_mode) {
+                RECT rect = { 0, 0, new_w, new_h };
+                AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+                SetWindowPos(g_hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
+        };
 
         auto ToggleOverlay = [&](bool enable) {
             is_overlay_mode = enable;
@@ -332,11 +345,17 @@ int main() {
                 SetWindowLong(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
                 SetWindowLong(g_hwnd, GWL_EXSTYLE, 0);
                 SetWindowPos(g_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+                // Restore correct size based on VSR state
+                if (vsr_enabled_runtime) {
+                    ResizeWindow(display_width_scaled, display_height_scaled);
+                } else {
+                    ResizeWindow(base_width, MODEL_SIZE);
+                }
                 std::cout << "[Overlay] Disabled." << std::endl;
             }
         };
 
-        std::cout << "Starting Loop... \nPress 'S' to save debugging image.\nPress 'F9' to toggle Overlay Mode.\nPress 'F10' to toggle Recording." << std::endl;
+        std::cout << "Starting Loop... \nPress 'S' to save debugging image.\nPress 'F9' to toggle Overlay Mode.\nPress 'F10' to toggle Recording.\nPress 'F11' to toggle VSR (RTX Video Super Resolution)." << std::endl;
 
         while (msg.message != WM_QUIT) {
             if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -366,13 +385,21 @@ int main() {
                 f10_pressed_last = f10_down;
 
                 // F11 Button Handling (VSR Toggle)
-                static bool f11_pressed_last = false;
                 bool f11_down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
-                static bool vsr_enabled_runtime = true;
 
                 if (f11_down && !f11_pressed_last) {
+                    #if ENABLE_VSR
                     vsr_enabled_runtime = !vsr_enabled_runtime;
-                    std::cout << "[VSR] Runtime Toggle: " << (vsr_enabled_runtime ? "ENABLED" : "DISABLED (Bilinear Fallback)") << std::endl;
+                    if (vsr_enabled_runtime) {
+                        ResizeWindow(display_width_scaled, display_height_scaled);
+                        std::cout << "[VSR] ENABLED: Window resized to " << display_width_scaled << "x" << display_height_scaled << std::endl;
+                    } else {
+                        ResizeWindow(base_width, MODEL_SIZE);
+                        std::cout << "[VSR] DISABLED: Window resized to " << base_width << "x" << MODEL_SIZE << std::endl;
+                    }
+                    #else
+                    std::cout << "[VSR] Not available (ENABLE_VSR=0 in config.h)" << std::endl;
+                    #endif
                 }
                 f11_pressed_last = f11_down;
 
@@ -549,46 +576,18 @@ int main() {
                     #endif
                     
                     ID3D11Texture2D* pTargetTexture = d3d_output_texture.Get(); // Default target if VSR off (base res)
-                    // Wait, if VSR is off (or unavailable), we want to behave as if we are scaling bilinearly to window size?
-                    // Or just output at base res and let CopySubresource region handle it (1:1 center)?
-                    // User wants to compare "Upscale" vs "No Upscale" (or "Naive Upscale").
-                    // If I scale bilinearly to 2x, that is "Naive Upscale".
-                    // If I keep 1x, that is "No Upscale".
-                    // Let's implement Bilinear Upscale if VSR is OFF but the window is large.
-                    
-                    bool use_bilinear_fallback = !use_vsr && (display_width > MODEL_SIZE); 
+                    // VSR OFF -> use base resolution texture (d3d_output_texture)
+                    // VSR ON  -> use VSR upscaled texture (d3d_vsr_output_texture)
                     
                     cudaGraphicsResource* cuda_target_tex = cuda_tex_out; // Default: Output Texture (Base Res)
                     ID3D11Texture2D* pFinalForPresent = d3d_output_texture.Get();
 
                     #if ENABLE_VSR
-                    // If we have a VSR texture allocated (which is High Res), we can use it for bilinear target too!
-                    if (d3d_vsr_output_texture) {
-                         if (use_vsr) {
-                             // Case A: VSR
-                             // 1. Postprocess -> Base Res (cuda_tex_out)
-                             // 2. VSR -> High Res
-                             pFinalForPresent = d3d_vsr_output_texture.Get();
-                         } else if (use_bilinear_fallback) {
-                             // Case B: Bilinear
-                             // 1. Postprocess -> High Res directly (we need to map High Res texture to CUDA!)
-                            // We didn't register d3d_vsr_output_texture with CUDA yet.
-                         }
-                    }
-                    #endif
-                    
-                    // To support Case B efficiently, we should register d3d_vsr_output_texture with CUDA too.
-                    static cudaGraphicsResource* cuda_tex_vsr = nullptr;
-                    #if ENABLE_VSR
-                    if (d3d_vsr_output_texture && !cuda_tex_vsr) {
-                        cuda_tex_vsr = register_d3d11_resource(d3d_vsr_output_texture.Get());
-                    }
-                    #endif
-
-                    if (use_bilinear_fallback && cuda_tex_vsr) {
-                        cuda_target_tex = cuda_tex_vsr;
+                    if (use_vsr && d3d_vsr_output_texture) {
+                        // VSR will upscale, final output is the VSR texture
                         pFinalForPresent = d3d_vsr_output_texture.Get();
                     }
+                    #endif
 
                     cudaArray_t arr_out = map_d3d11_resource(cuda_target_tex);
                     
@@ -599,42 +598,16 @@ int main() {
                     cudaSurfaceObject_t surfObj = 0;
                     CUDA_CHECK(cudaCreateSurfaceObject(&surfObj, &surfResDesc));
                     
+                    // Always render to base resolution texture
+                    // VSR will upscale it if enabled
                     int processed_off_x = 0;
-                    int dst_w, dst_h;
-                    
-                    if (use_bilinear_fallback && cuda_tex_vsr) {
-                        // Target is High Res
-                         dst_w = display_width;
-                         dst_h = display_height;
-                         // If split screen, we split the high res buffer
-                         int half_w = dst_w;
-                         #if SPLIT_SCREEN
-                         half_w /= 2;
-                         processed_off_x = half_w;
-                         #endif
-                         
-                         // Launch Scaled Postprocess
-                         #if SPLIT_SCREEN
-                         launch_postprocess_kernel(d_input, surfObj, half_w, dst_h, 0, 0, stream);
-                         #endif
-                         launch_postprocess_kernel(d_output, surfObj, half_w, dst_h, processed_off_x, 0, stream);
-                         
-                    } else {
-                        // Target is Base Res (for VSR input)
-                        dst_w = MODEL_SIZE;
-                        dst_h = MODEL_SIZE;
-                        int half_w = dst_w;
-                         #if SPLIT_SCREEN
-                         dst_w *= 2;
-                         processed_off_x = MODEL_SIZE;
-                         #endif
-                         
-                         // Launch 1:1 Postprocess
-                         #if SPLIT_SCREEN
-                         launch_postprocess_kernel(d_input, surfObj, MODEL_SIZE, MODEL_SIZE, 0, 0, stream);
-                         #endif
-                         launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, processed_off_x, 0, stream);
-                    }
+                    #if SPLIT_SCREEN
+                    processed_off_x = MODEL_SIZE;
+                    // Launch postprocess for original (left side)
+                    launch_postprocess_kernel(d_input, surfObj, MODEL_SIZE, MODEL_SIZE, 0, 0, stream);
+                    #endif
+                    // Launch postprocess for processed (right side or full)
+                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, processed_off_x, 0, stream);
                     
                     CUDA_CHECK(cudaStreamSynchronize(stream)); 
                     CUDA_CHECK(cudaDestroySurfaceObject(surfObj));
@@ -650,11 +623,8 @@ int main() {
                         } else {
                             if (vsr_log_counter++ % 60 == 0) std::cerr << "[Main] VSR Process Failed!" << std::endl;
                         }
-                    } else if (vsr) {
-                         // VSR exists but runtime disabled
-                         static int fallback_log_counter = 0;
-                         if (fallback_log_counter++ % 60 == 0) std::cout << "[Main] VSR Disabled (Runtime). Using Bilinear." << std::endl;
                     }
+                    // When VSR is disabled, we just use base resolution output (no bilinear upscale)
 
                     // 7. Present (Copy Final Texture -> Backbuffer Center)
                     ComPtr<ID3D11Texture2D> back_buffer;
