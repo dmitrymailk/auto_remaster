@@ -232,13 +232,10 @@
                 </div>
             </div>
 
-            <!-- Load More Trigger -->
-            <div ref="loadMoreTrigger" class="text-center text-gray-600 py-8">
-                <button v-if="hasMore" @click="loadMore"
-                    class="px-6 py-2 bg-gray-800 text-gray-300 rounded hover:bg-gray-700 transition">
-                    Load More
-                </button>
-                <span v-else>End of feed</span>
+            <!-- Infinite Scroll Sentinel -->
+            <div ref="loadMoreTrigger" class="h-20 flex items-center justify-center text-gray-600">
+                <span v-if="loading && hasMore" class="animate-pulse">Loading more...</span>
+                <span v-else-if="!hasMore">End of feed</span>
             </div>
         </main>
 
@@ -394,8 +391,29 @@
                     }
                 }
 
+                const loadMoreTrigger = ref(null)
+                let observer = null
+
                 onMounted(() => {
                     fetchDatasets()
+
+                    observer = new IntersectionObserver((entries) => {
+                        if (entries[0].isIntersecting && hasMore.value) {
+                            loadMore()
+                        }
+                    }, {
+                        root: null,
+                        threshold: 0.1
+                    })
+
+                    if (loadMoreTrigger.value) {
+                        observer.observe(loadMoreTrigger.value)
+                    }
+                })
+
+                // Watch for changes in sentinel ref availability (e.g. after dataset load)
+                watch(loadMoreTrigger, (el) => {
+                    if (el && observer) observer.observe(el)
                 })
 
                 return {
@@ -410,7 +428,8 @@
                     loadDataset,
                     loadMore,
                     setLabel,
-                    fetchDatasets
+                    fetchDatasets,
+                    loadMoreTrigger
                 }
             }
         }).mount('#app')
