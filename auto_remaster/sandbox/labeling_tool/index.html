@@ -144,7 +144,11 @@
                 <h1
                     class="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
                     Image2Image Labeler</h1>
-                <p class="text-gray-500 text-sm">Reviewing {{ stats.labelled }} / {{ stats.total }} examples</p>
+                <div class="flex gap-4 text-sm mt-1 font-mono">
+                    <span class="text-gray-400">Total: {{ stats.total }}</span>
+                    <span class="text-green-400 font-bold">Good: {{ stats.good }}</span>
+                    <span class="text-red-400 font-bold">Bad: {{ stats.bad }}</span>
+                </div>
             </div>
 
             <div class="flex items-center gap-4">
@@ -339,9 +343,16 @@
                 const loading = ref(false)
 
                 const stats = computed(() => {
+                    const total = items.value.length
+                    const labelsVals = Object.values(labels.value)
+                    const good = labelsVals.filter(l => l === 'good').length
+                    const bad = labelsVals.filter(l => l === 'bad').length
+
                     return {
-                        total: items.value.length,
-                        labelled: Object.keys(labels.value).length
+                        total,
+                        labelled: labelsVals.length,
+                        good,
+                        bad
                     }
                 })
 
