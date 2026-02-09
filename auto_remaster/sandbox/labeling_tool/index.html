@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image2Image Labeler</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f1115;
+            color: #e0e0e0;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0f1115;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #2d3748;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4a5568;
+        }
+
+        .slider-container {
+            position: relative;
+            overflow: hidden;
+            user-select: none;
+            cursor: ew-resize;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+        }
+
+        .slider-image {
+            width: 100%;
+            height: auto;
+            display: block;
+            pointer-events: none;
+        }
+
+        .slider-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            width: 50%;
+            /* Initial position */
+            background-size: cover;
+            /* Won't work with img tag properly, need masking or div background */
+            overflow: hidden;
+            border-right: 2px solid white;
+        }
+
+        /* Better approach for slider: Two images, top one clipped */
+        .img-wrapper {
+            position: relative;
+            width: 100%;
+            line-height: 0;
+        }
+
+        .img-after {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            clip-path: inset(0 0 0 50%);
+        }
+
+        .slider-handle {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 0.5px;
+            background: rgba(255, 255, 255, 0.8);
+            transform: translateX(-50%);
+            pointer-events: none;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+
+
+
+        .btn-label {
+            transition: all 0.2s ease;
+        }
+
+        .btn-label:active {
+            transform: scale(0.95);
+        }
+
+        .fade-enter-active,
+        .fade-leave-active {
+            transition: opacity 0.5s ease;
+        }
+
+        .fade-enter-from,
+        .fade-leave-to {
+            opacity: 0;
+        }
+
+        /* Card styles */
+        .card {
+            background-color: #1a202c;
+            border: 1px solid #2d3748;
+            border-radius: 16px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Status indicators */
+        .status-dot {
+            height: 8px;
+            width: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8 max-w-4xl">
+
+        <!-- Header & Dataset Selection -->
+        <header
+            class="mb-8 flex flex-col md:flex-row justify-between items-center gap-4 sticky top-0 z-50 bg-[#0f1115]/90 backdrop-blur-md p-4 rounded-lg border border-gray-800 shadow-xl">
+            <div>
+                <h1
+                    class="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
+                    Image2Image Labeler</h1>
+                <p class="text-gray-500 text-sm">Reviewing {{ stats.labelled }} / {{ stats.total }} examples</p>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <div class="relative">
+                    <select v-model="selectedDataset" @change="loadDataset"
+                        class="appearance-none bg-gray-800 border border-gray-700 text-white py-2 px-4 pr-8 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer hover:bg-gray-750 transition-colors">
+                        <option value="" disabled>Select Dataset</option>
+                        <option v-for="ds in datasets" :key="ds" :value="ds">{{ ds }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">
+                        <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                            <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+                        </svg>
+                    </div>
+                </div>
+
+                <button @click="loadDataset"
+                    class="bg-gray-800 hover:bg-gray-700 text-white p-2 rounded-lg transition-colors" title="Refresh">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                        stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Feed -->
+        <main v-if="selectedDataset" class="space-y-12">
+            <div v-if="loading" class="text-center py-20 text-gray-500">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                <p>Loading dataset...</p>
+            </div>
+
+            <div v-else-if="items.length === 0"
+                class="text-center py-20 text-gray-500 bg-gray-800 rounded-lg border border-gray-700">
+                <p>No items found. Run data preparation script first.</p>
+                <code
+                    class="block mt-2 bg-black/30 p-2 rounded text-sm">python prepare_data.py --dataset {{ selectedDataset }}</code>
+            </div>
+
+            <div v-else v-for="(item, index) in visibleItems" :key="item.idx" class="card overflow-hidden">
+                <!-- Card Header -->
+                <div class="px-6 py-4 flex justify-between items-center border-b border-gray-700/50 bg-gray-800/50">
+                    <div class="flex items-center gap-3">
+                        <span class="text-gray-400 font-mono text-sm">#{{ item.idx }}</span>
+                        <span v-if="labels[item.idx]"
+                            :class="{'bg-green-500/20 text-green-400': labels[item.idx] === 'good', 'bg-red-500/20 text-red-400': labels[item.idx] === 'bad'}"
+                            class="px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider">
+                            {{ labels[item.idx] }}
+                        </span>
+                    </div>
+
+                    <!-- Quick actions (optional) -->
+                </div>
+
+                <!-- Comparison Slider -->
+                <image-slider :before-src="`/static/${selectedDataset}/input/${item.idx}.png`"
+                    :after-src="`/static/${selectedDataset}/output/${item.idx}.png`"
+                    class="w-full aspect-video bg-gray-900"></image-slider>
+
+                <!-- Footer / Controls -->
+                <div class="px-6 py-4 bg-gray-800/50 border-t border-gray-700/50 flex justify-center gap-4">
+                    <button @click="setLabel(item.idx, 'bad')"
+                        :class="{'ring-2 ring-red-500 bg-red-600 text-white': labels[item.idx] === 'bad', 'bg-gray-700 text-gray-300 hover:bg-gray-600': labels[item.idx] !== 'bad'}"
+                        class="btn-label px-6 py-2 rounded-full font-medium flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd"
+                                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                                clip-rule="evenodd" />
+                        </svg>
+                        Bad
+                    </button>
+
+                    <button @click="setLabel(item.idx, 'good')"
+                        :class="{'ring-2 ring-green-500 bg-green-600 text-white': labels[item.idx] === 'good', 'bg-gray-700 text-gray-300 hover:bg-gray-600': labels[item.idx] !== 'good'}"
+                        class="btn-label px-6 py-2 rounded-full font-medium flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd"
+                                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                clip-rule="evenodd" />
+                        </svg>
+                        Good
+                    </button>
+                </div>
+            </div>
+
+            <!-- Load More Trigger -->
+            <div ref="loadMoreTrigger" class="text-center text-gray-600 py-8">
+                <button v-if="hasMore" @click="loadMore"
+                    class="px-6 py-2 bg-gray-800 text-gray-300 rounded hover:bg-gray-700 transition">
+                    Load More
+                </button>
+                <span v-else>End of feed</span>
+            </div>
+        </main>
+
+        <div v-else class="flex flex-col items-center justify-center min-h-[60vh] text-center">
+            <h2 class="text-xl font-semibold mb-4 text-gray-300">Select a dataset to get started</h2>
+            <div class="h-1 w-20 bg-gray-800 rounded-full"></div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, computed, watch } = Vue
+
+        // Image Slider Component
+        const ImageSlider = {
+            props: ['beforeSrc', 'afterSrc'],
+            setup(props) {
+                const sliderValue = ref(50)
+                const container = ref(null)
+
+                const updateSlider = (e) => {
+                    if (!container.value) return
+                    const rect = container.value.getBoundingClientRect()
+                    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width))
+                    const percent = (x / rect.width) * 100
+                    sliderValue.value = percent
+                }
+
+                const onMouseMove = (e) => {
+                    if (e.buttons === 1) updateSlider(e)
+                }
+
+                // Touch support
+                const onTouchMove = (e) => {
+                    const rect = container.value.getBoundingClientRect()
+                    const x = Math.max(0, Math.min(e.touches[0].clientX - rect.left, rect.width))
+                    const percent = (x / rect.width) * 100
+                    sliderValue.value = percent
+                }
+
+                return {
+                    sliderValue,
+                    container,
+                    updateSlider,
+                    onMouseMove,
+                    onTouchMove
+                }
+            },
+            template: `
+                <div ref="container" class="slider-container relative select-none group" 
+                     @mousedown="updateSlider" 
+                     @mousemove="onMouseMove" 
+                     @touchmove="onTouchMove"
+                     @touchstart="updateSlider">
+                    <div class="img-wrapper">
+                        <!-- Processed Image (Bottom/Right) -->
+                        <img :src="afterSrc" class="slider-image object-contain" loading="lazy" alt="Processed">
+                        
+                        <!-- Original Image (Top/Left, Clipped) -->
+                        <div class="img-after absolute top-0 left-0 h-full w-full" :style="{ clipPath: 'inset(0 ' + (100 - sliderValue) + '% 0 0)' }">
+                            <img :src="beforeSrc" class="slider-image object-contain" loading="lazy" alt="Original">
+                        </div>
+                    </div>
+                    
+                    <!-- Slider Handle -->
+                    <div class="slider-handle" :style="{ left: sliderValue + '%' }"></div>
+                    
+                    <!-- Labels -->
+                    <div class="absolute bottom-4 left-4 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur">Original</div>
+                    <div class="absolute bottom-4 right-4 bg-blue-600/80 text-white text-xs px-2 py-1 rounded backdrop-blur">Processed</div>
+                </div>
+            `
+        }
+
+        createApp({
+            components: {
+                ImageSlider
+            },
+            setup() {
+                const datasets = ref([])
+                const selectedDataset = ref("")
+                const items = ref([])
+                const page = ref(1)
+                const pageSize = 20
+                const visibleItems = computed(() => items.value.slice(0, page.value * pageSize))
+                const hasMore = computed(() => visibleItems.value.length < items.value.length)
+
+                const labels = ref({})
+                const loading = ref(false)
+
+                const stats = computed(() => {
+                    return {
+                        total: items.value.length,
+                        labelled: Object.keys(labels.value).length
+                    }
+                })
+
+                const fetchDatasets = async () => {
+                    try {
+                        const res = await fetch('/api/datasets')
+                        const data = await res.json()
+                        datasets.value = data
+                        // Auto select first if available
+                        if (data.length > 0 && !selectedDataset.value) {
+                            selectedDataset.value = data[0]
+                            loadDataset()
+                        }
+                    } catch (e) {
+                        console.error("Failed to fetch datasets", e)
+                    }
+                }
+
+                const loadDataset = async () => {
+                    if (!selectedDataset.value) return
+                    loading.value = true
+                    items.value = [] // Reset
+
+                    try {
+                        const res = await fetch(`/api/${selectedDataset.value}/status`)
+                        const data = await res.json()
+
+                        // Map indices to object structure
+                        items.value = data.indices.map(idx => ({ idx }))
+                        labels.value = data.labels || {}
+
+                    } catch (e) {
+                        console.error("Failed to load dataset", e)
+                        alert("Failed to load dataset. Check backend logs.")
+                    } finally {
+                        loading.value = false
+                    }
+                }
+
+                const loadMore = () => {
+                    page.value++
+                }
+
+                const setLabel = async (idx, label) => {
+                    // Optimistic update
+                    labels.value[idx] = label
+
+                    try {
+                        await fetch(`/api/${selectedDataset.value}/label`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ idx, label })
+                        })
+                    } catch (e) {
+                        console.error("Failed to get label", e)
+                        // Revert? For now just log
+                    }
+                }
+
+                onMounted(() => {
+                    fetchDatasets()
+                })
+
+                return {
+                    datasets,
+                    selectedDataset,
+                    items,
+                    visibleItems,
+                    hasMore,
+                    labels,
+                    loading,
+                    stats,
+                    loadDataset,
+                    loadMore,
+                    setLabel,
+                    fetchDatasets
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+
+</html>
