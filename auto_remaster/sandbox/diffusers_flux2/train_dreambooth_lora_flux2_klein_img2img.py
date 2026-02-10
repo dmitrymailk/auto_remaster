@@ -1099,6 +1099,7 @@ def main(args):
         subfolder="vae",
         revision=args.revision,
         variant=args.variant,
+        # torch_dtype=weight_dtype,
     )
     latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device)
     latents_bn_std = torch.sqrt(
@@ -1121,6 +1122,12 @@ def main(args):
         quantization_config=quantization_config,
         torch_dtype=weight_dtype,
     )
+
+    # from xformers.ops import MemoryEfficientAttentionFlashAttentionOp
+
+    # transformer.enable_xformers_memory_efficient_attention(
+    #     attention_op=MemoryEfficientAttentionFlashAttentionOp
+    # )
     if args.bnb_quantization_config_path is not None:
         transformer = prepare_model_for_kbit_training(
             transformer, use_gradient_checkpointing=False
@@ -1137,15 +1144,6 @@ def main(args):
     # We only train the additional adapter LoRA layers
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
-
-    if args.enable_npu_flash_attention:
-        if is_torch_npu_available():
-            logger.info("npu flash attention enabled.")
-            transformer.set_attention_backend("_native_npu")
-        else:
-            raise ValueError(
-                "npu flash attention requires torch_npu extensions and is supported only on npu device "
-            )
 
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         # due to pytorch#99272, MPS does not yet support bfloat16.
@@ -1334,6 +1332,7 @@ def main(args):
         models = [transformer]
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params(models, dtype=torch.float32)
+        # pass
 
     transformer_lora_parameters = list(
         filter(lambda p: p.requires_grad, transformer.parameters())
