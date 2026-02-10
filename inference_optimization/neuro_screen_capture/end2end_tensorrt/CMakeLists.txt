@@ -21,16 +21,16 @@ endif()
 include_directories(${TRT_ROOT}/include)
 link_directories(${TRT_ROOT}/lib)
 
-# --- Configuration ---
-# Look for LibTorch in the parent directory
-set(CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../libtorch" ${CMAKE_PREFIX_PATH})
 
-find_package(Torch REQUIRED)
 set(SOURCES
     main.cpp
     capture_dxgi.cpp
+    capture_wgc.cpp
+    window_helper.cpp
     pipeline.cpp
+    recorder.cpp
     cuda_utils.cu
+    vsr_upscaler.cpp
 )
 
 set(HEADERS
@@ -38,16 +38,21 @@ set(HEADERS
     pipeline.h
     cuda_utils.h
     utils.h
+    vsr_upscaler.h
 )
 
 # --- Executable ---
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+
+# --- RTX Video SDK ---
+set(RTX_VIDEO_SDK_ROOT "C:/programming/auto_remaster/inference_optimization/RTX_Video_SDK_v1.1.0")
 
 # --- Include Directories ---
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CUDAToolkit_INCLUDE_DIRS}
     ${TRT_ROOT}/include # repetitive but safe
+    ${RTX_VIDEO_SDK_ROOT}/include
 )
 
 # --- Libraries ---
@@ -57,6 +62,9 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     d3d11
     dxgi
     d3dcompiler
+    dwmapi
+    windowsapp
+    ${RTX_VIDEO_SDK_ROOT}/lib/Windows/x64/nvsdk_ngx_d.lib
 )
 
 if (MSVC)

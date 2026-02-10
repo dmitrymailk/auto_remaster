@@ -3,12 +3,86 @@
 #include <chrono>
 #include <fstream>
 #include <algorithm>
+#include <memory> 
+#include <string>
+#include <sstream>
+#include <filesystem>
 
 #include "utils.h"
+#include "capture_interface.h"
 #include "capture_dxgi.h"
+#include "capture_wgc.h" 
+#include "window_helper.h"
 #include "pipeline.h"
 #include "cuda_utils.h"
 #include <cuda_d3d11_interop.h>
+#include "recorder.h" 
+
+// GDI+ for PNG saving
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
+
+#include "config.h" // Ensure config is included for ENABLE_VSR
+
+#if ENABLE_VSR
+#include "vsr_upscaler.h"
+#endif
+
+namespace fs = std::filesystem;
+
+// GDI+ CLSID helper
+int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (size == 0) return -1;
+    
+    std::vector<BYTE> buffer(size);
+    Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)buffer.data();
+    Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+    
+    for (UINT j = 0; j < num; ++j) {
+        if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
+            *pClsid = pImageCodecInfo[j].Clsid;
+            return j;
+        }
+    }
+    return -1;
+}
+
+// Save RGB buffer as PNG using GDI+
+bool SavePNG(const unsigned char* rgb_data, int width, int height, const std::string& filepath) {
+    Gdiplus::Bitmap bitmap(width, height, PixelFormat24bppRGB);
+    
+    Gdiplus::BitmapData bmpData;
+    Gdiplus::Rect rect(0, 0, width, height);
+    
+    if (bitmap.LockBits(&rect, Gdiplus::ImageLockModeWrite, PixelFormat24bppRGB, &bmpData) != Gdiplus::Ok) {
+        return false;
+    }
+    
+    // Copy RGB data to bitmap (GDI+ uses BGR, need to swap)
+    unsigned char* dst = (unsigned char*)bmpData.Scan0;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int src_idx = (y * width + x) * 3;
+            int dst_idx = y * bmpData.Stride + x * 3;
+            dst[dst_idx + 0] = rgb_data[src_idx + 2]; // B
+            dst[dst_idx + 1] = rgb_data[src_idx + 1]; // G
+            dst[dst_idx + 2] = rgb_data[src_idx + 0]; // R
+        }
+    }
+    
+    bitmap.UnlockBits(&bmpData);
+    
+    CLSID pngClsid;
+    if (GetEncoderClsid(L"image/png", &pngClsid) < 0) {
+        return false;
+    }
+    
+    // Convert to wide string
+    std::wstring wpath(filepath.begin(), filepath.end());
+    return bitmap.Save(wpath.c_str(), &pngClsid, NULL) == Gdiplus::Ok;
+}
 
 // Forward decls for interop (will be in header)
 cudaGraphicsResource* register_d3d11_resource(ID3D11Texture2D* texture);
@@ -39,17 +113,25 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
 
-    RegisterClass(&wc);
+    RegisterClass(&wc); // winapi function
 
     // Adjust window size to client area
     RECT rect = { 0, 0, width, height };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
     g_hwnd = CreateWindowEx(
-        0, CLASS_NAME, "Neuro Screen Capture (TensorRT VAE)",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 
-        rect.right - rect.left, rect.bottom - rect.top,
-        NULL, NULL, hInstance, NULL
+        0, 
+        CLASS_NAME, 
+        "Neuro Screen Capture (TensorRT VAE + VSR)", // Текст, который будет отображаться в заголовке окна
+        WS_OVERLAPPEDWINDOW, 
+        CW_USEDEFAULT, // initial horizontal position of the window
+        CW_USEDEFAULT, 
+        rect.right - rect.left, // Specifies the width, in device units
+        rect.bottom - rect.top,
+        NULL, 
+        NULL, 
+        hInstance, // Handle to the instance of the module to be associated with the window.
+        NULL
     );
 
     if (g_hwnd == NULL) throw std::runtime_error("Failed to create window");
@@ -59,29 +141,84 @@ void CreateNativeWindow(HINSTANCE hInstance, int width, int height) {
 
 int main() {
     try {
+        // Initializes COM for WGC
+        // это инициализатор для работы с библиотеками захвата экрана и окон
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+
         std::cout << "Initializing Neuro Screen Capture (TensorRT VAE)..." << std::endl;
         
-        // 0. Display Settings
-        DEVMODE dm = { 0 };
-        dm.dmSize = sizeof(dm);
-        if (!EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
-             throw std::runtime_error("Failed to enum display settings");
+        // --- Capture Mode Selection ---
+        // это выбор режима захвата экрана через консоль
+        std::cout << "Select Capture Mode:\n"
+                  << "[0] Full Screen (Monitor 1)\n"
+                  << "[1] Specific Window\n"
+                  << "Enter mode: ";
+        int mode = 0;
+        if (!(std::cin >> mode)) {
+            mode = 0; // Default
+            std::cin.clear();
+            std::cin.ignore(10000, '\n');
         }
-        int WIDTH = dm.dmPelsWidth;
-        int HEIGHT = dm.dmPelsHeight;
-        std::cout << "Screen Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
-        // 1. Create Window (Client area MODEL_SIZE x MODEL_SIZE initially)
-        CreateNativeWindow(GetModuleHandle(NULL), MODEL_SIZE, MODEL_SIZE);
+        HWND target_window = nullptr;
+        if (mode == 1) {
+             while (true) {
+                // содержит вектор состоящий из указателей на окна и их названия
+                // названия просто нужны для того чтобы было удобно их отрисовать в консоли
+                auto windows = EnumerateWindows();
+                // возвращает указатель на необходимое нам окно
+                target_window = SelectWindow(windows);
+                if (target_window) break;
+                
+                std::cout << "Retry? (y/n): ";
+                char c; std::cin >> c;
+                if (c != 'y') return 0;
+             }
+        }
+        
+        // 1. Create Window
+        // Calculate Base Window Width (Inference Resolution)
+        // текущая простая логика подразумевает что в режиме SPLIT_SCREEN
+        // мы будем рисовать два квадрата рядом. первый квадрат оригинал, второй квадрат
+        // рендер нейросети
+        int base_width = MODEL_SIZE;
+        #if SPLIT_SCREEN
+        base_width = MODEL_SIZE * 2;
+        std::cout << "Split Screen Enabled." << std::endl;
+        #endif
+
+        // VSR scales are calculated but window starts at base resolution
+        // VSR will be enabled dynamically via F11
+        int display_width_scaled = base_width;
+        int display_height_scaled = MODEL_SIZE;
+
+        #if ENABLE_VSR
+        // если мы используем VSR то мы просто скалируем разрешение на константу
+        // например 1.5х
+        std::cout << "VSR Available. Target Scale: " << VSR_SCALE << "x" << std::endl;
+        display_width_scaled = static_cast<int>(base_width * VSR_SCALE);
+        display_height_scaled = static_cast<int>(MODEL_SIZE * VSR_SCALE);
+        #endif
+
+        // Start with base resolution (VSR starts DISABLED)
+        std::cout << "Initial Display Resolution: " << base_width << "x" << MODEL_SIZE << std::endl;
+        std::cout << "VSR Scaled Resolution: " << display_width_scaled << "x" << display_height_scaled << std::endl;
+        // создаем окно без всего. базовый объект в который будет накидываться функционал
+        CreateNativeWindow(GetModuleHandle(NULL), base_width, MODEL_SIZE);
 
         // 2. D3D11 Setup
         DXGI_SWAP_CHAIN_DESC scd = {0};
+        // Используем 2 буфера (Double Buffering). Пока один показывается, 
+        // во второй рисуем.
         scd.BufferCount = 2;
+        // Автоматически взять размеры из окна
         scd.BufferDesc.Width = 0; // Use window size
         scd.BufferDesc.Height = 0;
+        // Blue, Green, Red, Alpha, 8 бит на канал
         scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         scd.BufferDesc.RefreshRate.Numerator = 60;
         scd.BufferDesc.RefreshRate.Denominator = 1;
+        // Говорим DirectX, что мы будем рисовать в этот буфер (а не просто читать)
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         scd.OutputWindow = g_hwnd;
         scd.SampleDesc.Count = 1;
@@ -93,33 +230,102 @@ int main() {
         ComPtr<ID3D11DeviceContext> context;
         ComPtr<IDXGISwapChain> swap_chain; 
         
-        UINT createDeviceFlags = 0;
+        UINT createDeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         #ifdef _DEBUG
         createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
         #endif
 
+        // Create Factory to enumerate adapters
+        ComPtr<IDXGIFactory1> factory;
+        CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory);
+
+        ComPtr<IDXGIAdapter1> adapter;
+        ComPtr<IDXGIAdapter1> selectedAdapter;
+        DXGI_ADAPTER_DESC1 selectedDesc;
+
+        // ищем среди адаптеров те, у которых в названии есть nvidia. остальные встройки 
+        // игнорируем
+        // мы допускаем что у пользователя всего одна карточка и сразу выбираем ее
+        // потому что обычно у человека всего одна карта
+        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+            std::wstring name(desc.Description);
+            if (name.find(L"NVIDIA") != std::wstring::npos) {
+                selectedAdapter = adapter;
+                selectedDesc = desc;
+                break;
+            }
+        }
+
+        if (selectedAdapter) {
+            std::wcout << L"[Main] Selected Adapter: " << selectedDesc.Description << std::endl;
+        } else {
+            std::cerr << "[Main] WARNING: NVIDIA Adapter not found! Using default." << std::endl;
+        }
+
+        // Use UNKNOWN driver type when adapter is specified
+        D3D_DRIVER_TYPE driverType = selectedAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+
         DX_CHECK(D3D11CreateDeviceAndSwapChain(
-            NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, createDeviceFlags,
-            NULL, 0, D3D11_SDK_VERSION, &scd,
-            &swap_chain, &device, NULL, &context
+            selectedAdapter.Get(), 
+            driverType, 
+            NULL, 
+            createDeviceFlags,
+            NULL, 
+            0, 
+            D3D11_SDK_VERSION, 
+            &scd,
+            &swap_chain, 
+            &device, 
+            NULL, 
+            &context
         ));
 
-        // 3. Screen Capture
-        ScreenCapture capture(device.Get(), context.Get());
-        capture.Initialize();
+        // 3. Screen Capture Setup
+        std::unique_ptr<ICapture> capture;
+
+        if (mode == 1 && target_window) {
+            auto wgc = std::make_unique<WindowCapture>(device.Get(), context.Get());
+            wgc->Start(target_window);
+            capture = std::move(wgc);
+        } else {
+            auto dxgi = std::make_unique<ScreenCapture>(device.Get(), context.Get());
+            dxgi->Initialize();
+            capture = std::move(dxgi);
+        }
+
+        // Get actual capture dimensions
+        UINT WIDTH = capture->GetWidth();
+        UINT HEIGHT = capture->GetHeight();
+        std::cout << "Capture Resolution: " << WIDTH << "x" << HEIGHT << std::endl;
 
         // 4. TensorRT Pipeline
-        std::string enc_path = "vae_encoder.plan";
-        std::string dec_path = "vae_decoder.plan";
-        // 5. Load TensorRT Models
+        // Load TensorRT Models... 
         TensorRTPipeline pipeline;
         pipeline.LoadEngines("vae_encoder.plan", "vae_decoder.plan");
         #if ENABLE_UNET
         pipeline.LoadUNet("unet.plan");
         #endif
+        
+        // 4.1. VSR Init
+        #if ENABLE_VSR
+        std::cout << "[Main] Initializing VSR..." << std::endl;
+        std::unique_ptr<VSRUpscaler> vsr = std::make_unique<VSRUpscaler>(device.Get(), context.Get());
+        // Initialize for Base -> Scaled
+        // Ensure dimensions are valid
+        std::cout << "[Main] VSR Init Params: Base=" << base_width << "x" << MODEL_SIZE << " Display=" << display_width_scaled << "x" << display_height_scaled << std::endl;
+        
+        if (!vsr->Initialize(base_width, MODEL_SIZE, display_width_scaled, display_height_scaled)) {
+            std::cerr << "VSR Initialization Failed! Falling back to standard display." << std::endl;
+            // Handle fallback or exit? For now proceeded but vsr will do nothing.
+        } else {
+             std::cout << "[Main] VSR Initialized successfully." << std::endl;
+        }
+        #endif
 
         // 6. Textures
-        // Input Texture (Screen Resolution) - for Capture Copy
+        // Input Texture (Capture Resolution)
         D3D11_TEXTURE2D_DESC inputDesc = {0};
         inputDesc.Width = WIDTH;
         inputDesc.Height = HEIGHT;
@@ -133,13 +339,28 @@ int main() {
         ComPtr<ID3D11Texture2D> d3d_input_texture;
         DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
 
-        // Output Texture (Fixed MODEL_SIZE x MODEL_SIZE) - for Inference Output
+        // Inference Output Texture (Base Resolution)
+        // Matches Window Size for Split Screen
         D3D11_TEXTURE2D_DESC outputDesc = inputDesc;
-        outputDesc.Width = MODEL_SIZE;
+        outputDesc.Width = base_width;
         outputDesc.Height = MODEL_SIZE;
+        // Make sure it can be used by VSR (Shader Resource) and by CUDA (Render Target not strictly needed for CUDA write, but UAV might be)
+        // D3D11: CUDA interop usually works with default usage.
         
         ComPtr<ID3D11Texture2D> d3d_output_texture;
         DX_CHECK(device->CreateTexture2D(&outputDesc, NULL, &d3d_output_texture));
+        
+        #if ENABLE_VSR
+        // VSR Output Texture (Scaled Resolution)
+        D3D11_TEXTURE2D_DESC vsrOutDesc = outputDesc;
+        vsrOutDesc.Width = display_width_scaled;
+        vsrOutDesc.Height = display_height_scaled;
+        vsrOutDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET; 
+        // Note: NGX writes via UAV usually.
+        
+        ComPtr<ID3D11Texture2D> d3d_vsr_output_texture;
+        DX_CHECK(device->CreateTexture2D(&vsrOutDesc, NULL, &d3d_vsr_output_texture));
+        #endif
 
         // Register with CUDA
         cudaGraphicsResource* cuda_tex_in = register_d3d11_resource(d3d_input_texture.Get());
@@ -160,16 +381,87 @@ int main() {
         auto start_time = std::chrono::high_resolution_clock::now();
         int frames = 0;
         
+
         cudaStream_t stream;
         CUDA_CHECK(cudaStreamCreate(&stream));
 
-        // Debug Buffer (RGB 512x512)
-        unsigned char* d_debug_img = nullptr;
-        size_t debug_size = MODEL_SIZE * MODEL_SIZE * 3 * sizeof(unsigned char);
-        CUDA_CHECK(cudaMalloc(&d_debug_img, debug_size));
+        // Recorder Setup
+        bool is_split = SPLIT_SCREEN;
+        int rec_w = is_split ? MODEL_SIZE * 2 : MODEL_SIZE;
+        int rec_h = MODEL_SIZE;
+
+        Recorder recorder(rec_w, rec_h, 24);
+        
+        void* d_record_buffer = nullptr;
+        size_t record_buffer_size = rec_w * rec_h * 3 * sizeof(unsigned char);
+        CUDA_CHECK(cudaMalloc(&d_record_buffer, record_buffer_size));
+        
+        // Recording State
+        auto next_record_time = std::chrono::steady_clock::now();
+        bool was_recording = false;
+        double record_interval = 1.0 / 24.0; 
+
+        // Screenshot Buffer (RGB, output resolution)
+        // For split screen: MODEL_SIZE*2 x MODEL_SIZE, else MODEL_SIZE x MODEL_SIZE
+        int screenshot_width = is_split ? MODEL_SIZE * 2 : MODEL_SIZE;
+        int screenshot_height = MODEL_SIZE;
+        size_t screenshot_size = screenshot_width * screenshot_height * 3 * sizeof(unsigned char);
+        unsigned char* d_screenshot_buffer = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_screenshot_buffer, screenshot_size));
+        std::vector<unsigned char> h_screenshot_buffer(screenshot_size);
+        
+        // Initialize GDI+
+        Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+        ULONG_PTR gdiplusToken;
+        Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+        
+        // Create screenshots directory
+        if (!fs::exists("screenshots")) {
+            fs::create_directory("screenshots");
+        }
+        
         bool save_requested = false;
 
-        std::cout << "Starting Loop... Press 'S' to save debugging image (debug_input.ppm)." << std::endl;
+        bool is_overlay_mode = false;
+        bool f9_pressed_last = false; // Debounce F9
+        bool f10_pressed_last = false; // Debounce F10
+        bool f12_pressed_last = false; // Debounce F12 (Screenshot)
+        bool f11_pressed_last = false; // Debounce F11
+        bool vsr_enabled_runtime = false; // Start with VSR DISABLED
+
+        auto ResizeWindow = [&](int new_w, int new_h) {
+            if (!is_overlay_mode) {
+                RECT rect = { 0, 0, new_w, new_h };
+                AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+                SetWindowPos(g_hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
+        };
+
+        auto ToggleOverlay = [&](bool enable) {
+            is_overlay_mode = enable;
+            if (is_overlay_mode) {
+                // Overlay Mode: Borderless, TopMost, Transparent to Input
+                SetWindowLong(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+                SetWindowLong(g_hwnd, GWL_EXSTYLE, WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST);
+                // 255 = Opaque (Visuals visible), but EX_TRANSPARENT makes input fall through
+                SetLayeredWindowAttributes(g_hwnd, 0, 255, LWA_ALPHA);
+                std::cout << "[Overlay] Enabled. Press F9 to disable." << std::endl;
+            } else {
+                // Normal Mode: Windowed, Borders, Interactive
+                SetWindowLong(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+                SetWindowLong(g_hwnd, GWL_EXSTYLE, 0);
+                SetWindowPos(g_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+                // Restore correct size based on VSR state
+                if (vsr_enabled_runtime) {
+                    ResizeWindow(display_width_scaled, display_height_scaled);
+                } else {
+                    ResizeWindow(base_width, MODEL_SIZE);
+                }
+                std::cout << "[Overlay] Disabled." << std::endl;
+            }
+        };
+
+        std::cout << "Starting Loop... \nPress 'S' or 'F12' to save screenshot (PNG).\nPress 'F9' to toggle Overlay Mode.\nPress 'F10' to toggle Recording.\nPress 'F11' to toggle VSR (RTX Video Super Resolution)." << std::endl;
 
         while (msg.message != WM_QUIT) {
             if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -179,6 +471,66 @@ int main() {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             } else {
+                // --- Hotkey Handling ---
+                bool f9_down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+                if (f9_down && !f9_pressed_last) {
+                    ToggleOverlay(!is_overlay_mode);
+                }
+                f9_pressed_last = f9_down;
+
+                // F10 Recording Toggle
+                bool f10_down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+                if (f10_down && !f10_pressed_last) {
+                    if (recorder.IsRecording()) {
+                        recorder.Stop();
+                    } else {
+                        std::string prog = (mode == 1 && target_window) ? "Window" : "Desktop"; // Simplified, ideally get window title
+                        recorder.Start(prog);
+                    }
+                }
+                f10_pressed_last = f10_down;
+
+                // F11 Button Handling (VSR Toggle)
+                bool f11_down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+
+                if (f11_down && !f11_pressed_last) {
+                    #if ENABLE_VSR
+                    vsr_enabled_runtime = !vsr_enabled_runtime;
+                    if (vsr_enabled_runtime) {
+                        ResizeWindow(display_width_scaled, display_height_scaled);
+                        std::cout << "[VSR] ENABLED: Window resized to " << display_width_scaled << "x" << display_height_scaled << std::endl;
+                    } else {
+                        ResizeWindow(base_width, MODEL_SIZE);
+                        std::cout << "[VSR] DISABLED: Window resized to " << base_width << "x" << MODEL_SIZE << std::endl;
+                    }
+                    #else
+                    std::cout << "[VSR] Not available (ENABLE_VSR=0 in config.h)" << std::endl;
+                    #endif
+                }
+                f11_pressed_last = f11_down;
+
+                // F12 Screenshot
+                bool f12_down = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+                if (f12_down && !f12_pressed_last) {
+                    save_requested = true;
+                }
+                f12_pressed_last = f12_down;
+
+                // --- Overlay Tracking Logic ---
+                if (is_overlay_mode && mode == 1 && target_window && IsWindow(target_window)) {
+                    RECT targetRect;
+                    GetWindowRect(target_window, &targetRect);
+                    
+                    int target_w = targetRect.right - targetRect.left;
+                    int target_h = targetRect.bottom - targetRect.top;
+                    
+                    // Match the target window size exactly
+                    // The rendering logic will automatically center the 512x512 content
+                    // and fill the rest with black (ClearRenderTargetView).
+                    
+                    SetWindowPos(g_hwnd, HWND_TOPMOST, targetRect.left, targetRect.top, target_w, target_h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                }
+
                 RECT clientRect;
                 GetClientRect(g_hwnd, &clientRect);
                 int win_w = clientRect.right - clientRect.left;
@@ -198,13 +550,39 @@ int main() {
                 }
 
                 ComPtr<ID3D11Texture2D> current_frame;
-                if (capture.AcquireFrame(current_frame, 10)) {
+                if (capture->AcquireFrame(current_frame, 10)) {
                     
-                    // 1. Copy Capture -> Input Texture (Screen Size)
-                    
-                    // Simple full copy as sizes match (Screen Resolution)
+                    D3D11_TEXTURE2D_DESC frameDesc;
+                    current_frame->GetDesc(&frameDesc);
+
+                    if (frameDesc.Width != WIDTH || frameDesc.Height != HEIGHT) {
+                        // Handle Resize
+                        std::cout << "Resize Detected: " << WIDTH << "x" << HEIGHT << " -> " << frameDesc.Width << "x" << frameDesc.Height << std::endl;
+                        
+                        // 1. Unregister old resource
+                        if (cuda_tex_in) {
+                            unregister_d3d11_resource(cuda_tex_in);
+                            cuda_tex_in = nullptr;
+                        }
+                        
+                        // 2. Update Dimensions
+                        WIDTH = frameDesc.Width;
+                        HEIGHT = frameDesc.Height;
+                        
+                        // 3. Recreate D3D Texture
+                        inputDesc.Width = WIDTH;
+                        inputDesc.Height = HEIGHT;
+                        d3d_input_texture.Reset(); // Release old
+                        DX_CHECK(device->CreateTexture2D(&inputDesc, NULL, &d3d_input_texture));
+                        
+                        // 4. Register new resource
+                        cuda_tex_in = register_d3d11_resource(d3d_input_texture.Get());
+                        if (!cuda_tex_in) throw std::runtime_error("Failed to register resized texture with CUDA");
+                    }
+
+                    // 1. Copy Capture -> Input Texture
                     context->CopyResource(d3d_input_texture.Get(), current_frame.Get());
-                    capture.ReleaseFrame();
+                    capture->ReleaseFrame();
 
                     // 2. Preprocess (Input Texture -> Tensor)
                     // Map Input
@@ -224,31 +602,123 @@ int main() {
                     cudaTextureObject_t texObj = 0;
                     CUDA_CHECK(cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL));
                     
-                    launch_preprocess_kernel(texObj, d_input, WIDTH, HEIGHT, stream);
-                    
-                    if (save_requested) {
-                        launch_debug_tensor_dump(d_input, d_debug_img, MODEL_SIZE, MODEL_SIZE, stream);
-                        CUDA_CHECK(cudaStreamSynchronize(stream));
-                        
-                        std::vector<unsigned char> h_debug(MODEL_SIZE * MODEL_SIZE * 3);
-                        CUDA_CHECK(cudaMemcpy(h_debug.data(), d_debug_img, debug_size, cudaMemcpyDeviceToHost));
-                        
-                        std::ofstream ppm("debug_input.ppm", std::ios::binary);
-                        ppm << "P6\n" << MODEL_SIZE << " " << MODEL_SIZE << "\n255\n";
-                        ppm.write((char*)h_debug.data(), h_debug.size());
-                        ppm.close();
-                        std::cout << "Saved debug_input.ppm!" << std::endl;
-                        save_requested = false;
-                    }
+                    // Preprocessing Logic: Center Crop Square + Downscale
+                    // 1. Determine shortest side
+                    int crop_size = min(WIDTH, HEIGHT);
+                    // 2. Center the crop
+                    int crop_off_x = (WIDTH - crop_size) / 2;
+                    int crop_off_y = (HEIGHT - crop_size) / 2;
+
+                    // Launch Preprocess (Computes FP16 Tensor)
+                    // Maps the [crop_size x crop_size] region at (crop_off_x, crop_off_y) to the 512x512 Network Input
+                    launch_preprocess_kernel(texObj, d_input, crop_size, crop_size, crop_off_x, crop_off_y, stream);
 
                     CUDA_CHECK(cudaDestroyTextureObject(texObj));
                     unmap_d3d11_resource(cuda_tex_in); // Unmap Input immediately
 
                     // 3. Inference
-                    pipeline.Inference(stream, d_input, d_output);
+                    pipeline.Inference(stream, d_input, d_output, false);
+
+                    // 3.5 Screenshot Logic (Save PNG after inference)
+                    if (save_requested) {
+                        save_requested = false;
+                        
+                        // Convert tensor(s) to RGB
+                        if (is_split) {
+                            launch_concat_tensors_kernel(d_input, d_output, d_screenshot_buffer, MODEL_SIZE, stream);
+                        } else {
+                            launch_tensor_to_u8_rgb_kernel(d_output, d_screenshot_buffer, MODEL_SIZE, stream);
+                        }
+                        
+                        // Copy to host
+                        CUDA_CHECK(cudaMemcpyAsync(h_screenshot_buffer.data(), d_screenshot_buffer, screenshot_size, cudaMemcpyDeviceToHost, stream));
+                        CUDA_CHECK(cudaStreamSynchronize(stream));
+                        
+                        // Generate unique filename with timestamp
+                        auto now = std::chrono::system_clock::now();
+                        auto duration = now.time_since_epoch();
+                        auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+                        
+                        std::stringstream ss;
+                        ss << "screenshots/screenshot_" << millis << "_" << screenshot_width << "x" << screenshot_height << ".png";
+                        std::string filename = ss.str();
+                        
+                        // Save PNG
+                        if (SavePNG(h_screenshot_buffer.data(), screenshot_width, screenshot_height, filename)) {
+                            std::cout << "[Screenshot] Saved: " << filename << std::endl;
+                        } else {
+                            std::cerr << "[Screenshot] Failed to save: " << filename << std::endl;
+                        }
+                    }
+
+                    // 4. Recording Logic (Post-Inference to capture Input + Output)
+                    bool is_rec = recorder.IsRecording();
+                    if (is_rec && !was_recording) {
+                        next_record_time = std::chrono::steady_clock::now();
+                    }
+                    was_recording = is_rec;
+
+                    if (is_rec) {
+                        auto now_steady = std::chrono::steady_clock::now();
+                        
+                        if (now_steady >= next_record_time) {
+                            // Advance target time by interval (perfect pacing)
+                            next_record_time += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                std::chrono::duration<double>(record_interval)
+                            );
+                            
+                            // Prevent falling too far behind (e.g. stalled for > 1 second)
+                            if (now_steady > next_record_time + std::chrono::seconds(1)) {
+                                next_record_time = now_steady;
+                            }
+
+                            // Concatenate or Convert to RGB
+                            if (is_split) {
+                                launch_concat_tensors_kernel(d_input, d_output, d_record_buffer, MODEL_SIZE, stream);
+                            } else {
+                                // Capture Output (Processed)
+                                launch_tensor_to_u8_rgb_kernel(d_output, d_record_buffer, MODEL_SIZE, stream);
+                            }
+                            
+                            // Schedule write
+                            recorder.Capture(d_record_buffer, stream);
+                        }
+                    }
                     
-                    // 4. Postprocess (Tensor -> Output Texture 512x512)
-                    cudaArray_t arr_out = map_d3d11_resource(cuda_tex_out);
+                    // 5. Postprocess (Tensor -> Buffer)
+                    
+                    // Logic switch:
+                    // If VSR Enabled & Supported & Runtime ON:
+                    //    -> Postprocess to Base Resolution (MODEL_SIZE) to d3d_output_texture 
+                    //    -> VSR Process to d3d_vsr_output_texture (High Res)
+                    //    -> Present High Res
+                    // Else:
+                    //    -> Postprocess to High Res directly (Bilinear) to d3d_vsr_output_texture (Reuse this texture as target!)
+                    //    -> Present High Res
+                    
+                    bool use_vsr = false;
+                    
+                    #if ENABLE_VSR
+                    if (vsr && vsr->IsSupported() && vsr_enabled_runtime) {
+                        use_vsr = true;
+                    }
+                    #endif
+                    
+                    ID3D11Texture2D* pTargetTexture = d3d_output_texture.Get(); // Default target if VSR off (base res)
+                    // VSR OFF -> use base resolution texture (d3d_output_texture)
+                    // VSR ON  -> use VSR upscaled texture (d3d_vsr_output_texture)
+                    
+                    cudaGraphicsResource* cuda_target_tex = cuda_tex_out; // Default: Output Texture (Base Res)
+                    ID3D11Texture2D* pFinalForPresent = d3d_output_texture.Get();
+
+                    #if ENABLE_VSR
+                    if (use_vsr && d3d_vsr_output_texture) {
+                        // VSR will upscale, final output is the VSR texture
+                        pFinalForPresent = d3d_vsr_output_texture.Get();
+                    }
+                    #endif
+
+                    cudaArray_t arr_out = map_d3d11_resource(cuda_target_tex);
                     
                     cudaResourceDesc surfResDesc = {};
                     surfResDesc.resType = cudaResourceTypeArray;
@@ -257,14 +727,35 @@ int main() {
                     cudaSurfaceObject_t surfObj = 0;
                     CUDA_CHECK(cudaCreateSurfaceObject(&surfObj, &surfResDesc));
                     
-                    // Always render to MODEL_SIZE x MODEL_SIZE fixed output
-                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, stream);
+                    // Always render to base resolution texture
+                    // VSR will upscale it if enabled
+                    int processed_off_x = 0;
+                    #if SPLIT_SCREEN
+                    processed_off_x = MODEL_SIZE;
+                    // Launch postprocess for original (left side)
+                    launch_postprocess_kernel(d_input, surfObj, MODEL_SIZE, MODEL_SIZE, 0, 0, stream);
+                    #endif
+                    // Launch postprocess for processed (right side or full)
+                    launch_postprocess_kernel(d_output, surfObj, MODEL_SIZE, MODEL_SIZE, processed_off_x, 0, stream);
                     
-                    CUDA_CHECK(cudaStreamSynchronize(stream)); // Finish writing to surface logic
+                    CUDA_CHECK(cudaStreamSynchronize(stream)); 
                     CUDA_CHECK(cudaDestroySurfaceObject(surfObj));
-                    unmap_d3d11_resource(cuda_tex_out);
+                    unmap_d3d11_resource(cuda_target_tex);
 
-                    // 5. Present (Copy Output Texture -> Backbuffer Center)
+                    // 6. VSR Pass (if enabled)
+                    // Logic check: use_vsr is runtime toggle, vsr_enabled is compile time flag (represented by pointer existence)
+                    if (use_vsr && vsr) {
+                        static int vsr_log_counter = 0;
+                        if (vsr->Process(d3d_output_texture.Get(), d3d_vsr_output_texture.Get())) {
+                            pFinalForPresent = d3d_vsr_output_texture.Get();
+                            // if (vsr_log_counter++ % 60 == 0) std::cout << "[Main] VSR Applied to frame." << std::endl;
+                        } else {
+                            if (vsr_log_counter++ % 60 == 0) std::cerr << "[Main] VSR Process Failed!" << std::endl;
+                        }
+                    }
+                    // When VSR is disabled, we just use base resolution output (no bilinear upscale)
+
+                    // 7. Present (Copy Final Texture -> Backbuffer Center)
                     ComPtr<ID3D11Texture2D> back_buffer;
                     DX_CHECK(swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), &back_buffer));
                     
@@ -275,27 +766,35 @@ int main() {
                     float black[] = {0.0f, 0.0f, 0.0f, 1.0f};
                     context->ClearRenderTargetView(rtv.Get(), black);
                     
-                    // Calculate Center Offset
-                    int tgt_x = (win_w - MODEL_SIZE) / 2;
-                    int tgt_y = (win_h - MODEL_SIZE) / 2;
+                    // Recalculate copy params based on final texture size
+                    D3D11_TEXTURE2D_DESC finalDesc;
+                    pFinalForPresent->GetDesc(&finalDesc);
                     
-                    // Clip if window is smaller than MODEL_SIZE
-                    int src_x = 0, src_y = 0;
-                    int dst_x = tgt_x, dst_y = tgt_y;
-                    int copy_w = MODEL_SIZE, copy_h = MODEL_SIZE;
+                    int tex_w = finalDesc.Width;
+                    int tex_h = finalDesc.Height;
                     
+                    int tgt_x = (win_w - tex_w) / 2;
+                    int tgt_y = (win_h - tex_h) / 2;
+                    
+                    int src_x = 0; int src_y = 0;
+                    int dst_x = tgt_x; int dst_y = tgt_y;
+                    int copy_w = tex_w; 
+                    int copy_h = tex_h;
+
                     if (tgt_x < 0) { src_x = -tgt_x; dst_x = 0; copy_w = win_w; }
                     if (tgt_y < 0) { src_y = -tgt_y; dst_y = 0; copy_h = win_h; }
-                    
-                    D3D11_BOX srcBox;
-                    srcBox.left = src_x;
-                    srcBox.top = src_y;
-                    srcBox.front = 0;
-                    srcBox.right = src_x + copy_w;
-                    srcBox.bottom = src_y + copy_h;
-                    srcBox.back = 1;
 
-                    context->CopySubresourceRegion(back_buffer.Get(), 0, dst_x, dst_y, 0, d3d_output_texture.Get(), 0, &srcBox);
+                    if (copy_w > 0 && copy_h > 0) {
+                        D3D11_BOX srcBox;
+                        srcBox.left = src_x;
+                        srcBox.right = src_x + copy_w;
+                        srcBox.top = src_y;
+                        srcBox.bottom = src_y + copy_h;
+                        srcBox.front = 0;
+                        srcBox.back = 1;
+
+                        context->CopySubresourceRegion(back_buffer.Get(), 0, dst_x, dst_y, 0, pFinalForPresent, 0, &srcBox);
+                    }
                     
                     DX_CHECK(swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
                     
@@ -312,10 +811,12 @@ int main() {
         }
         
         // Cleanup
+        Gdiplus::GdiplusShutdown(gdiplusToken);
         cudaStreamDestroy(stream);
         cudaFree(d_input);
         cudaFree(d_output);
-        cudaFree(d_debug_img);
+        cudaFree(d_screenshot_buffer);
+        cudaFree(d_record_buffer); // Free Record Buffer
         
         if (cuda_tex_in) unregister_d3d11_resource(cuda_tex_in);
         if (cuda_tex_out) unregister_d3d11_resource(cuda_tex_out);
