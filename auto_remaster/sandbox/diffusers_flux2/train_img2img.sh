@@ -4,11 +4,11 @@ export https_proxy="127.0.0.1:2334"
 
 accelerate launch train_dreambooth_lora_flux2_klein_img2img.py \
   --pretrained_model_name_or_path=black-forest-labs/FLUX.2-klein-base-4B  \
-  --output_dir="outputs/render_nfs_4screens_6_sdxl_1_wan_mix_noise_lora_1_4B" \
-  --dataset_name="dim/render_nfs_4screens_6_sdxl_1_wan_mix" \
+  --output_dir="outputs/nfs_pix2pix_1920_1080_v6_upscale_2x_raw_filtered_noise_lora_1_4B_1024" \
+  --dataset_name="dim/nfs_pix2pix_1920_1080_v6_upscale_2x_raw_filtered" \
   --image_column="edited_image" --cond_image_column="input_image" \
   --do_fp8_training \
-  --resolution=512 \
+  --resolution=1024 \
   --train_batch_size=1 \
   --guidance_scale=1 \
   --gradient_accumulation_steps=4 \

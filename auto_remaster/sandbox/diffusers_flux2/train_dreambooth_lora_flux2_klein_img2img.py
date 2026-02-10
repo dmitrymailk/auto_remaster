@@ -446,10 +446,10 @@ def log_validation(
             images.append(combined)
 
     # Generalization Validation
-    logger.info("Running generalization validation on dim/nfs_pix2pix_1920_1080_v5...")
+    logger.info("Running generalization validation on test dataset")
     gen_images = []
 
-    generalization_dataset_name = "dim/nfs_pix2pix_1920_1080_v5"
+    generalization_dataset_name = "dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw"
 
     # Load generalization dataset on the fly
     gen_dataset = load_dataset(

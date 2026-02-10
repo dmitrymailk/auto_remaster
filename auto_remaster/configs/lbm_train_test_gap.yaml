@@ -2,17 +2,19 @@
 # dataset_name: dim/nfs_pix2pix_1920_1080_v5
 # dataset_name: dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
 # dataset_name: dim/nfs_pix2pix_1920_1080_v6
-dataset_name: dim/render_nfs_4screens_6_sdxl_1_wan_mix
+# dataset_name: dim/render_nfs_4screens_6_sdxl_1_wan_mix
+dataset_name: dim/nfs_pix2pix_1920_1080_v6_upscale_2x_raw
 # Cache directory
 # cache_dir: dataset/nfs_pix2pix_1920_1080_v5
 # cache_dir: dataset/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
 # cache_dir: dataset/nfs_pix2pix_1920_1080_v6
-cache_dir: dataset/render_nfs_4screens_6_sdxl_1_wan_mix
+# cache_dir: dataset/render_nfs_4screens_6_sdxl_1_wan_mix
+cache_dir: dataset/nfs_pix2pix_1920_1080_v6_upscale_2x_raw
 dataset_config: null
 seed: 2025
 
 # Output configuration
-output_dir: checkpoints/auto_remaster/lbm_train_test_gap_tiny
+output_dir: checkpoints/auto_remaster/lbm_train_test_gap_tiny_v6_upscale_2x
 logging_dir: logs
 
 # Training optimization parameters
