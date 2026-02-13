@@ -67,7 +67,7 @@ from dataclasses import dataclass, field
 import wandb
 import gc
 from PIL import Image
-import clip
+# import clip
 from cleanfid.fid import get_folder_features, build_feature_extractor, fid_from_feats
 import lpips
 import torchvision

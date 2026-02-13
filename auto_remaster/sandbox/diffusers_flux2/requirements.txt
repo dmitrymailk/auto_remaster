@@ -9,3 +9,4 @@ sentencepiece
 torchao
 bitsandbytes
 wandb
+more_itertools

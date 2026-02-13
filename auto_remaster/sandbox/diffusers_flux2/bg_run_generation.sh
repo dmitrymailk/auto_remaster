@@ -1,0 +1,1 @@
+bash run_generation.sh > generation.log 2>&1 &

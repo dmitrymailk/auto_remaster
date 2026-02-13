@@ -73,6 +73,7 @@
 ### Лоссы для текстуры
 - LPIPS
 - Focal Frequency Loss
+- [E-LatentLPIPS](https://github.com/mingukkang/elatentlpips)
 
 ### Neural rendering
 - [DIFFUSIONRENDERER: Neural Inverse and Forward Rendering with Video Diffusion Models](https://arxiv.org/pdf/2501.18590)
@@ -141,14 +142,17 @@
 - [InstaFlow! One-Step Stable Diffusion with Rectified Flow](https://github.com/gnobitab/InstaFlow) (это обычный rectified flow с дистиляцией на втором шаге, оригинального кода нет, лучше просто рассмотреть стандартный rectified flow)
 - [pi-Flow: Policy-Based Few-Step Generation via Imitation Distillation](https://github.com/Lakonik/piFlow)
 - [SiD-DiT Score Distillation of Flow Matching Models](https://yigu1008.github.io/SiD-DiT/)
-- [SenseFlow: Scaling Distribution Matching for Flow-based Text-to-Image Distillation](https://github.com/XingtongGe/SenseFlow)
 - [Improved Distribution Matching Distillation for Fast Image Synthesis](https://github.com/tianweiy/DMD2.git)
-- [This repo provides a working re-implementation of Latent Adversarial Diffusion Distillation by AMD](https://github.com/AMD-AGI/Nitro-1)
+- [This repo provides a working re-implementation of Latent Adversarial Diffusion Distillation by AMD (LADD)](https://github.com/AMD-AGI/Nitro-1)
 - [Official codebase for "Efficient Distillation of Classifier-Free Guidance using Adapters."](https://github.com/cristianpjensen/agd)
 - [Consistency Distillation with Target Timestep Selection and Decoupled Guidance](https://github.com/FireRedTeam/Target-Driven-Distillation)
 - [rCM: Score-Regularized Continuous-Time Consistency Model](https://github.com/NVlabs/rcm)
 - [Official Implementation for "Consistency Flow Matching: Defining Straight Flows with Velocity Consistency"](https://github.com/YangLing0818/consistency_flow_matching) 
 - [Official PyTorch Implementation of "Flow Map Distillation Without Data"](https://github.com/ShangyuanTong/FreeFlow)
+- 
+- [SenseFlow: Scaling Distribution Matching for Flow-based Text-to-Image Distillation](https://github.com/XingtongGe/SenseFlow)
+- [SiD-DiT: Score Identity Distillation for DiT-based Flow Matching Models](https://github.com/apple/ml-sid-dit)
+- [Straighter and Faster: Efficient One-Step Generative Modeling via Meanflow on Rectified Trajectories](https://github.com/Xinxi-Zhang/Re-MeanFlow)
 
 ### Diffusion Distillation (no code)
 - [Diffusion Adversarial Post-Training for One-Step Video Generation](https://arxiv.org/pdf/2501.08316)

@@ -1,0 +1,9 @@
+model_name: "black-forest-labs/FLUX.2-klein-base-4B"
+lora_path: "/code/auto_remaster/sandbox/diffusers_flux2/outputs/nfs_pix2pix_1920_1080_v6_upscale_2x_raw_filtered_noise_lora_1_4B/checkpoint-8000"
+weight_name: "pytorch_lora_weights.safetensors"
+adapter_name: "my_first_lora_v5"
+prompt_embeds_path: "/code/auto_remaster/sandbox/diffusers_flux2/outputs/nfs_pix2pix_1920_1080_v6_upscale_2x_raw_filtered_noise_lora_1_4B/prompt_embeds.pt"
+dataset_name: "dim/nfs_pix2pix_1920_1080_v6"
+resolution: 512
+cutoff_radius: 1200
+batch_size: 1

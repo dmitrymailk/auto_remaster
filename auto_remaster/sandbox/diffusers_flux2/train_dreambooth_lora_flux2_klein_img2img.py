@@ -40,6 +40,8 @@ from diffusers import (
     FlowMatchEulerDiscreteScheduler,
     Flux2KleinPipeline,
     Flux2Transformer2DModel,
+    AutoModel,
+    AutoencoderKLFlux2,
 )
 from diffusers.optimization import get_scheduler
 from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
@@ -75,6 +77,38 @@ check_min_version("0.37.0.dev0")
 
 
 logger = get_logger(__name__)
+
+
+class DotDict(dict):
+    __getattr__ = dict.__getitem__
+    __setattr__ = dict.__setitem__
+
+
+class Flux2TinyAutoEncoder(AutoencoderKLFlux2):
+    def __init__(self):
+        super().__init__()
+        self.vae = AutoModel.from_pretrained(
+            "fal/FLUX.2-Tiny-AutoEncoder",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        ).to("cuda")
+        # это ломает генерацию при помощи пайплайна
+        # self._internal_dict = self.vae.config
+
+    def encode(self, x):
+        x = torch.nn.functional.pixel_shuffle(self.vae.encode(x).latent, 2)
+        return DotDict(latent_dist=DotDict(mode=lambda: x))
+
+    def decode(self, x, return_dict=True):
+        if return_dict:
+            return DotDict(
+                sample=self.vae.decode(
+                    torch.nn.functional.pixel_unshuffle(x, 2)
+                ).sample.unsqueeze(0)
+            )
+        return self.vae.decode(
+            torch.nn.functional.pixel_unshuffle(x, 2)
+        ).sample.unsqueeze(0)
 
 
 def create_frequency_soft_cutoff_mask(
@@ -315,13 +349,11 @@ def log_validation(
     is_final_validation=False,
 ):
     logger.info("Running validation...")
-    pipeline = pipeline.to(dtype=torch_dtype)
-    # Use float16 for VAE to avoid BFloat16/Half mismatches and satisfy 16-bit preference
-    # The error indicated Bias was Half, so we align everything to Half for VAE.
-    vae_dtype = torch.float16
-    pipeline.vae.to(dtype=vae_dtype)
-    pipeline.enable_model_cpu_offload()
-    pipeline.set_progress_bar_config(disable=True)
+    # pipeline = pipeline.to(dtype=torch_dtype)
+    # vae_dtype = torch.bfloat16
+    # pipeline.vae.to(dtype=vae_dtype)
+    # pipeline.enable_model_cpu_offload()
+    # pipeline.set_progress_bar_config(disable=True)
 
     # run inference
     # run inference
@@ -405,7 +437,7 @@ def log_validation(
                 img_tensor = img_tensor.unsqueeze(0)
                 # Use strict vae_dtype (float16) and accelerator device (GPU)
                 # pipeline.vae.device might be CPU if offloaded, but forward pass happens on GPU
-                img_tensor = img_tensor.to(device=accelerator.device, dtype=vae_dtype)
+                img_tensor = img_tensor.to(device=accelerator.device, dtype=torch_dtype)
 
                 # Encode
                 z_source = pipeline.vae.encode(img_tensor).latent_dist.mode()
@@ -419,6 +451,9 @@ def log_validation(
                     z_source,
                     cutoff_radius=structural_noise_radius,
                 ).to(dtype=torch_dtype, device=accelerator.device)
+                # noise_spatial = torch.randn_like(z_source).to(
+                #     dtype=torch_dtype, device=accelerator.device
+                # )
 
                 # Patchify latents to match pipeline expectations
                 latents = pipeline._patchify_latents(noise_spatial)
@@ -487,7 +522,7 @@ def log_validation(
                 img_tensor = transforms.ToTensor()(control_image)
                 img_tensor = (img_tensor - 0.5) / 0.5
                 img_tensor = img_tensor.unsqueeze(0)
-                img_tensor = img_tensor.to(device=accelerator.device, dtype=vae_dtype)
+                img_tensor = img_tensor.to(device=accelerator.device, dtype=torch_dtype)
 
                 z_source = pipeline.vae.encode(img_tensor).latent_dist.mode()
                 z_source = z_source.to(device=accelerator.device, dtype=torch_dtype)
@@ -496,6 +531,9 @@ def log_validation(
                     z_source,
                     cutoff_radius=structural_noise_radius,
                 ).to(dtype=torch_dtype, device=accelerator.device)
+                # noise_spatial = torch.randn_like(z_source).to(
+                #     dtype=torch_dtype, device=accelerator.device
+                # )
 
                 # Patchify latents
                 latents = pipeline._patchify_latents(noise_spatial)
@@ -1094,17 +1132,23 @@ def main(args):
         revision=args.revision,
     )
     noise_scheduler_copy = copy.deepcopy(noise_scheduler)
-    vae = AutoencoderKLFlux2.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="vae",
-        revision=args.revision,
-        variant=args.variant,
-        # torch_dtype=weight_dtype,
-    )
-    latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device)
-    latents_bn_std = torch.sqrt(
-        vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
-    ).to(accelerator.device)
+    use_normal_vae = True
+    if use_normal_vae:
+        vae = AutoencoderKLFlux2.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="vae",
+            revision=args.revision,
+            variant=args.variant,
+            # torch_dtype=weight_dtype,
+        )
+    else:
+        vae = Flux2TinyAutoEncoder().to(dtype=weight_dtype)
+
+    if use_normal_vae:
+        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(accelerator.device)
+        latents_bn_std = torch.sqrt(
+            vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
+        ).to(accelerator.device)
 
     quantization_config = None
     if args.bnb_quantization_config_path is not None:
@@ -1123,11 +1167,11 @@ def main(args):
         torch_dtype=weight_dtype,
     )
 
-    # from xformers.ops import MemoryEfficientAttentionFlashAttentionOp
+    from xformers.ops import MemoryEfficientAttentionFlashAttentionOp
 
-    # transformer.enable_xformers_memory_efficient_attention(
-    #     attention_op=MemoryEfficientAttentionFlashAttentionOp
-    # )
+    transformer.enable_xformers_memory_efficient_attention(
+        attention_op=MemoryEfficientAttentionFlashAttentionOp
+    )
     if args.bnb_quantization_config_path is not None:
         transformer = prepare_model_for_kbit_training(
             transformer, use_gradient_checkpointing=False
@@ -1144,6 +1188,9 @@ def main(args):
     # We only train the additional adapter LoRA layers
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
+
+    if not use_normal_vae:
+        vae.vae.requires_grad_(False)
 
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         # due to pytorch#99272, MPS does not yet support bfloat16.
@@ -1648,12 +1695,16 @@ def main(args):
 
                 # "Патчификация" латентов и нормализация статистиками VAE
                 model_input = Flux2KleinPipeline._patchify_latents(model_input)
-                model_input = (model_input - latents_bn_mean) / latents_bn_std
+                if use_normal_vae:
+                    model_input = (model_input - latents_bn_mean) / latents_bn_std
 
                 cond_model_input = Flux2KleinPipeline._patchify_latents(
                     cond_model_input_spatial
                 )
-                cond_model_input = (cond_model_input - latents_bn_mean) / latents_bn_std
+                if use_normal_vae:
+                    cond_model_input = (
+                        cond_model_input - latents_bn_mean
+                    ) / latents_bn_std
 
                 # Подготовка ID для Rotary Positional Embeddings (RoPE)
                 model_input_ids = Flux2KleinPipeline._prepare_latent_ids(
@@ -1675,6 +1726,9 @@ def main(args):
                     cond_model_input_spatial,
                     cutoff_radius=args.structural_noise_radius,
                 ).to(dtype=model_input.dtype, device=model_input.device)
+                # noise_spatial = torch.randn_like(
+                #     cond_model_input_spatial,
+                # ).to(dtype=model_input.dtype, device=model_input.device)
 
                 # Patchify structural noise
                 noise = Flux2KleinPipeline._patchify_latents(noise_spatial)
@@ -1733,7 +1787,6 @@ def main(args):
                     guidance = guidance.expand(model_input.shape[0])
                 else:
                     guidance = None
-
                 # Предикт Модели: трансформер предсказывает "скорость" (velocity) v
                 model_pred = transformer(
                     hidden_states=packed_noisy_model_input,  # (B, image_seq_len, C)
@@ -1834,6 +1887,7 @@ def main(args):
                             revision=args.revision,
                             variant=args.variant,
                             torch_dtype=weight_dtype,
+                            vae=vae,
                         )
                         images = log_validation(
                             pipeline=pipeline,
