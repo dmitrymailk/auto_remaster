@@ -167,7 +167,7 @@ def log_validation(
 
     # 1. Загрузка VAE (Tiny Autoencoder для скорости и экономии памяти)
     # vae_name = "fal/FLUX.2-Tiny-AutoEncoder"
-    vae_name = "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora"
+    vae_name = "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2"
     vae_val = (
         AutoModel.from_pretrained(vae_name, trust_remote_code=True)
         .to(accelerator.device)
@@ -481,7 +481,7 @@ def main():
     # )
     vae = AutoModel.from_pretrained(
         # "fal/FLUX.2-Tiny-AutoEncoder",
-        "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora",
+        "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2",
         trust_remote_code=True,
         torch_dtype=weight_dtype,
     )
