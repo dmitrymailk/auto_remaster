@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms as transforms
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision.transforms import GaussianBlur
@@ -106,15 +106,17 @@ MAX_WIDTH = 512
 
 this_transform = transforms.Compose(
     [
+        transforms.CenterCrop(512),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        transforms.CenterCrop(512),
         transforms.Resize(MAX_WIDTH),
     ]
 )
 
 
 def this_transform_random_crop_resize(x, width=MAX_WIDTH):
+    if x.mode != "RGB":
+        x = x.convert("RGB")
 
     x = transforms.ToTensor()(x)
     x = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])(x)
@@ -153,11 +155,44 @@ def create_dataloader(
     dataset_name, batch_size, num_workers, do_shuffle=True, just_resize=False
 ):
     # Load the dataset from HuggingFace
+    # dataset = load_dataset(
+    #     dataset_name,
+    #     split="train",
+    #     cache_dir="/code/dataset/" + dataset_name.split("/")[1],
+    # )
+    ####---
+    ####---
+    ####---
+    keep_cols = ["input_image", "edited_image", "edit_prompt"]
+    dataset_name = "dim/nfs_pix2pix_1920_1080_v6_2x_flux_klein_4B_lora"
     dataset = load_dataset(
         dataset_name,
         split="train",
         cache_dir="/code/dataset/" + dataset_name.split("/")[1],
+    ).select_columns(keep_cols)
+
+    dataset_hr = load_dataset(
+        "dim/nfs_pix2pix_1920_1080_v6_upscale_2x_raw",
+        cache_dir="/code/dataset/nfs_pix2pix_1920_1080_v6_upscale_2x_raw",
+        split="train",
+    ).select_columns(keep_cols)
+
+    def align_features(batch):
+        batch["edit_prompt"] = [
+            str(x) if x is not None else "" for x in batch["edit_prompt"]
+        ]
+        return batch
+
+    dataset_hr = dataset_hr.map(
+        align_features,
+        batched=True,
+        batch_size=10,
+        writer_batch_size=50,
+        features=dataset.features,
+        desc="Aligning & Sharding",
     )
+
+    dataset = concatenate_datasets([dataset_hr, dataset])
 
     # Use the custom wrapper to flatten input_image and edited_image
     transform_func = (
@@ -265,6 +300,50 @@ def vae_loss_function(x, x_reconstructed, encoder_latent, do_pool=True, do_recon
 
 def cleanup():
     dist.destroy_process_group()
+
+
+import torch
+from diffusers import AutoModel, Flux2Pipeline, AutoencoderKLFlux2
+
+
+class DotDict(dict):
+    __getattr__ = dict.__getitem__
+    __setattr__ = dict.__setitem__
+
+
+class Flux2TinyAutoEncoder(AutoencoderKLFlux2):
+    def __init__(self):
+        super().__init__()
+        self.vae = AutoModel.from_pretrained(
+            "fal/FLUX.2-Tiny-AutoEncoder",
+            trust_remote_code=True,
+            # torch_dtype=torch.bfloat16,
+        ).to("cuda")
+        self.encoder = None
+        self.decoder = None
+
+        # self._internal_dict = self.vae.config
+
+    def encode(self, x):
+        # x = torch.nn.functional.pixel_shuffle(self.vae.encode(x).latent, 2)
+        x = self.vae.encode(x).latent
+        # return DotDict(latent_dist=DotDict(mode=lambda: x))
+        return DotDict(latent_dist=DotDict(sample=lambda: x))
+
+    def decode(self, x, return_dict=True):
+        if return_dict:
+            # return DotDict(
+            #     sample=self.vae.decode(
+            #         torch.nn.functional.pixel_unshuffle(x, 2)
+            #     ).sample.unsqueeze(0)
+            # )
+            # return DotDict(sample=self.vae.decode(x).sample.unsqueeze(0))
+            return DotDict(sample=self.vae.decode(x).sample)
+        # return self.vae.decode(
+        #     torch.nn.functional.pixel_unshuffle(x, 2)
+        # ).sample.unsqueeze(0)
+        # return self.vae.decode(x).sample.unsqueeze(0)
+        return self.vae.decode(x).sample
 
 
 @click.command()
@@ -432,7 +511,8 @@ def train_ddp(
     # dataset_url = f"/home/ubuntu/ultimate_pipe/flux_ipadapter_trainer/dataset/art_webdataset/{{{start_train:05d}..{end_train:05d}}}.tar"
     # test_dataset_url = f"/home/ubuntu/ultimate_pipe/flux_ipadapter_trainer/dataset/art_webdataset/{{{start_test:05d}..{end_test:05d}}}.tar"
 
-    dataset_name = "dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw"
+    # dataset_name = "dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw"
+    dataset_name = "dim/nfs_pix2pix_1920_1080_v6_2x_flux_klein_4B_lora"
 
     assert torch.cuda.is_available(), "CUDA is required for DDP"
 
@@ -478,39 +558,40 @@ def train_ddp(
     #     decoder_also_perform_hr=decoder_also_perform_hr,
     #     use_wavelet=use_wavelet,
     # ).cuda()
-    vae = AutoencoderKLFlux2(
-        **{
-            "_class_name": "AutoencoderKLFlux2",
-            "_diffusers_version": "0.36.0.dev0",
-            "act_fn": "silu",
-            "batch_norm_eps": 0.0001,
-            "batch_norm_momentum": 0.1,
-            "block_out_channels": [128, 256, 512, 512],
-            "down_block_types": [
-                "DownEncoderBlock2D",
-                "DownEncoderBlock2D",
-                "DownEncoderBlock2D",
-                "DownEncoderBlock2D",
-            ],
-            "force_upcast": True,
-            "in_channels": 3,
-            "latent_channels": 32,
-            "layers_per_block": 2,
-            "mid_block_add_attention": True,
-            "norm_num_groups": 32,
-            "out_channels": 3,
-            "patch_size": [2, 2],
-            "sample_size": 1024,
-            "up_block_types": [
-                "UpDecoderBlock2D",
-                "UpDecoderBlock2D",
-                "UpDecoderBlock2D",
-                "UpDecoderBlock2D",
-            ],
-            "use_post_quant_conv": True,
-            "use_quant_conv": True,
-        }
-    ).cuda()
+    # vae = AutoencoderKLFlux2(
+    #     **{
+    #         "_class_name": "AutoencoderKLFlux2",
+    #         "_diffusers_version": "0.36.0.dev0",
+    #         "act_fn": "silu",
+    #         "batch_norm_eps": 0.0001,
+    #         "batch_norm_momentum": 0.1,
+    #         "block_out_channels": [128, 256, 512, 512],
+    #         "down_block_types": [
+    #             "DownEncoderBlock2D",
+    #             "DownEncoderBlock2D",
+    #             "DownEncoderBlock2D",
+    #             "DownEncoderBlock2D",
+    #         ],
+    #         "force_upcast": True,
+    #         "in_channels": 3,
+    #         "latent_channels": 32,
+    #         "layers_per_block": 2,
+    #         "mid_block_add_attention": True,
+    #         "norm_num_groups": 32,
+    #         "out_channels": 3,
+    #         "patch_size": [2, 2],
+    #         "sample_size": 1024,
+    #         "up_block_types": [
+    #             "UpDecoderBlock2D",
+    #             "UpDecoderBlock2D",
+    #             "UpDecoderBlock2D",
+    #             "UpDecoderBlock2D",
+    #         ],
+    #         "use_post_quant_conv": True,
+    #         "use_quant_conv": True,
+    #     }
+    # ).cuda()
+    vae = Flux2TinyAutoEncoder().cuda()
     print(
         vae_resolution,
         vae_in_channels,
