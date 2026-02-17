@@ -1,13 +1,12 @@
 # Dataset configuration
 # dataset_name: dim/nfs_pix2pix_1920_1080_v5
-# dataset_name: dim/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+# dataset_name: dim/nfs_pix2pix_1920_1080_v6_upscale_2x_raw
 # dataset_name: dim/nfs_pix2pix_1920_1080_v6
 # dataset_name: dim/render_nfs_4screens_6_sdxl_1_wan_mix
-# dataset_name: dim/nfs_pix2pix_1920_1080_v6_upscale_2x_raw
 dataset_name: dim/nfs_pix2pix_1920_1080_v6_2x_flux_klein_4B_lora
 # Cache directory
 # cache_dir: dataset/nfs_pix2pix_1920_1080_v5
-# cache_dir: dataset/nfs_pix2pix_1920_1080_v5_upscale_2x_raw
+# cache_dir: dim/nfs_pix2pix_1920_1080_v6_upscale_2x_raw
 # cache_dir: dataset/nfs_pix2pix_1920_1080_v6
 # cache_dir: dataset/render_nfs_4screens_6_sdxl_1_wan_mix
 # cache_dir: dataset/nfs_pix2pix_1920_1080_v6_upscale_2x_raw
@@ -16,14 +15,13 @@ dataset_config: null
 seed: 2025
 
 # Output configuration
-# output_dir: checkpoints/auto_remaster/lbm_train_test_gap_tiny_v6_upscale_2x
-output_dir: checkpoints/auto_remaster/nfs_pix2pix_1920_1080_v6_2x_flux_klein_4B_lora_v3
+output_dir: checkpoints/auto_remaster/fm_struct_noise_30steps
 logging_dir: logs
 
 # Training optimization parameters
 learning_rate: 5e-6
 lr_scheduler_type: "constant"
-warmup_steps: 500
+warmup_steps: 100
 weight_decay: 1e-2
 max_grad_norm: 1.0
 per_device_train_batch_size: 2
@@ -32,10 +30,10 @@ gradient_checkpointing: false
 dataloader_num_workers: 4
 
 # Training duration
-# max_steps: 15000
 max_steps: 300000
-# save_steps: 100
+# max_steps: 30
 save_steps: 1600
+# save_steps: 10
 save_total_limit: 3
 resume_from_checkpoint: false
 eval_on_start: false
@@ -57,7 +55,7 @@ caption_column: edit_prompt
 
 
 # Inference parameters
-num_inference_steps: 8
+num_inference_steps: 50
 
 # Metrics for evaluation
 metrics_list: [
@@ -91,3 +89,4 @@ revision: null
 variant: null
 non_ema_revision: null
 
+minimal_noise_r: 100

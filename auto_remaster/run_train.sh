@@ -15,6 +15,7 @@ config_path=/code/auto_remaster/single_gpu.yaml
 # hf_train_config=/code/auto_remaster/configs/lbm_repae_gan_reflow.yaml
 hf_train_config=/code/auto_remaster/configs/lbm_train_test_gap.yaml
 # hf_train_config=/code/auto_remaster/configs/lbm_train_test_gap_struct_noise.yaml
+# hf_train_config=/code/auto_remaster/configs/fm_struct_noise_30steps.yaml
 
 # python -m auto_remaster.train_auto_remaster --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster --config $hf_train_config
@@ -26,3 +27,4 @@ hf_train_config=/code/auto_remaster/configs/lbm_train_test_gap.yaml
 # accelerate launch --config_file=$config_path -m auto_remaster.lbm_repae_gan_reflow_v2 --config $hf_train_config
 accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm_train_test_gap --config $hf_train_config
 # accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_lbm_train_test_gap_struct_noise --config $hf_train_config
+# accelerate launch --config_file=$config_path -m auto_remaster.train_auto_remaster_flow_struct_noise --config $hf_train_config
