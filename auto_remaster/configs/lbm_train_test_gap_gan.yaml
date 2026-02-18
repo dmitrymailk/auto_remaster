@@ -22,6 +22,7 @@ warmup_steps: 500
 weight_decay: 1e-2
 max_grad_norm: 1.0
 per_device_train_batch_size: 2
+# per_device_train_batch_size: 8
 gradient_accumulation_steps: 1
 gradient_checkpointing: false
 dataloader_num_workers: 4
@@ -65,8 +66,9 @@ metrics_list: [
 ]
 
 # Loss weights (for compatibility, not used in LBM)
-lpips_factor: 10.0
-gan_factor: 0.5
+lpips_factor: 1.0
+gan_factor: 1.0
+lecam_loss_weight: 0.1
 
 # LBM specific parameters
 bridge_noise_sigma: 0.001
@@ -86,3 +88,4 @@ revision: null
 variant: null
 non_ema_revision: null
 
+use_lecam: true

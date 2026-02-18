@@ -84,6 +84,7 @@ from torchvision.transforms import InterpolationMode
 
 # --- GAN Loss and Helper Functions ---
 
+
 def gan_disc_loss(real_preds, fake_preds, disc_type="bce"):
     if disc_type == "bce":
         real_loss = F.binary_cross_entropy_with_logits(
@@ -190,6 +191,7 @@ class PatchDiscriminator(torch.nn.Module):
 
         return bc1 + bc2 + bc3 + bc4 + bc5
 
+
 class GradNormFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight):
@@ -210,7 +212,6 @@ class GradNormFunction(torch.autograd.Function):
 def gradnorm(x, weight=1.0):
     weight = torch.tensor(weight, device=x.device)
     return GradNormFunction.apply(x, weight)
-
 
 
 @dataclass
@@ -240,7 +241,9 @@ class DiffusionTrainingArguments:
     logit_std: float = field(default=1.0)
     latent_loss_weight: float = field(default=1.0)
     latent_loss_type: str = field(default="l2")  # "l2" or "l1"
-    learning_rate_disc: float = field(default=2e-4)
+    learning_rate_disc: float = field(default=5e-5)
+    use_lecam: bool = field(default=True)
+    lecam_loss_weight: float = field(default=0.1)
 
 
 unet2d_config = {
@@ -830,7 +833,11 @@ def main():
 
     # Initialize Discriminator and Optimizer
     discriminator = PatchDiscriminator().to(accelerator.device)
-    optimizer_D = bnb.optim.AdamW8bit(
+    discriminator.requires_grad_(True)
+    discriminator.train()
+
+    # Use standard AdamW for discriminator to avoid potential bnb issues
+    optimizer_D = torch.optim.AdamW(
         discriminator.parameters(),
         lr=diffusion_args.learning_rate_disc,
         betas=(training_args.adam_beta1, training_args.adam_beta2),
@@ -863,6 +870,11 @@ def main():
         discriminator,
         optimizer_D,
     )
+
+    # Initialize LeCam variables
+    lecam_anchor_real_logits = 0.0
+    lecam_anchor_fake_logits = 0.0
+    lecam_beta = 0.9
 
     # Move LPIPS to gpu and cast to weight_dtype
     net_lpips.to(accelerator.device, dtype=weight_dtype)
@@ -1223,13 +1235,34 @@ def main():
                 real_images = batch["target_images"].float().to(weight_dtype)
                 # Fake images (detached for D)
                 fake_images = denoised_sample.detach()
-                
+
                 real_preds = discriminator(real_images)
                 fake_preds = discriminator(fake_images)
 
-                d_loss, avg_real_preds, avg_fake_preds, acc = gan_disc_loss(real_preds, fake_preds)
-                
-                accelerator.backward(d_loss)
+                d_loss, avg_real_preds, avg_fake_preds, acc = gan_disc_loss(
+                    real_preds, fake_preds
+                )
+
+                # LeCam Logic
+                if diffusion_args.use_lecam:
+                    lecam_anchor_real_logits = (
+                        lecam_beta * lecam_anchor_real_logits
+                        + (1 - lecam_beta) * avg_real_preds
+                    )
+                    lecam_anchor_fake_logits = (
+                        lecam_beta * lecam_anchor_fake_logits
+                        + (1 - lecam_beta) * avg_fake_preds
+                    )
+
+                    lecam_loss = (real_preds - lecam_anchor_fake_logits).pow(
+                        2
+                    ).mean() + (fake_preds - lecam_anchor_real_logits).pow(2).mean()
+
+                    d_loss = d_loss + lecam_loss * diffusion_args.lecam_loss_weight
+                else:
+                    lecam_loss = torch.tensor(0.0)
+
+                accelerator.backward(d_loss, retain_graph=True)
                 # if accelerator.sync_gradients:
                 #      accelerator.clip_grad_norm_(discriminator.parameters(), training_args.max_grad_norm)
                 optimizer_D.step()
@@ -1239,14 +1272,15 @@ def main():
 
                 x_tgt = batch["target_images"].float()
                 loss_lpips = net_lpips(denoised_sample, x_tgt.to(weight_dtype)).mean()
-                loss_lpips_alex = net_lpips_alex(
-                    denoised_sample, x_tgt.to(weight_dtype)
-                ).mean()
-                
+                # loss_lpips_alex = net_lpips_alex(
+                #     denoised_sample, x_tgt.to(weight_dtype)
+                # ).mean()
+
                 # GAN loss (attached for G)
                 fake_preds_for_g = discriminator(denoised_sample)
-                g_gan_loss = F.binary_cross_entropy_with_logits(fake_preds_for_g, torch.ones_like(fake_preds_for_g))
-
+                g_gan_loss = F.binary_cross_entropy_with_logits(
+                    fake_preds_for_g, torch.ones_like(fake_preds_for_g)
+                )
 
                 # pixel_loss = F.l1_loss(
                 #     denoised_sample.float(),
@@ -1262,7 +1296,7 @@ def main():
                 # )
                 loss = (
                     loss_lpips * diffusion_args.lpips_factor
-                    + loss_lpips_alex * diffusion_args.lpips_factor
+                    # + loss_lpips_alex * diffusion_args.lpips_factor
                     + g_gan_loss * diffusion_args.gan_factor
                 )
 
@@ -1285,11 +1319,13 @@ def main():
                 logs["loss"] = loss.detach().item()
                 logs["latent_loss"] = loss.detach().item()
                 logs["loss_lpips"] = loss_lpips.detach().item()
-                
+
                 logs["d_loss"] = d_loss.detach().item()
                 logs["g_gan_loss"] = g_gan_loss.detach().item()
                 logs["d_acc"] = acc
-                
+                if diffusion_args.use_lecam:
+                    logs["lecam_loss"] = lecam_loss.detach().item()
+
                 # logs["mse_loss"] = mse_loss.detach().item()
                 accelerator.log(logs, step=global_step)
                 train_loss = 0.0
