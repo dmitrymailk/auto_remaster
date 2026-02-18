@@ -232,7 +232,7 @@ class DiffusionTrainingArguments:
     num_inference_steps: int = field(default=4)
     metrics_list: list[str] = field(default=None)
     lpips_factor: float = field(default=1.0)
-    gan_factor: float = field(default=1.0)
+    gan_factor: float = field(default=0.1)
     bridge_noise_sigma: float = field(default=0.001)
     timestep_sampling: str = field(
         default="custom_timesteps"
@@ -244,6 +244,9 @@ class DiffusionTrainingArguments:
     learning_rate_disc: float = field(default=5e-5)
     use_lecam: bool = field(default=True)
     lecam_loss_weight: float = field(default=0.1)
+    disc_warmup_steps: int = field(default=5000)
+    self_generation_prob: float = field(default=0.5)
+    self_generation_max_steps: int = field(default=4)
 
 
 unet2d_config = {
@@ -405,9 +408,9 @@ def log_validation(
                 # vae_val.encode(c_t, return_dict=False)[0]
                 vae_val.encode(
                     c_t,
-                    #     return_dict=False,
-                    # )[0].sample()
-                ).latent
+                    return_dict=False,
+                )[0].sample()
+                # ).latent
                 * vae_val.config.scaling_factor
             )
 
@@ -469,13 +472,10 @@ def log_validation(
             # ---------------------------------------------------------
 
             # Декодирование результата
-            output_image = (
-                vae_val.decode(
-                    sample / vae_val.config.scaling_factor,
-                    return_dict=False,
-                )
-                # )[0]
-            ).clamp(-1, 1)
+            output_image = vae_val.decode(
+                sample / vae_val.config.scaling_factor,
+                return_dict=False,
+            )[0].clamp(-1, 1)
 
             pred_image_pil = transforms.ToPILImage()(
                 output_image[0].cpu().float() * 0.5 + 0.5
@@ -1028,12 +1028,13 @@ def main():
                 timesteps = _timestep_sampling()
 
                 # --- БЛОК ACCUMULATED SELF-GENERATION ---
+                perturbation_prob = (
+                    diffusion_args.self_generation_prob
+                    if global_step > diffusion_args.disc_warmup_steps
+                    else 0.0
+                )
 
-                # Включаем после разогрева
-                # perturbation_prob = 0.5 if global_step > 2000 else 0.0
-                perturbation_prob = 0.5
-
-                if np.random.rand() < perturbation_prob and False:
+                if np.random.rand() < perturbation_prob:
                     # 1. Рассчитываем размер шага
                     step_size_int = (
                         1000 // diffusion_args.num_inference_steps
@@ -1048,8 +1049,7 @@ def main():
 
                     # Выбираем случайную глубину симуляции для каждого элемента батча или общую
                     # Для простоты и скорости выберем общую глубину для батча, но не больше доступного максимума
-                    # Ограничим max_chain, чтобы не замедлять обучение слишком сильно (например, макс 3 шага)
-                    max_sim_steps = 4
+                    max_sim_steps = diffusion_args.self_generation_max_steps
 
                     # Нужно найти минимум среди батча, чтобы не выйти за 1000
                     min_available = steps_available_up.min().item()
@@ -1199,40 +1199,20 @@ def main():
 
                 # Predict direction of transport (target = z_source - z_target)
                 model_input = torch.cat([noisy_sample, z_source], dim=1)
-                # print(noisy_sample.shape, z_source.shape)
-                model_pred = unet(
-                    model_input,
-                    timesteps,
-                    return_dict=False,
-                )[0]
 
-                # Target is the direction from z_source to z_target
-                # target = z_source - z_target
-
-                # Compute loss in latent space
-                # if diffusion_args.latent_loss_type == "l2":
-                #     loss = F.mse_loss(
-                #         model_pred,
-                #         target.detach(),
-                #         reduction="mean",
-                #     )
-                # elif diffusion_args.latent_loss_type == "l1":
-                #     loss = F.l1_loss(
-                #         model_pred,
-                #         target.detach(),
-                #         reduction="mean",
-                #     )
-                # else:
-                #     raise ValueError(
-                #         f"Unknown latent_loss_type: {diffusion_args.latent_loss_type}"
-                #     )
-
-                denoised_sample = noisy_sample - model_pred * sigmas
-                denoised_sample = vae.decode(
-                    denoised_sample / vae.config.scaling_factor,
-                    return_dict=False,
-                # ).clamp(-1, 1)
-                )[0].clamp(-1, 1)
+                # D step: no grad needed through generator
+                with torch.no_grad():
+                    model_pred = unet(
+                        model_input,
+                        timesteps,
+                        return_dict=False,
+                    )[0]
+                    denoised_sample = noisy_sample - model_pred * sigmas
+                    denoised_sample = vae.decode(
+                        denoised_sample / vae.config.scaling_factor,
+                        return_dict=False,
+                    # ).clamp(-1, 1)
+                    )[0].clamp(-1, 1)
 
                 # --- Discriminator Step ---
                 # Real images (Use reconstructed images to avoid VAE artifacts mismatch)
@@ -1255,8 +1235,7 @@ def main():
                 d_loss, avg_real_preds, avg_fake_preds, acc = gan_disc_loss(
                     real_preds,
                     fake_preds,
-                    # disc_type='bce'
-                    disc_type="hinge",
+                    disc_type='bce',
                 )
 
                 # LeCam Logic
@@ -1285,41 +1264,44 @@ def main():
                 optimizer_D.zero_grad()
 
                 # --- Generator Step ---
+                # Recompute forward pass to get a fresh computation graph
+                # (the previous graph was freed by accelerator.backward(d_loss))
+                model_pred_g = unet(
+                    model_input,
+                    timesteps,
+                    return_dict=False,
+                )[0]
+                denoised_sample_g = noisy_sample - model_pred_g * sigmas
+                denoised_sample_g = vae.decode(
+                    denoised_sample_g / vae.config.scaling_factor,
+                    return_dict=False,
+                )[0].clamp(-1, 1)
 
-                x_tgt = batch["target_images"].float()
-                loss_lpips = net_lpips(denoised_sample, x_tgt.to(weight_dtype)).mean()
-                # loss_lpips_alex = net_lpips_alex(
-                #     denoised_sample, x_tgt.to(weight_dtype)
-                # ).mean()
-
-                # GAN loss (attached for G)
-                fake_preds_for_g = discriminator(denoised_sample)
-                g_gan_loss = F.binary_cross_entropy_with_logits(
-                    fake_preds_for_g, torch.ones_like(fake_preds_for_g)
-                )
-
-                # pixel_loss = F.l1_loss(
-                #     denoised_sample.float(),
-                #     x_tgt.to(weight_dtype),
-                #     reduction="mean",
-                # )
-
-                # loss = (
-                #     loss * diffusion_args.latent_loss_weight
-                #     + loss_lpips * diffusion_args.lpips_factor
-                #     + loss_lpips_alex * diffusion_args.lpips_factor
-                #     # + pixel_loss
-                # )
-                loss = (
-                    loss_lpips * diffusion_args.lpips_factor
-                    # + loss_lpips_alex * diffusion_args.lpips_factor
-                    + g_gan_loss * diffusion_args.gan_factor
-                )
+                loss_lpips = net_lpips(
+                    denoised_sample_g, reconstructed_targets.detach()
+                ).mean()
 
                 # Prevent gradients from flowing into discriminator during G update
-                # This ensures we don't update D with "worse" gradients
                 for p in discriminator.parameters():
                     p.requires_grad = False
+
+                # GAN loss with warmup: skip adversarial signal early in training
+                if global_step >= diffusion_args.disc_warmup_steps:
+                    # gradnorm stabilizes GAN gradient magnitude
+                    denoised_for_disc = gradnorm(
+                        denoised_sample_g, weight=diffusion_args.gan_factor
+                    )
+                    fake_preds_for_g = discriminator(denoised_for_disc)
+                    g_gan_loss = F.binary_cross_entropy_with_logits(
+                        fake_preds_for_g, torch.ones_like(fake_preds_for_g)
+                    )
+                else:
+                    g_gan_loss = torch.tensor(0.0, device=denoised_sample_g.device)
+
+                loss = (
+                    loss_lpips * diffusion_args.lpips_factor
+                    + g_gan_loss * diffusion_args.gan_factor
+                )
 
                 accelerator.backward(loss)
 
