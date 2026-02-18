@@ -247,17 +247,17 @@ class DiffusionTrainingArguments:
 
 
 unet2d_config = {
-    # "sample_size": 64,
-    "sample_size": 32,
+    "sample_size": 64,
+    # "sample_size": 32,
     # "in_channels": 4,
     # "in_channels": 16,
     # "in_channels": 32,
-    # "in_channels": 32 * 2,
-    "in_channels": 128 * 2,
+    "in_channels": 32 * 2,
+    # "in_channels": 128 * 2,
     # "out_channels": 4,
     # "out_channels": 16,
-    # "out_channels": 32,
-    "out_channels": 128,
+    "out_channels": 32,
+    # "out_channels": 128,
     "center_input_sample": False,
     "time_embedding_type": "positional",
     "freq_shift": 0,
@@ -305,18 +305,22 @@ def log_validation(
     # 1. Загрузка VAE (Tiny Autoencoder для скорости и экономии памяти)
     # vae_name = "fal/FLUX.2-Tiny-AutoEncoder"
     vae_name = "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2"
+    # vae_val = (
+    #     AutoModel.from_pretrained(vae_name, trust_remote_code=True)
+    #     .to(accelerator.device)
+    #     .to(weight_dtype)
+    # )
+    # vae_val.decoder.ignore_skip = False
     vae_val = (
-        AutoModel.from_pretrained(vae_name, trust_remote_code=True)
+        AutoencoderKL.from_pretrained(
+            # "black-forest-labs/FLUX.1-dev",
+            "black-forest-labs/FLUX.2-dev",
+            subfolder="vae",
+            torch_device="cuda",
+        )
         .to(accelerator.device)
         .to(weight_dtype)
     )
-    # vae_val.decoder.ignore_skip = False
-    # vae_val = AutoencoderKL.from_pretrained(
-    #     # "black-forest-labs/FLUX.1-dev",
-    #     "black-forest-labs/FLUX.2-dev",
-    #     subfolder="vae",
-    #     torch_device="cuda",
-    # ).to(accelerator.device)
     vae_val.eval()
 
     # 2. Загрузка UNet из чекпоинта
@@ -610,18 +614,18 @@ def main():
     #     torch_dtype=weight_dtype,
     # )
     # vae.decoder.ignore_skip = False
-    # vae = AutoencoderKL.from_pretrained(
-    #     # "black-forest-labs/FLUX.1-dev",
-    #     "black-forest-labs/FLUX.2-dev",
-    #     subfolder="vae",
-    #     torch_dtype=weight_dtype,
-    # )
-    vae = AutoModel.from_pretrained(
-        # "fal/FLUX.2-Tiny-AutoEncoder",
-        "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2",
-        trust_remote_code=True,
+    vae = AutoencoderKL.from_pretrained(
+        # "black-forest-labs/FLUX.1-dev",
+        "black-forest-labs/FLUX.2-dev",
+        subfolder="vae",
         torch_dtype=weight_dtype,
     )
+    # vae = AutoModel.from_pretrained(
+    #     # "fal/FLUX.2-Tiny-AutoEncoder",
+    #     "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2",
+    #     trust_remote_code=True,
+    #     torch_dtype=weight_dtype,
+    # )
 
     unet = UNet2DModel(**unet2d_config)
     # unet = UNet2DModel.from_pretrained('checkpoints/auto_remaster/lbm/checkpoint-28800')
@@ -634,8 +638,8 @@ def main():
     # text_encoder.requires_grad_(False)
     unet.train()
 
-    if training_args.gradient_checkpointing:
-        unet.enable_gradient_checkpointing()
+    # if training_args.gradient_checkpointing:
+    #     unet.enable_gradient_checkpointing()
 
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -1000,24 +1004,24 @@ def main():
             with accelerator.accumulate(*l_acc):
                 # Convert images to latent space (Bridge Matching approach)
                 with torch.no_grad():
-                    # z_source = vae.encode(
-                    #     batch["source_images"].to(weight_dtype),
-                    #     return_dict=False,
-                    #     # )[0]
-                    # )[0].sample()
                     z_source = vae.encode(
-                        batch["source_images"].to(weight_dtype)
-                    ).latent
+                        batch["source_images"].to(weight_dtype),
+                        return_dict=False,
+                        # )[0]
+                    )[0].sample()
+                    # z_source = vae.encode(
+                    #     batch["source_images"].to(weight_dtype)
+                    # ).latent
                     z_source = z_source * vae.config.scaling_factor
 
-                    # z_target = vae.encode(
-                    #     batch["target_images"].to(weight_dtype),
-                    #     return_dict=False,
-                    #     # )[0]
-                    # )[0].sample()
                     z_target = vae.encode(
                         batch["target_images"].to(weight_dtype),
-                    ).latent
+                        return_dict=False,
+                        # )[0]
+                    )[0].sample()
+                    # z_target = vae.encode(
+                    #     batch["target_images"].to(weight_dtype),
+                    # ).latent
                     z_target = z_target * vae.config.scaling_factor
 
                 # Sample timesteps (Bridge Matching)
@@ -1029,7 +1033,7 @@ def main():
                 # perturbation_prob = 0.5 if global_step > 2000 else 0.0
                 perturbation_prob = 0.5
 
-                if np.random.rand() < perturbation_prob:
+                if np.random.rand() < perturbation_prob and False:
                     # 1. Рассчитываем размер шага
                     step_size_int = (
                         1000 // diffusion_args.num_inference_steps
@@ -1227,12 +1231,21 @@ def main():
                 denoised_sample = vae.decode(
                     denoised_sample / vae.config.scaling_factor,
                     return_dict=False,
-                ).clamp(-1, 1)
-                # )[0].clamp(-1, 1)
+                # ).clamp(-1, 1)
+                )[0].clamp(-1, 1)
 
                 # --- Discriminator Step ---
-                # Real images
-                real_images = batch["target_images"].float().to(weight_dtype)
+                # Real images (Use reconstructed images to avoid VAE artifacts mismatch)
+                # Decode z_target to get "perfect" VAE reconstruction
+                with torch.no_grad():
+                    reconstructed_targets = vae.decode(
+                        z_target / vae.config.scaling_factor,
+                        return_dict=False,
+                    )[0].clamp(-1, 1)
+
+                real_images = reconstructed_targets.detach().float()
+                # real_images = batch["target_images"].float().to(weight_dtype)
+
                 # Fake images (detached for D)
                 fake_images = denoised_sample.detach()
 
@@ -1240,7 +1253,10 @@ def main():
                 fake_preds = discriminator(fake_images)
 
                 d_loss, avg_real_preds, avg_fake_preds, acc = gan_disc_loss(
-                    real_preds, fake_preds
+                    real_preds,
+                    fake_preds,
+                    # disc_type='bce'
+                    disc_type="hinge",
                 )
 
                 # LeCam Logic
@@ -1262,7 +1278,7 @@ def main():
                 else:
                     lecam_loss = torch.tensor(0.0)
 
-                accelerator.backward(d_loss, retain_graph=True)
+                accelerator.backward(d_loss)
                 # if accelerator.sync_gradients:
                 #      accelerator.clip_grad_norm_(discriminator.parameters(), training_args.max_grad_norm)
                 optimizer_D.step()
@@ -1300,7 +1316,15 @@ def main():
                     + g_gan_loss * diffusion_args.gan_factor
                 )
 
+                # Prevent gradients from flowing into discriminator during G update
+                # This ensures we don't update D with "worse" gradients
+                for p in discriminator.parameters():
+                    p.requires_grad = False
+
                 accelerator.backward(loss)
+
+                for p in discriminator.parameters():
+                    p.requires_grad = True
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
                         layers_to_opt,
