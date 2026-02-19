@@ -85,6 +85,240 @@ from torchvision.transforms import InterpolationMode
 # --- GAN Loss and Helper Functions ---
 
 
+# --- R3GAN Discriminator (ported from R3GAN/R3GAN/Networks.py, pure PyTorch) ---
+
+
+def _r3gan_msr_init(layer, activation_gain=1):
+    fan_in = layer.weight.data.size(1) * layer.weight.data[0][0].numel()
+    layer.weight.data.normal_(0, activation_gain / math.sqrt(fan_in))
+    if layer.bias is not None:
+        layer.bias.data.zero_()
+    return layer
+
+
+def _create_lowpass_kernel(weights):
+    kernel = np.convolve(weights, [1, 1]).reshape(1, -1)
+    kernel = torch.tensor(kernel.T @ kernel, dtype=torch.float32)
+    return kernel / kernel.sum()
+
+
+class R3GANBiasedActivation(torch.nn.Module):
+    _GAIN = math.sqrt(2 / (1 + 0.2**2))
+    _FUNC = torch.nn.LeakyReLU(0.2)
+
+    def __init__(self, channels):
+        super().__init__()
+        self.bias = torch.nn.Parameter(torch.zeros(channels))
+
+    def forward(self, x):
+        b = self.bias.to(x.dtype)
+        y = x + b.view(1, -1, 1, 1) if x.dim() == 4 else x + b.view(1, -1)
+        return R3GANBiasedActivation._FUNC(y)
+
+
+class R3GANConvolution(torch.nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size, groups=1, activation_gain=1):
+        super().__init__()
+        self.layer = _r3gan_msr_init(
+            torch.nn.Conv2d(
+                in_ch,
+                out_ch,
+                kernel_size,
+                stride=1,
+                padding=(kernel_size - 1) // 2,
+                groups=groups,
+                bias=False,
+            ),
+            activation_gain=activation_gain,
+        )
+
+    def forward(self, x):
+        return F.conv2d(
+            x,
+            self.layer.weight.to(x.dtype),
+            padding=self.layer.padding,
+            groups=self.layer.groups,
+        )
+
+
+class R3GANInterpolativeDownsampler(torch.nn.Module):
+    def __init__(self, filter_weights):
+        super().__init__()
+        self.register_buffer("kernel", _create_lowpass_kernel(filter_weights))
+        self.filter_radius = len(filter_weights) // 2
+
+    def forward(self, x):
+        k = self.kernel.view(1, 1, self.kernel.shape[0], self.kernel.shape[1]).to(
+            x.dtype
+        )
+        b, c, h, w = x.shape
+        y = F.conv2d(x.view(b * c, 1, h, w), k, stride=2, padding=self.filter_radius)
+        return y.view(b, c, y.shape[2], y.shape[3])
+
+
+class R3GANResidualBlock(torch.nn.Module):
+    def __init__(self, channels, cardinality, expansion, kernel_size, var_scale):
+        super().__init__()
+        n_linear = 3
+        expanded = channels * expansion
+        gain = R3GANBiasedActivation._GAIN * var_scale ** (-1 / (2 * n_linear - 2))
+
+        self.linear1 = R3GANConvolution(
+            channels, expanded, kernel_size=1, activation_gain=gain
+        )
+        self.linear2 = R3GANConvolution(
+            expanded,
+            expanded,
+            kernel_size=kernel_size,
+            groups=cardinality,
+            activation_gain=gain,
+        )
+        self.linear3 = R3GANConvolution(
+            expanded, channels, kernel_size=1, activation_gain=0
+        )
+        self.act1 = R3GANBiasedActivation(expanded)
+        self.act2 = R3GANBiasedActivation(expanded)
+
+    def forward(self, x):
+        y = self.linear1(x)
+        y = self.linear2(self.act1(y))
+        y = self.linear3(self.act2(y))
+        return x + y
+
+
+class R3GANDownsampleLayer(torch.nn.Module):
+    def __init__(self, in_ch, out_ch, resampling_filter):
+        super().__init__()
+        self.resampler = R3GANInterpolativeDownsampler(resampling_filter)
+        if in_ch != out_ch:
+            self.linear = R3GANConvolution(in_ch, out_ch, kernel_size=1)
+
+    def forward(self, x):
+        x = self.resampler(x)
+        if hasattr(self, "linear"):
+            x = self.linear(x)
+        return x
+
+
+class R3GANDiscriminativeBasis(torch.nn.Module):
+    def __init__(self, in_ch, out_dim):
+        super().__init__()
+        self.basis = _r3gan_msr_init(
+            torch.nn.Conv2d(
+                in_ch,
+                in_ch,
+                kernel_size=4,
+                stride=1,
+                padding=0,
+                groups=in_ch,
+                bias=False,
+            )
+        )
+        self.linear = _r3gan_msr_init(torch.nn.Linear(in_ch, out_dim, bias=False))
+
+    def forward(self, x):
+        return self.linear(self.basis(x).view(x.shape[0], -1))
+
+
+class R3GANDiscriminatorStage(torch.nn.Module):
+    def __init__(
+        self,
+        in_ch,
+        out_ch,
+        cardinality,
+        n_blocks,
+        expansion,
+        kernel_size,
+        var_scale,
+        resampling_filter=None,
+    ):
+        super().__init__()
+        if resampling_filter is None:
+            transition = R3GANDiscriminativeBasis(in_ch, out_ch)
+        else:
+            transition = R3GANDownsampleLayer(in_ch, out_ch, resampling_filter)
+        blocks = [
+            R3GANResidualBlock(in_ch, cardinality, expansion, kernel_size, var_scale)
+            for _ in range(n_blocks)
+        ]
+        self.layers = torch.nn.ModuleList(blocks + [transition])
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+
+class R3GANDiscriminator(torch.nn.Module):
+    """R3GAN discriminator — deep ResNet without normalization, MSR init."""
+
+    def __init__(
+        self,
+        width_per_stage,
+        cardinality_per_stage,
+        blocks_per_stage,
+        expansion=2,
+        kernel_size=3,
+        resampling_filter=None,
+    ):
+        super().__init__()
+        if resampling_filter is None:
+            resampling_filter = [1, 2, 1]
+
+        var_scale = sum(blocks_per_stage)
+        n_stages = len(width_per_stage)
+
+        main = []
+        for i in range(n_stages - 1):
+            main.append(
+                R3GANDiscriminatorStage(
+                    width_per_stage[i],
+                    width_per_stage[i + 1],
+                    cardinality_per_stage[i],
+                    blocks_per_stage[i],
+                    expansion,
+                    kernel_size,
+                    var_scale,
+                    resampling_filter,
+                )
+            )
+        # Final stage (no resampling — discriminative basis)
+        main.append(
+            R3GANDiscriminatorStage(
+                width_per_stage[-1],
+                1,
+                cardinality_per_stage[-1],
+                blocks_per_stage[-1],
+                expansion,
+                kernel_size,
+                var_scale,
+                None,
+            )
+        )
+
+        self.extraction = R3GANConvolution(3, width_per_stage[0], kernel_size=1)
+        self.main = torch.nn.ModuleList(main)
+
+    def forward(self, x):
+        x = self.extraction(x)
+        for stage in self.main:
+            x = stage(x)
+        return x.view(x.shape[0])
+
+
+def hinge_d_loss(logits_real, logits_fake):
+    loss_real = torch.mean(F.relu(1.0 - logits_real))
+    loss_fake = torch.mean(F.relu(1.0 + logits_fake))
+    return 0.5 * (loss_real + loss_fake)
+
+
+def zero_centered_gradient_penalty(samples, logits):
+    (gradient,) = torch.autograd.grad(
+        outputs=logits.sum(), inputs=samples, create_graph=True
+    )
+    return gradient.square().sum([1, 2, 3])
+
+
 def gan_disc_loss(real_preds, fake_preds, disc_type="bce"):
     if disc_type == "bce":
         real_loss = F.binary_cross_entropy_with_logits(
@@ -214,6 +448,64 @@ def gradnorm(x, weight=1.0):
     return GradNormFunction.apply(x, weight)
 
 
+class NLayerDiscriminator(torch.nn.Module):
+    """PatchGAN discriminator from pix2pix — learns its own features, orthogonal to LPIPS."""
+
+    def __init__(self, input_nc=3, ndf=64, n_layers=3, use_bn=True):
+        super().__init__()
+        use_bias = not use_bn
+
+        kw = 4
+        padw = 1
+        sequence = [
+            torch.nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
+            torch.nn.LeakyReLU(0.2, True),
+        ]
+        nf_mult = 1
+        for n in range(1, n_layers):
+            nf_mult_prev = nf_mult
+            nf_mult = min(2**n, 8)
+            block = [
+                torch.nn.Conv2d(
+                    ndf * nf_mult_prev,
+                    ndf * nf_mult,
+                    kernel_size=kw,
+                    stride=2,
+                    padding=padw,
+                    bias=use_bias,
+                ),
+            ]
+            if use_bn:
+                block.append(torch.nn.BatchNorm2d(ndf * nf_mult))
+            block.append(torch.nn.LeakyReLU(0.2, True))
+            sequence += block
+
+        nf_mult_prev = nf_mult
+        nf_mult = min(2**n_layers, 8)
+        block = [
+            torch.nn.Conv2d(
+                ndf * nf_mult_prev,
+                ndf * nf_mult,
+                kernel_size=kw,
+                stride=1,
+                padding=padw,
+                bias=use_bias,
+            ),
+        ]
+        if use_bn:
+            block.append(torch.nn.BatchNorm2d(ndf * nf_mult))
+        block.append(torch.nn.LeakyReLU(0.2, True))
+        sequence += block
+
+        sequence += [
+            torch.nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+        ]
+        self.main = torch.nn.Sequential(*sequence)
+
+    def forward(self, x):
+        return self.main(x)
+
+
 @dataclass
 class DiffusionTrainingArguments:
     use_ema: bool = field(default=False)
@@ -247,20 +539,28 @@ class DiffusionTrainingArguments:
     disc_warmup_steps: int = field(default=5000)
     self_generation_prob: float = field(default=0.5)
     self_generation_max_steps: int = field(default=4)
+    discriminator_type: str = field(
+        default="r3gan"
+    )  # "vgg_patch", "patchgan", or "r3gan"
+    gan_loss_type: str = field(default="r3gan")  # "bce", "hinge", or "r3gan"
+    r3gan_gamma: float = field(default=0.01)
+    d_noise_std: float = field(default=0.1)
+    d_noise_anneal_steps: int = field(default=10000)
+    d_train_every: int = field(default=1)
 
 
 unet2d_config = {
-    "sample_size": 64,
-    # "sample_size": 32,
+    # "sample_size": 64,
+    "sample_size": 32,
     # "in_channels": 4,
     # "in_channels": 16,
     # "in_channels": 32,
-    "in_channels": 32 * 2,
-    # "in_channels": 128 * 2,
+    # "in_channels": 32 * 2,
+    "in_channels": 128 * 2,
     # "out_channels": 4,
     # "out_channels": 16,
-    "out_channels": 32,
-    # "out_channels": 128,
+    # "out_channels": 32,
+    "out_channels": 128,
     "center_input_sample": False,
     "time_embedding_type": "positional",
     "freq_shift": 0,
@@ -307,23 +607,23 @@ def log_validation(
 
     # 1. Загрузка VAE (Tiny Autoencoder для скорости и экономии памяти)
     # vae_name = "fal/FLUX.2-Tiny-AutoEncoder"
-    vae_name = "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2"
-    # vae_val = (
-    #     AutoModel.from_pretrained(vae_name, trust_remote_code=True)
-    #     .to(accelerator.device)
-    #     .to(weight_dtype)
-    # )
-    # vae_val.decoder.ignore_skip = False
+    vae_name = "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora"
     vae_val = (
-        AutoencoderKL.from_pretrained(
-            # "black-forest-labs/FLUX.1-dev",
-            "black-forest-labs/FLUX.2-dev",
-            subfolder="vae",
-            torch_device="cuda",
-        )
+        AutoModel.from_pretrained(vae_name, trust_remote_code=True)
         .to(accelerator.device)
         .to(weight_dtype)
     )
+    # vae_val.decoder.ignore_skip = False
+    # vae_val = (
+    #     AutoencoderKL.from_pretrained(
+    #         # "black-forest-labs/FLUX.1-dev",
+    #         "black-forest-labs/FLUX.2-dev",
+    #         subfolder="vae",
+    #         torch_device="cuda",
+    #     )
+    #     .to(accelerator.device)
+    #     .to(weight_dtype)
+    # )
     vae_val.eval()
 
     # 2. Загрузка UNet из чекпоинта
@@ -405,12 +705,11 @@ def log_validation(
         with torch.no_grad():
             # Encode source image
             z_source = (
-                # vae_val.encode(c_t, return_dict=False)[0]
-                vae_val.encode(
-                    c_t,
-                    return_dict=False,
-                )[0].sample()
-                # ).latent
+                vae_val.encode(c_t, return_dict=False)
+                # vae_val.encode(
+                #     c_t,
+                #     return_dict=False,
+                # )[0].sample()
                 * vae_val.config.scaling_factor
             )
 
@@ -427,7 +726,16 @@ def log_validation(
                     denoiser_input = noise_scheduler.scale_model_input(sample, t)
                 else:
                     denoiser_input = sample
-                denoiser_input = torch.cat([denoiser_input, z_source], dim=1)
+                
+                # Add perturbation for validation as well, to match training distribution
+                z_source_cond = z_source
+                if diffusion_args.input_perturbation > 0:
+                     # For validation we might want to use a fixed seed or just random? 
+                     # Let's use random but maybe we should restart generator for each image?
+                     # valid_rng = torch.Generator(device=z_source.device).manual_seed(training_args.seed + idx)
+                     z_source_cond = z_source + diffusion_args.input_perturbation * torch.randn_like(z_source)
+
+                denoiser_input = torch.cat([denoiser_input, z_source_cond], dim=1)
                 # 2. Предсказание направления (UNet)
                 # unet_val(x, t) -> output
                 # print(i, t, noise_scheduler.timesteps)
@@ -475,7 +783,8 @@ def log_validation(
             output_image = vae_val.decode(
                 sample / vae_val.config.scaling_factor,
                 return_dict=False,
-            )[0].clamp(-1, 1)
+            ).clamp(-1, 1)
+            # )[0].clamp(-1, 1)
 
             pred_image_pil = transforms.ToPILImage()(
                 output_image[0].cpu().float() * 0.5 + 0.5
@@ -614,21 +923,24 @@ def main():
     #     torch_dtype=weight_dtype,
     # )
     # vae.decoder.ignore_skip = False
-    vae = AutoencoderKL.from_pretrained(
-        # "black-forest-labs/FLUX.1-dev",
-        "black-forest-labs/FLUX.2-dev",
-        subfolder="vae",
-        torch_dtype=weight_dtype,
-    )
-    # vae = AutoModel.from_pretrained(
-    #     # "fal/FLUX.2-Tiny-AutoEncoder",
-    #     "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora_v2",
-    #     trust_remote_code=True,
+    # vae = AutoencoderKL.from_pretrained(
+    #     # "black-forest-labs/FLUX.1-dev",
+    #     "black-forest-labs/FLUX.2-dev",
+    #     subfolder="vae",
     #     torch_dtype=weight_dtype,
     # )
+    vae = AutoModel.from_pretrained(
+        # "fal/FLUX.2-Tiny-AutoEncoder",
+        "dim/fal_FLUX.2-Tiny-AutoEncoder_v6_2x_flux_klein_4B_lora",
+        trust_remote_code=True,
+        torch_dtype=weight_dtype,
+    )
 
-    unet = UNet2DModel(**unet2d_config)
-    # unet = UNet2DModel.from_pretrained('checkpoints/auto_remaster/lbm/checkpoint-28800')
+    # unet = UNet2DModel(**unet2d_config)
+    unet = UNet2DModel.from_pretrained(
+        "checkpoints/auto_remaster/nfs_pix2pix_1920_1080_v6_2x_flux_klein_4B_lora/checkpoint-225600",
+        subfolder="unet",
+    )
     # unet.enable_xformers_memory_efficient_attention()
     unet.set_attention_backend("flash")
 
@@ -694,85 +1006,6 @@ def main():
         examples["target_images"] = [train_transforms(image) for image in target_images]
         return examples
 
-    # я пробовал запускать так обучение, результаты как-то хуже оказались
-    # def preprocess_train(examples):
-    #     # Константы (или передавайте их как аргументы, если они меняются)
-    #     # Обычно source_column и target_column берутся из конфига
-    #     # source_column = "input_image"  # Замените на ваше название колонки
-    #     # target_column = "edited_image"  # Замените на ваше название колонки
-
-    #     # Используем бикубическую интерполяцию для лучшего качества
-    #     interpolation = InterpolationMode.BICUBIC
-
-    #     # 1. Выбираем размер для батча
-    #     resolutions = [128, 256, 384, 512]
-    #     size = random.choice(resolutions)
-
-    #     source_images_output = []
-    #     target_images_output = []
-
-    #     for src_img, tgt_img in zip(examples[source_column], examples[target_column]):
-    #         # Конвертация обязательна, чтобы убрать альфа-канал (RGBA -> RGB)
-    #         src_img = src_img.convert("RGB")
-    #         tgt_img = tgt_img.convert("RGB")
-
-    #         # --- ШАГ 1: ЛОГИКА РЕСАЙЗА ---
-
-    #         # Получаем текущие размеры (W, H)
-    #         w, h = src_img.size
-    #         min_dim = min(w, h)
-
-    #         # Логика:
-    #         # 1. Если size == 512, мы хотим видеть "общую картину", поэтому делаем resize.
-    #         # 2. НО! Если исходная картинка МЕНЬШЕ выбранного size (например, картинка 256, а size 384),
-    #         #    функция RandomCrop упадет с ошибкой. В этом случае всегда нужно делать resize/upscale.
-
-    #         if size == 512 or min_dim < size:
-    #             # Resize до размера 'size' по короткой стороне, сохраняя пропорции
-    #             src_img = TF.resize(src_img, size, interpolation=interpolation)
-    #             tgt_img = TF.resize(tgt_img, size, interpolation=interpolation)
-    #         else:
-    #             # Для 128, 256, 384 (если картинка больше этих размеров)
-    #             # Оставляем оригинал, чтобы кроп вырезал детальные текстуры (High Res)
-    #             pass
-
-    #         # --- ШАГ 2: СИНХРОННЫЙ RANDOM CROP ---
-    #         # Теперь вырезаем квадрат. Гарантировано, что картинка >= size.
-    #         i, j, h, w = transforms.RandomCrop.get_params(
-    #             src_img, output_size=(size, size)
-    #         )
-
-    #         src_img = TF.crop(src_img, i, j, h, w)
-    #         tgt_img = TF.crop(tgt_img, i, j, h, w)
-
-    #         # --- ШАГ 3: РАНДОМНЫЕ ФЛИПЫ ---
-    #         # Горизонтальный
-    #         if random.random() > 0.5:
-    #             src_img = TF.hflip(src_img)
-    #             tgt_img = TF.hflip(tgt_img)
-
-    #         # Вертикальный (Опционально: убедитесь, что для вашей задачи это имеет смысл.
-    #         # Для фото людей/пейзажей vertical flip обычно НЕ делают, для текстур/спутника - делают)
-    #         if random.random() > 0.5:
-    #             src_img = TF.vflip(src_img)
-    #             tgt_img = TF.vflip(tgt_img)
-
-    #         # --- ШАГ 4: ТЕНЗОРЫ И НОРМАЛИЗАЦИЯ ---
-    #         src_t = TF.to_tensor(src_img)
-    #         tgt_t = TF.to_tensor(tgt_img)
-
-    #         # Normalize: (x - 0.5) / 0.5 -> диапазон [-1, 1]
-    #         src_t = TF.normalize(src_t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-    #         tgt_t = TF.normalize(tgt_t, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-
-    #         source_images_output.append(src_t)
-    #         target_images_output.append(tgt_t)
-
-    #     return {
-    #         "source_images": source_images_output,
-    #         "target_images": target_images_output,
-    #     }
-
     with accelerator.main_process_first():
         dataset["train"] = dataset["train"].shuffle(seed=training_args.seed)
         # Set the training transforms
@@ -836,15 +1069,43 @@ def main():
     )
 
     # Initialize Discriminator and Optimizer
-    discriminator = PatchDiscriminator().to(accelerator.device)
+    if diffusion_args.discriminator_type == "latent":
+        # Latent-space PatchGAN: operates on 128-channel VAE latents (32×32 for 512px)
+        use_bn = diffusion_args.gan_loss_type != "r3gan"
+        discriminator = NLayerDiscriminator(
+            input_nc=128, ndf=64, n_layers=2, use_bn=use_bn
+        ).to(accelerator.device)
+    elif diffusion_args.discriminator_type == "r3gan":
+        # R3GAN ResNet discriminator — 512→4 in 8 downsample stages
+        # Lighter config for practical training speed
+        width_per_stage = [16, 32, 64, 64, 128, 128, 128, 128]
+        cardinality_per_stage = [1, 1, 2, 2, 2, 4, 4, 4]
+        blocks_per_stage = [1, 1, 1, 1, 1, 1, 1, 1]
+        discriminator = R3GANDiscriminator(
+            width_per_stage=width_per_stage,
+            cardinality_per_stage=cardinality_per_stage,
+            blocks_per_stage=blocks_per_stage,
+            expansion=2,
+        ).to(accelerator.device)
+    elif diffusion_args.discriminator_type == "patchgan":
+        use_bn = diffusion_args.gan_loss_type != "r3gan"
+        discriminator = NLayerDiscriminator(
+            input_nc=3, ndf=128, n_layers=4, use_bn=use_bn
+        ).to(accelerator.device)
+    else:
+        discriminator = PatchDiscriminator().to(accelerator.device)
+
     discriminator.requires_grad_(True)
     discriminator.train()
 
-    # Use standard AdamW for discriminator to avoid potential bnb issues
+    # R3GAN uses beta1=0 (no momentum) for optimizer stability
+    d_beta1 = (
+        0.0 if diffusion_args.gan_loss_type == "r3gan" else training_args.adam_beta1
+    )
     optimizer_D = torch.optim.AdamW(
         discriminator.parameters(),
         lr=diffusion_args.learning_rate_disc,
-        betas=(training_args.adam_beta1, training_args.adam_beta2),
+        betas=(d_beta1, training_args.adam_beta2),
         weight_decay=training_args.weight_decay,
         eps=training_args.adam_epsilon,
     )
@@ -1007,8 +1268,8 @@ def main():
                     z_source = vae.encode(
                         batch["source_images"].to(weight_dtype),
                         return_dict=False,
-                        # )[0]
-                    )[0].sample()
+                    )
+                    # )[0].sample()
                     # z_source = vae.encode(
                     #     batch["source_images"].to(weight_dtype)
                     # ).latent
@@ -1017,8 +1278,8 @@ def main():
                     z_target = vae.encode(
                         batch["target_images"].to(weight_dtype),
                         return_dict=False,
-                        # )[0]
-                    )[0].sample()
+                    )
+                    # )[0].sample()
                     # z_target = vae.encode(
                     #     batch["target_images"].to(weight_dtype),
                     # ).latent
@@ -1033,6 +1294,12 @@ def main():
                     if global_step > diffusion_args.disc_warmup_steps
                     else 0.0
                 )
+
+                # Prepare conditioning latent (perturbed if requested)
+                if diffusion_args.input_perturbation > 0:
+                    z_source_cond = z_source + diffusion_args.input_perturbation * torch.randn_like(z_source)
+                else:
+                    z_source_cond = z_source
 
                 if np.random.rand() < perturbation_prob:
                     # 1. Рассчитываем размер шага
@@ -1088,11 +1355,12 @@ def main():
 
                         curr_t = t_start_int
 
-                        with torch.no_grad():
+                        # with torch.no_grad():
+                        if True:
                             for _ in range(n_steps_back):
                                 # a. Предсказываем скорость в текущей точке
                                 model_input_temp = torch.cat(
-                                    [current_sim_sample, z_source],
+                                    [current_sim_sample, z_source_cond],
                                     dim=1,
                                 )
                                 pred_velocity = unet(
@@ -1125,6 +1393,17 @@ def main():
                                 current_sim_sample = (
                                     current_sim_sample + pred_velocity * dt_sigma
                                 )
+
+                                # d. Добавляем Bridge Noise (SDE шаг)
+                                if diffusion_args.bridge_noise_sigma > 0:
+                                    noise = torch.randn_like(current_sim_sample)
+                                    bridge_factor = (s_next * (1.0 - s_next)).sqrt()
+                                    current_sim_sample = (
+                                        current_sim_sample
+                                        + diffusion_args.bridge_noise_sigma
+                                        * bridge_factor
+                                        * noise
+                                    )
 
                                 # Обновляем время для следующей итерации
                                 curr_t = next_t
@@ -1198,7 +1477,7 @@ def main():
                         noisy_sample[i] = z_source[i]
 
                 # Predict direction of transport (target = z_source - z_target)
-                model_input = torch.cat([noisy_sample, z_source], dim=1)
+                model_input = torch.cat([noisy_sample, z_source_cond], dim=1)
 
                 # D step: no grad needed through generator
                 with torch.no_grad():
@@ -1211,35 +1490,75 @@ def main():
                     denoised_sample = vae.decode(
                         denoised_sample / vae.config.scaling_factor,
                         return_dict=False,
-                    # ).clamp(-1, 1)
-                    )[0].clamp(-1, 1)
+                    ).clamp(-1, 1)
+                    # )[0].clamp(-1, 1)
 
                 # --- Discriminator Step ---
-                # Real images (Use reconstructed images to avoid VAE artifacts mismatch)
-                # Decode z_target to get "perfect" VAE reconstruction
-                with torch.no_grad():
-                    reconstructed_targets = vae.decode(
-                        z_target / vae.config.scaling_factor,
-                        return_dict=False,
-                    )[0].clamp(-1, 1)
+                is_latent_disc = diffusion_args.discriminator_type == "latent"
+                if is_latent_disc:
+                    real_for_d = z_target.detach().float()
+                    fake_for_d = (noisy_sample - model_pred * sigmas).detach().float()
+                else:
+                    with torch.no_grad():
+                        reconstructed_targets = vae.decode(
+                            z_target / vae.config.scaling_factor,
+                            return_dict=False,
+                        ).clamp(-1, 1)
+                    real_for_d = reconstructed_targets.detach().float()
+                    fake_for_d = denoised_sample.detach()
 
-                real_images = reconstructed_targets.detach().float()
-                # real_images = batch["target_images"].float().to(weight_dtype)
-
-                # Fake images (detached for D)
-                fake_images = denoised_sample.detach()
-
-                real_preds = discriminator(real_images)
-                fake_preds = discriminator(fake_images)
-
-                d_loss, avg_real_preds, avg_fake_preds, acc = gan_disc_loss(
-                    real_preds,
-                    fake_preds,
-                    disc_type='bce',
+                # Instance noise: blur real/fake boundary, decay over training
+                noise_std = diffusion_args.d_noise_std * max(
+                    0.0, 1.0 - global_step / diffusion_args.d_noise_anneal_steps
                 )
+                if noise_std > 0:
+                    real_for_d = real_for_d + noise_std * torch.randn_like(real_for_d)
+                    fake_for_d = fake_for_d + noise_std * torch.randn_like(fake_for_d)
 
-                # LeCam Logic
-                if diffusion_args.use_lecam:
+                # Train D every N steps to give G more time to adapt
+                train_d_this_step = global_step % diffusion_args.d_train_every == 0
+
+                if diffusion_args.gan_loss_type == "r3gan":
+                    real_gp = real_for_d.detach().requires_grad_(True)
+                    fake_gp = fake_for_d.detach().requires_grad_(True)
+
+                    real_preds = discriminator(real_gp)
+                    fake_preds = discriminator(fake_gp)
+
+                    # Relativistic loss: D wants real > fake
+                    relativistic_logits = real_preds - fake_preds
+                    d_adv_loss = F.softplus(-relativistic_logits).mean()
+                    
+                    # R1 + R2 gradient penalty (per step - NO LAZY REG)
+                    r1_penalty = zero_centered_gradient_penalty(real_gp, real_preds)
+                    r2_penalty = zero_centered_gradient_penalty(fake_gp, fake_preds)
+                    reg_loss = (diffusion_args.r3gan_gamma / 2) * (r1_penalty.mean() + r2_penalty.mean())
+                    d_loss = d_adv_loss + reg_loss
+                        
+                    with torch.no_grad():
+                        acc = (relativistic_logits > 0).float().mean().item()
+                elif diffusion_args.gan_loss_type == "hinge":
+                    real_preds = discriminator(real_for_d)
+                    fake_preds = discriminator(fake_for_d)
+                    d_loss = hinge_d_loss(real_preds, fake_preds)
+                    with torch.no_grad():
+                        avg_real_preds = real_preds.mean().item()
+                        avg_fake_preds = fake_preds.mean().item()
+                        acc = (real_preds > 0).sum().item() + (
+                            fake_preds < 0
+                        ).sum().item()
+                        acc = acc / (real_preds.numel() + fake_preds.numel())
+                else:
+                    real_preds = discriminator(real_for_d)
+                    fake_preds = discriminator(fake_for_d)
+                    d_loss, avg_real_preds, avg_fake_preds, acc = gan_disc_loss(
+                        real_preds,
+                        fake_preds,
+                        disc_type="bce",
+                    )
+
+                # LeCam Logic (skip for r3gan — R1/R2 replaces it)
+                if diffusion_args.use_lecam and diffusion_args.gan_loss_type != "r3gan":
                     lecam_anchor_real_logits = (
                         lecam_beta * lecam_anchor_real_logits
                         + (1 - lecam_beta) * avg_real_preds
@@ -1257,11 +1576,20 @@ def main():
                 else:
                     lecam_loss = torch.tensor(0.0)
 
-                accelerator.backward(d_loss)
-                # if accelerator.sync_gradients:
-                #      accelerator.clip_grad_norm_(discriminator.parameters(), training_args.max_grad_norm)
-                optimizer_D.step()
-                optimizer_D.zero_grad()
+                # Initialize gradient norm for logging
+                _d_grad_norm = 0.0
+
+                if train_d_this_step:
+                    accelerator.backward(d_loss)
+
+                    # Measure gradient norms BEFORE zero_grad
+                    for p in discriminator.parameters():
+                        if p.grad is not None:
+                            _d_grad_norm += p.grad.data.norm(2).item() ** 2
+                    _d_grad_norm = _d_grad_norm**0.5
+
+                    optimizer_D.step()
+                    optimizer_D.zero_grad()
 
                 # --- Generator Step ---
                 # Recompute forward pass to get a fresh computation graph
@@ -1275,10 +1603,10 @@ def main():
                 denoised_sample_g = vae.decode(
                     denoised_sample_g / vae.config.scaling_factor,
                     return_dict=False,
-                )[0].clamp(-1, 1)
+                ).clamp(-1, 1)
 
                 loss_lpips = net_lpips(
-                    denoised_sample_g, reconstructed_targets.detach()
+                    denoised_sample_g, batch["target_images"].float().detach()
                 ).mean()
 
                 # Prevent gradients from flowing into discriminator during G update
@@ -1287,14 +1615,32 @@ def main():
 
                 # GAN loss with warmup: skip adversarial signal early in training
                 if global_step >= diffusion_args.disc_warmup_steps:
-                    # gradnorm stabilizes GAN gradient magnitude
-                    denoised_for_disc = gradnorm(
-                        denoised_sample_g, weight=diffusion_args.gan_factor
-                    )
-                    fake_preds_for_g = discriminator(denoised_for_disc)
-                    g_gan_loss = F.binary_cross_entropy_with_logits(
-                        fake_preds_for_g, torch.ones_like(fake_preds_for_g)
-                    )
+                    # For latent D: pass latent directly
+                    if is_latent_disc:
+                        z_pred_g = noisy_sample - model_pred_g * sigmas
+                        d_input_g = z_pred_g
+                        d_input_real = z_target.detach()
+                    else:
+                        d_input_g = denoised_sample_g
+                        d_input_real = reconstructed_targets.detach()
+
+                    if diffusion_args.gan_loss_type == "r3gan":
+                        fake_preds_for_g = discriminator(d_input_g)
+                        real_preds_for_g = discriminator(d_input_real)
+                        relativistic_logits_g = fake_preds_for_g - real_preds_for_g
+                        g_gan_loss = F.softplus(-relativistic_logits_g).mean()
+                    elif diffusion_args.gan_loss_type == "hinge":
+                        fake_preds_for_g = discriminator(d_input_g)
+                        g_gan_loss = -torch.mean(fake_preds_for_g)
+                    else:
+                        if is_latent_disc:
+                            fake_preds_for_g = discriminator(d_input_g)
+                        else:
+                            denoised_for_disc = gradnorm(denoised_sample_g, weight=1.0)
+                            fake_preds_for_g = discriminator(denoised_for_disc)
+                        g_gan_loss = F.binary_cross_entropy_with_logits(
+                            fake_preds_for_g, torch.ones_like(fake_preds_for_g)
+                        )
                 else:
                     g_gan_loss = torch.tensor(0.0, device=denoised_sample_g.device)
 
@@ -1307,6 +1653,21 @@ def main():
 
                 for p in discriminator.parameters():
                     p.requires_grad = True
+
+                # Measure gradient norms BEFORE zero_grad
+                _unet_grad_norm = 0.0
+                for p in unet.parameters():
+                    if p.grad is not None:
+                        _unet_grad_norm += p.grad.data.norm(2).item() ** 2
+                _unet_grad_norm = _unet_grad_norm**0.5
+
+                # _d_grad_norm is calculated earlier
+                # _d_grad_norm = 0.0
+                # for p in discriminator.parameters():
+                #     if p.grad is not None:
+                #         _d_grad_norm += p.grad.data.norm(2).item() ** 2
+                # _d_grad_norm = _d_grad_norm ** 0.5
+
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
                         layers_to_opt,
@@ -1323,13 +1684,26 @@ def main():
                 logs = {}
                 # log the loss
                 logs["loss"] = loss.detach().item()
-                logs["latent_loss"] = loss.detach().item()
+                # logs["latent_loss"] = loss.detach().item()
                 logs["loss_lpips"] = loss_lpips.detach().item()
 
                 logs["d_loss"] = d_loss.detach().item()
                 logs["g_gan_loss"] = g_gan_loss.detach().item()
                 logs["d_acc"] = acc
-                if diffusion_args.use_lecam:
+
+                # Diagnostic: pixel-space distance between real and fake for D
+                with torch.no_grad():
+                    logs["real_fake_l2"] = (
+                        (real_for_d - fake_for_d).pow(2).mean().item()
+                    )
+
+                # Diagnostic: gradient norms (measured before zero_grad)
+                logs["unet_grad_norm"] = _unet_grad_norm
+                logs["d_grad_norm"] = _d_grad_norm
+                if diffusion_args.gan_loss_type == "r3gan":
+                    logs["r1_penalty"] = r1_penalty.mean().detach().item()
+                    logs["r2_penalty"] = r2_penalty.mean().detach().item()
+                if diffusion_args.use_lecam and diffusion_args.gan_loss_type != "r3gan":
                     logs["lecam_loss"] = lecam_loss.detach().item()
 
                 # logs["mse_loss"] = mse_loss.detach().item()
