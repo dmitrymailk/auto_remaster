@@ -1,6 +1,14 @@
 {
 	"customizations": {
 		"vscode": {
+			"settings": {
+                "http.proxy": "http://127.0.0.1:2334",
+                "http.proxySupport": "on",
+                "http.proxyStrictSSL": false,
+                "github.copilot.advanced": {
+                    "debug.overrideProxyUrl": "http://127.0.0.1:2334"
+                }
+            },
 			"extensions": [
 				"ms-python.python",
 				"donjayamanne.python-extension-pack",
